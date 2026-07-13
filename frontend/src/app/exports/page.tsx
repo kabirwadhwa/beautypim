@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../config';
 
 import React, { useState } from 'react';
 import Shell from '../../components/Shell';
@@ -21,7 +22,7 @@ export default function ExportsPage() {
 
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch("http://localhost:8000/api/exports/run", {
+      const resp = await fetch(`${API_URL}/exports/run`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
@@ -40,7 +41,7 @@ export default function ExportsPage() {
       setResult(data);
 
       // Programmatically trigger browser file download
-      window.open(`http://localhost:8000${data.download_url}`, '_blank');
+      window.open(`${BACKEND_URL}${data.download_url}`, '_blank');
     } catch (err: any) {
       setError(err.message || "Failed to run export.");
     } finally {

@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../../config';
 
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -42,12 +43,12 @@ export default function JobProgressPage() {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
 
-      const jobResp = await fetch(`http://localhost:8000/api/feeds/jobs/${jobId}`, { headers });
+      const jobResp = await fetch(`${API_URL}/feeds/jobs/${jobId}`, { headers });
       if (!jobResp.ok) throw new Error("Failed to load job status.");
       const jobData = await jobResp.json();
       setJob(jobData);
 
-      const itemsResp = await fetch(`http://localhost:8000/api/feeds/jobs/${jobId}/items`, { headers });
+      const itemsResp = await fetch(`${API_URL}/feeds/jobs/${jobId}/items`, { headers });
       if (itemsResp.ok) {
         const itemsData = await itemsResp.json();
         setItems(itemsData || []);
@@ -77,7 +78,7 @@ export default function JobProgressPage() {
   const handleCancelJob = async () => {
     try {
       const token = localStorage.getItem("token");
-      await fetch(`http://localhost:8000/api/feeds/jobs/${jobId}/cancel`, {
+      await fetch(`${API_URL}/feeds/jobs/${jobId}/cancel`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });

@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../../config';
 
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -54,7 +55,7 @@ export default function ProductDetailPage() {
     try {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
-      const resp = await fetch(`http://localhost:8000/api/products/${productId}`, { headers });
+      const resp = await fetch(`${API_URL}/products/${productId}`, { headers });
       if (!resp.ok) throw new Error("Product details not found.");
       const data = await resp.json();
       setProduct(data);
@@ -72,7 +73,7 @@ export default function ProductDetailPage() {
   const handleStatusChange = async (action: 'approve' | 'reject') => {
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch(`http://localhost:8000/api/products/${productId}/${action}`, {
+      const resp = await fetch(`${API_URL}/products/${productId}/${action}`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -91,7 +92,7 @@ export default function ProductDetailPage() {
     setError(null);
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch(`http://localhost:8000/api/products/${productId}`, {
+      const resp = await fetch(`${API_URL}/products/${productId}`, {
         method: "PUT",
         headers: {
           "Authorization": `Bearer ${token}`,
