@@ -107,7 +107,6 @@ def create_field_value_version(
             issue = ValidationIssue(
                 id=uuid.uuid4(),
                 canonical_product_id=canonical_product_id,
-                product_variant_id=product_variant_id,
                 field_name=field_name,
                 severity="warning",
                 issue_type="conflicting_information",
@@ -288,7 +287,6 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     if variant and not variant.gtin:
         issue = ValidationIssue(
             id=uuid.uuid4(),
-            canonical_product_id=item.canonical_product_id,
             product_variant_id=item.product_variant_id,
             field_name="gtin",
             severity="warning",
