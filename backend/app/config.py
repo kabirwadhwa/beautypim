@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     
     def __init__(self, **values):
         super().__init__(**values)
-        is_prod = self.ENVIRONMENT == "production" or self.DATABASE_URL.startswith("postgresql")
+        is_prod = self.ENVIRONMENT == "production"
         if is_prod:
             defaults = [
                 "beauty_pim_super_secret_key_change_in_production",
