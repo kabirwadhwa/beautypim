@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sparkles, Lock, Mail } from 'lucide-react';
 import styles from '../page.module.css';
+import { API_URL } from '../../config';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -23,7 +24,7 @@ export default function LoginPage() {
       formData.append("username", email);
       formData.append("password", password);
 
-      const resp = await fetch("http://localhost:8000/api/auth/token", {
+      const resp = await fetch(`${API_URL}/auth/token`, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded"
@@ -35,7 +36,7 @@ export default function LoginPage() {
         // If login fails, check if we need to register first (bootstrap path)
         if (resp.status === 401) {
           // Attempt automatic bootstrap registration if no users exist
-          const regResp = await fetch("http://localhost:8000/api/auth/register", {
+          const regResp = await fetch(`${API_URL}/auth/register`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, password })
@@ -43,7 +44,7 @@ export default function LoginPage() {
 
           if (regResp.ok) {
             // Re-login after bootstrap
-            const retryResp = await fetch("http://localhost:8000/api/auth/token", {
+            const retryResp = await fetch(`${API_URL}/auth/token`, {
               method: "POST",
               headers: { "Content-Type": "application/x-www-form-urlencoded" },
               body: formData

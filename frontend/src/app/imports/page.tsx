@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../config';
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
@@ -40,7 +41,7 @@ export default function ImportsPage() {
     const fetchTemplates = async () => {
       try {
         const token = localStorage.getItem("token");
-        const resp = await fetch("http://localhost:8000/api/feeds/templates", {
+        const resp = await fetch(`${API_URL}/feeds/templates`, {
           headers: { "Authorization": `Bearer ${token}` }
         });
         if (resp.ok) {
@@ -67,7 +68,7 @@ export default function ImportsPage() {
       const formData = new FormData();
       formData.append("file", uploadedFile);
 
-      const resp = await fetch("http://localhost:8000/api/feeds/upload", {
+      const resp = await fetch(`${API_URL}/feeds/upload`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` },
         body: formData
@@ -120,7 +121,7 @@ export default function ImportsPage() {
         source_name: file.name
       };
 
-      const resp = await fetch("http://localhost:8000/api/feeds/process", {
+      const resp = await fetch(`${API_URL}/feeds/process`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,

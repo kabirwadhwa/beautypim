@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../config';
 
 import React, { useEffect, useState } from 'react';
 import Shell from '../../components/Shell';
@@ -27,19 +28,19 @@ export default function DashboardPage() {
         const headers = { "Authorization": `Bearer ${token}` };
 
         // Fetch Jobs
-        const jobsResp = await fetch("http://localhost:8000/api/feeds/jobs", { headers });
+        const jobsResp = await fetch(`${API_URL}/feeds/jobs`, { headers });
         const jobsData = await jobsResp.json();
         setJobs(jobsData || []);
 
         // Fetch Products
-        const prodResp = await fetch("http://localhost:8000/api/products", { headers });
+        const prodResp = await fetch(`${API_URL}/products`, { headers });
         const prodData = await prodResp.json();
         setProductsCount(prodData.length || 0);
 
         // Compute unresolved validation issues count
         let issuesCountTemp = 0;
         for (const p of prodData) {
-          const detailResp = await fetch(`http://localhost:8000/api/products/${p.id}`, { headers });
+          const detailResp = await fetch(`${API_URL}/products/${p.id}`, { headers });
           const detailData = await detailResp.json();
           issuesCountTemp += (detailData.validation_issues || []).filter((i: any) => !i.resolved).length;
         }

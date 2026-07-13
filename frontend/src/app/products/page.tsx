@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../config';
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -30,7 +31,7 @@ export default function ProductsPage() {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
 
-      let url = `http://localhost:8000/api/products?limit=100`;
+      let url = `${API_URL}/products?limit=100`;
       if (search) url += `&search=${encodeURIComponent(search)}`;
       if (statusFilter) url += `&status_filter=${statusFilter}`;
       if (issueFilter !== null) url += `&issue_filter=${issueFilter}`;
@@ -72,7 +73,7 @@ export default function ProductsPage() {
     setActionLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch("http://localhost:8000/api/products/bulk-action", {
+      const resp = await fetch(`${API_URL}/products/bulk-action`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,

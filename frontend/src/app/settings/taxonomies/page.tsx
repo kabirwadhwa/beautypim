@@ -1,4 +1,5 @@
 "use client";
+import { API_URL, BACKEND_URL } from '../../../config';
 
 import React, { useState, useEffect } from 'react';
 import Shell from '../../../components/Shell';
@@ -22,7 +23,7 @@ export default function TaxonomiesPage() {
   const fetchCategories = async () => {
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch("http://localhost:8000/api/settings/categories", {
+      const resp = await fetch(`${API_URL}/settings/categories`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (resp.ok) {
@@ -47,7 +48,7 @@ export default function TaxonomiesPage() {
 
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch("http://localhost:8000/api/settings/categories", {
+      const resp = await fetch(`${API_URL}/settings/categories`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
