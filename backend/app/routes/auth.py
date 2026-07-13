@@ -25,7 +25,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
             detail="Email already registered"
         )
         
-    role = "admin"
+    role = "admin" if first_user else "viewer"
     
     hashed = get_password_hash(user_in.password)
     user = User(

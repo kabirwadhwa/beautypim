@@ -100,13 +100,13 @@ def process_ingest(
         )
 
     # Check for existing job (idempotency check)
-    existing_job = db.query(ImportJob).filter(
-        ImportJob.file_hash == request.file_hash,
-        ImportJob.status.in_(["pending", "processing", "completed"])
-    ).first()
+    existing_job = db.query(ImportJob).filter(ImportJob.file_hash == request.file_hash).first()
     if existing_job:
-        # Policy options could go here. For MVP, we return the existing completed job or raise conflict.
-        return existing_job
+        if existing_job.status in ["pending", "processing", "completed"]:
+            return existing_job
+        else:
+            db.delete(existing_job)
+            db.commit()
 
     # Create Job record
     job = ImportJob(
