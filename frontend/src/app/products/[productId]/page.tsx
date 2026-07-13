@@ -19,7 +19,7 @@ interface ProductDetail {
   formulations: Array<{ id: string; raw_inci_text: string; market: string | null }>;
   field_values: Array<{
     id: string;
-    field_name: str;
+    field_name: string;
     value: any;
     source_type: string;
     confidence_score: number | null;
@@ -53,7 +53,7 @@ export default function ProductDetailPage() {
   const fetchDetail = async () => {
     try {
       const token = localStorage.getItem("token");
-      const headers = { "Authorization": f"Bearer {token}" };
+      const headers = { "Authorization": `Bearer ${token}` };
       const resp = await fetch(`http://localhost:8000/api/products/${productId}`, { headers });
       if (!resp.ok) throw new Error("Product details not found.");
       const data = await resp.json();
@@ -74,7 +74,7 @@ export default function ProductDetailPage() {
       const token = localStorage.getItem("token");
       const resp = await fetch(`http://localhost:8000/api/products/${productId}/${action}`, {
         method: "POST",
-        headers: { "Authorization": f"Bearer {token}" }
+        headers: { "Authorization": `Bearer ${token}` }
       });
       if (!resp.ok) {
         const data = await resp.json();
@@ -94,7 +94,7 @@ export default function ProductDetailPage() {
       const resp = await fetch(`http://localhost:8000/api/products/${productId}`, {
         method: "PUT",
         headers: {
-          "Authorization": f"Bearer {token}",
+          "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({

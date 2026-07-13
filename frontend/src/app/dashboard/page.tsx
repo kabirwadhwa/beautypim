@@ -24,7 +24,7 @@ export default function DashboardPage() {
     const fetchData = async () => {
       try {
         const token = localStorage.getItem("token");
-        const headers = { "Authorization": f"Bearer {token}" };
+        const headers = { "Authorization": `Bearer ${token}` };
 
         // Fetch Jobs
         const jobsResp = await fetch("http://localhost:8000/api/feeds/jobs", { headers });

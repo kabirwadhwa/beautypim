@@ -23,7 +23,7 @@ export default function TaxonomiesPage() {
     try {
       const token = localStorage.getItem("token");
       const resp = await fetch("http://localhost:8000/api/settings/categories", {
-        headers: { "Authorization": f"Bearer {token}" }
+        headers: { "Authorization": `Bearer ${token}` }
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -50,7 +50,7 @@ export default function TaxonomiesPage() {
       const resp = await fetch("http://localhost:8000/api/settings/categories", {
         method: "POST",
         headers: {
-          "Authorization": f"Bearer {token}",
+          "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({

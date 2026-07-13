@@ -18,7 +18,7 @@ interface Job {
 
 interface JobItem {
   id: string;
-  source_row_number: int;
+  source_row_number: number;
   status: string;
   match_status: string;
   duplicate_score: number;
@@ -40,7 +40,7 @@ export default function JobProgressPage() {
   const fetchJobStatus = async () => {
     try {
       const token = localStorage.getItem("token");
-      const headers = { "Authorization": f"Bearer {token}" };
+      const headers = { "Authorization": `Bearer ${token}` };
 
       const jobResp = await fetch(`http://localhost:8000/api/feeds/jobs/${jobId}`, { headers });
       if (!jobResp.ok) throw new Error("Failed to load job status.");
@@ -79,7 +79,7 @@ export default function JobProgressPage() {
       const token = localStorage.getItem("token");
       await fetch(`http://localhost:8000/api/feeds/jobs/${jobId}/cancel`, {
         method: "POST",
-        headers: { "Authorization": f"Bearer {token}" }
+        headers: { "Authorization": `Bearer ${token}` }
       });
       fetchJobStatus();
     } catch (e) {
