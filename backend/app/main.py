@@ -23,11 +23,19 @@ class JSONFormatter(logging.Formatter):
             log_entry["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_entry)
 
+import sys
+
 logger = logging.getLogger()
-handler = logging.StreamHandler()
+handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(JSONFormatter())
 logger.addHandler(handler)
 logger.setLevel(settings.LOG_LEVEL)
+
+# Redirect Uvicorn logging handlers to root logger stdout to prevent stderr redirection on Railway
+for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    l = logging.getLogger(logger_name)
+    l.handlers = []
+    l.propagate = True
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
