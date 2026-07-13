@@ -330,6 +330,14 @@ def run_ai_enrichment(
         response = requests.post(url, json=payload, timeout=60)
         response_json = response.json()
         
+        # Check for Google API error response formats
+        if "error" in response_json:
+            raise Exception(f"Gemini API Error: {response_json['error'].get('message', 'Unknown API error')}")
+        if response.status_code != 200:
+            raise Exception(f"Gemini API returned status code {response.status_code}: {response.text}")
+        if "candidates" not in response_json or not response_json["candidates"]:
+            raise Exception(f"Gemini API response missing candidates: {response.text}")
+
         # Log pricing and metrics
         candidate_text = response_json["candidates"][0]["content"]["parts"][0]["text"]
         
@@ -372,6 +380,35 @@ def run_ai_enrichment(
         return parsed_data, run_id
 
     except Exception as e:
+        # Save current failed attempt to database to preserve parent foreign key relationship
+        try:
+            # If transaction is in failed state, rollback to allow logging run_record
+            db.rollback()
+            run_record = EnrichmentRun(
+                id=run_id,
+                import_job_id=import_job_id,
+                import_job_item_id=import_job_item_id,
+                source_listing_id=source_listing_id,
+                canonical_product_id=canonical_product_id,
+                product_variant_id=product_variant_id,
+                parent_enrichment_run_id=parent_enrichment_run_id,
+                provider="Google Gemini",
+                model=settings.GEMINI_MODEL,
+                model_version=settings.GEMINI_MODEL_VERSION,
+                prompt_version=settings.PROMPT_VERSION,
+                schema_version=settings.SCHEMA_VERSION,
+                status="failed",
+                error_details=str(e),
+                attempt_number=attempt,
+                input_content_hash=input_content_hash,
+                validation_errors={"error": str(e)}
+            )
+            db.add(run_record)
+            db.commit()
+        except Exception as db_err:
+            db.rollback()
+            print(f"Failed to record enrichment run to db: {db_err}")
+
         # If failure is parser error, retry once using attempt count
         if attempt < 2:
             return run_ai_enrichment(
@@ -382,25 +419,4 @@ def run_ai_enrichment(
             )
             
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
-        run_record = EnrichmentRun(
-            id=run_id,
-            import_job_id=import_job_id,
-            import_job_item_id=import_job_item_id,
-            source_listing_id=source_listing_id,
-            canonical_product_id=canonical_product_id,
-            product_variant_id=product_variant_id,
-            parent_enrichment_run_id=parent_enrichment_run_id,
-            provider="Google Gemini",
-            model=settings.GEMINI_MODEL,
-            model_version=settings.GEMINI_MODEL_VERSION,
-            prompt_version=settings.PROMPT_VERSION,
-            schema_version=settings.SCHEMA_VERSION,
-            status="failed",
-            error_details=str(e),
-            attempt_number=attempt,
-            input_content_hash=input_content_hash,
-            validation_errors={"error": str(e)}
-        )
-        db.add(run_record)
-        db.commit()
         return fallback_data, run_id
