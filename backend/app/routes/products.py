@@ -12,6 +12,11 @@ from app.models import (
 )
 from app.schemas import ProductOut, ProductDetailOut, ProductEdit
 from app.worker import record_audit, process_item_enrichment, create_field_value_version
+from pydantic import BaseModel
+
+class BulkActionRequest(BaseModel):
+    product_ids: List[uuid.UUID]
+    action: str
 
 router = APIRouter(prefix="/products", tags=["Product PIM Center"])
 
@@ -286,11 +291,13 @@ def reject_product(
 
 @router.post("/bulk-action", status_code=status.HTTP_200_OK)
 def bulk_product_action(
-    product_ids: List[uuid.UUID],
-    action: str, # approve, reject
+    req: BulkActionRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor_or_admin)
 ):
+    product_ids = req.product_ids
+    action = req.action
+
     if action not in ["approve", "reject"]:
         raise HTTPException(status_code=400, detail="Invalid action name")
 
