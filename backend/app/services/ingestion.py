@@ -94,8 +94,25 @@ def ingest_file_to_source_listings(
     df = df.fillna("")
     records = df.to_dict(orient="records")
 
+    def clean_row_for_serialization(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+        import numpy as np
+        cleaned = {}
+        for k, v in row_dict.items():
+            if pd.isna(v):
+                cleaned[k] = None
+            elif isinstance(v, np.integer):
+                cleaned[k] = int(v)
+            elif isinstance(v, np.floating):
+                cleaned[k] = float(v)
+            elif isinstance(v, np.ndarray):
+                cleaned[k] = v.tolist()
+            else:
+                cleaned[k] = v
+        return cleaned
+
     row_count = 0
     for idx, row in enumerate(records):
+        row = clean_row_for_serialization(row)
         source_row_num = idx + 1
         
         # Serialize raw row content for unique tracking hash
