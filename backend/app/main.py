@@ -45,6 +45,17 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+from fastapi.responses import JSONResponse
+import traceback
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    tbl = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Unhandled Server Error", "traceback": "".join(tbl)}
+    )
+
 # CORS configurations
 app.add_middleware(
     CORSMiddleware,
