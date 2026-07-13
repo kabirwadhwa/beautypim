@@ -722,6 +722,15 @@ def recover_stale_job_items(db: Session, timeout_seconds: int = 600):
     if stale_items:
         db.commit()
 
+def run_job_in_background(job_id):
+    db = SessionLocal()
+    try:
+        run_job_worker(db, job_id)
+    except Exception as e:
+        logger.error(f"Failed background job execution for {job_id}: {str(e)}")
+    finally:
+        db.close()
+
 def recover_unfinished_jobs():
     """Recovers and processes pending/processing jobs upon application startup.
     """
@@ -742,8 +751,10 @@ def recover_unfinished_jobs():
             ).update({"status": "pending"})
             db.commit()
             
-            # Resume Job
-            run_job_worker(db, job.id)
+            # Resume Job in a background thread with a fresh DB session
+            import threading
+            thread = threading.Thread(target=run_job_in_background, args=(job.id,))
+            thread.start()
     except Exception as e:
         logger.error(f"Worker recovery failed: {str(e)}")
     finally:

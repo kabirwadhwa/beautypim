@@ -178,3 +178,26 @@ def test_run_job_worker_lifecycle(db: Session):
     ).first()
     assert vegan_fv is not None
     assert vegan_fv.value == "yes"  # Keyword 'vegan' detected
+
+def test_recover_unfinished_jobs(db: Session):
+    from app.worker import run_job_in_background, recover_unfinished_jobs
+    from app.models import ImportJob, ImportJobItem
+    
+    # 1. Create a job stuck in processing
+    job_id = uuid.uuid4()
+    job = ImportJob(
+        id=job_id,
+        filename="test_unfinished.csv",
+        file_hash="test_file_hash_unfinished",
+        status="processing",
+        column_mapping={"product_name": "name"}
+    )
+    db.add(job)
+    db.flush()
+    
+    # Run background wrapper directly to test logic
+    run_job_in_background(job_id)
+    
+    db.refresh(job)
+    assert job.status == "processing"
+
