@@ -13,6 +13,9 @@ from app.database import get_db
 from app.auth import get_current_user, require_viewer_or_above
 from app.models import CanonicalProduct, ProductVariant, FieldValue, Brand, Category, ValidationIssue
 from app.schemas import ExportRequest, ExportResponse
+from app.limiter import rate_limit
+from app.config import settings
+from app.services.webhooks import dispatch_webhook_safe
 
 router = APIRouter(prefix="/exports", tags=["Export Center"])
 
@@ -127,7 +130,7 @@ def build_audit_export_data(db: Session) -> List[Dict[str, Any]]:
 
     return export_rows
 
-@router.post("/run", response_model=ExportResponse)
+@router.post("/run", response_model=ExportResponse, dependencies=[Depends(rate_limit("export", "10/minute"))])
 def execute_export(
     req: ExportRequest,
     db: Session = Depends(get_db),
@@ -139,12 +142,12 @@ def execute_export(
     else:
         data = build_audit_export_data(db)
 
-    # Webhook triggers simulation
+    # Webhook triggers
     webhook_triggered = False
     if req.webhook_url:
         try:
-            requests.post(req.webhook_url, json={"exported_rows": len(data), "timestamp": str(datetime.utcnow())}, timeout=10)
-            webhook_triggered = True
+            payload = {"exported_rows": len(data), "timestamp": str(datetime.utcnow())}
+            webhook_triggered = dispatch_webhook_safe(req.webhook_url, payload)
         except Exception:
             pass
 

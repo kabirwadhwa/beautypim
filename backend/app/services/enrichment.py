@@ -158,12 +158,18 @@ def generate_deterministic_fallback(
         },
         "pregnancy_warning_observation": {
             "observation_domain": "pregnancy",
-            "review_required": True,
-            "observation_type": "unknown",
-            "observed_items": [],
-            "evidence": [],
-            "review_message": "Awaiting AI enrichment run observation.",
-            "confidence": 0.0
+            "review_required": True if "retinol" in raw_ingredients.lower() else False,
+            "observation_type": "retinol_present" if "retinol" in raw_ingredients.lower() else "none",
+            "observed_items": ["retinol"] if "retinol" in raw_ingredients.lower() else [],
+            "evidence": [{
+                "source_reference": None,
+                "source_field": "ingredients",
+                "supporting_text": "Ingredients contain retinol.",
+                "evidence_type": "keyword_match",
+                "char_offsets": None
+            }] if "retinol" in raw_ingredients.lower() else [],
+            "review_message": "Contains Retinol. Factual review required for pregnancy use (no safety conclusion is made)." if "retinol" in raw_ingredients.lower() else "No pregnancy safety concerns detected.",
+            "confidence": 1.0
         },
         "allergen_warning_observation": {
             "observation_domain": "allergen",
@@ -221,7 +227,8 @@ def run_ai_enrichment(
             "Strictly return JSON matching the specified JSON schema. "
             "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
             "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
-            "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes."
+            "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes. "
+            "For the pregnancy_warning_observation field: if the ingredient list contains 'retinol', you must create a factual observation indicating the presence of retinol (review_required=true, observed_items=['retinol'], review_message='Contains retinol'). However, do NOT write a medical conclusion or state that it is unsafe or prohibited for pregnancy; keep the message purely factual."
             f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
         )
         
@@ -356,7 +363,8 @@ def run_ai_enrichment(
         "Strictly return JSON matching the specified JSON schema. "
         "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
         "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
-        "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes."
+        "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes. "
+        "For the pregnancy_warning_observation field: if the ingredient list contains 'retinol', you must create a factual observation indicating the presence of retinol (review_required=true, observed_items=['retinol'], review_message='Contains retinol'). However, do NOT write a medical conclusion or state that it is unsafe or prohibited for pregnancy; keep the message purely factual."
     )
 
     prompt = f"Analyze the following beauty product and enrich its metadata:\n\n{input_text}"

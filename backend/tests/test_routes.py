@@ -7,7 +7,7 @@ from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, User
 def get_admin_token(client: TestClient) -> str:
     resp = client.post(
         "/api/auth/token",
-        data={"username": "admin@test.com", "password": "password123"}
+        data={"username": "admin@test.com", "password": "securepassword123"}
     )
     return resp.json()["access_token"]
 

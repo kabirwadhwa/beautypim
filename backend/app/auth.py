@@ -10,8 +10,57 @@ from app.models import User
 from app.config import settings
 
 # Setup password context
+import logging
+import threading
+
+logger = logging.getLogger("app.auth")
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/token")
+
+# Lockout tracker: normalized_email -> { "attempts": int, "locked_until": Optional[datetime] }
+_lockout_data = {}
+_lockout_lock = threading.Lock()
+
+def normalize_email(email: str) -> str:
+    if not email:
+        return ""
+    return email.strip().lower()
+
+def validate_password_strength(password: str) -> None:
+    if not password or len(password) < 12:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 12 characters long."
+        )
+
+def record_login_attempt(email: str, success: bool) -> None:
+    norm_email = normalize_email(email)
+    with _lockout_lock:
+        data = _lockout_data.setdefault(norm_email, {"attempts": 0, "locked_until": None})
+        if success:
+            data["attempts"] = 0
+            data["locked_until"] = None
+        else:
+            data["attempts"] += 1
+            if data["attempts"] >= 5:
+                data["locked_until"] = datetime.utcnow() + timedelta(minutes=15)
+                logger.warning(f"Account locked out: {norm_email} for 15 minutes due to 5 login failures.")
+
+def check_login_lockout(email: str) -> None:
+    norm_email = normalize_email(email)
+    with _lockout_lock:
+        data = _lockout_data.get(norm_email)
+        if data and data["locked_until"]:
+            if datetime.utcnow() < data["locked_until"]:
+                remaining = int((data["locked_until"] - datetime.utcnow()).total_seconds())
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Account locked out due to multiple failed attempts. Retry in {remaining} seconds."
+                )
+            else:
+                data["locked_until"] = None
+                data["attempts"] = 0
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -43,7 +92,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise credentials_exception
     
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(User.email == normalize_email(email)).first()
     if user is None:
         raise credentials_exception
     return user

@@ -10,6 +10,9 @@ from app.services.ingestion import compute_file_hash, read_preview, suggest_mapp
 from app.worker import run_job_worker
 from app.schemas import ImportJobOut, ImportJobItemOut, MappingTemplateOut, MappingTemplateCreate, IngestProcessRequest
 
+from app.limiter import rate_limit
+from app.config import settings
+
 router = APIRouter(prefix="/feeds", tags=["Feeds Ingestion"])
 
 # Temporary in-memory file cache for process phase
@@ -17,7 +20,7 @@ router = APIRouter(prefix="/feeds", tags=["Feeds Ingestion"])
 # For MVP, we cache file bytes indexed by file_hash
 file_cache: Dict[str, bytes] = {}
 
-@router.post("/upload", status_code=status.HTTP_200_OK)
+@router.post("/upload", status_code=status.HTTP_200_OK, dependencies=[Depends(rate_limit("upload", "RATE_LIMIT_UPLOADS"))])
 async def upload_file_preview(
     file: UploadFile = File(...),
     current_user: User = Depends(require_editor_or_admin)
@@ -85,7 +88,7 @@ def create_template(
     db.refresh(template)
     return template
 
-@router.post("/process", response_model=ImportJobOut)
+@router.post("/process", response_model=ImportJobOut, dependencies=[Depends(rate_limit("process", "RATE_LIMIT_PROCESS"))])
 def process_ingest(
     request: IngestProcessRequest,
     background_tasks: BackgroundTasks,
@@ -99,14 +102,37 @@ def process_ingest(
             detail="File data expired or not found. Please upload the file again."
         )
 
-    # Check for existing job (idempotency check)
-    existing_job = db.query(ImportJob).filter(ImportJob.file_hash == request.file_hash).first()
-    if existing_job:
-        if existing_job.status in ["pending", "processing", "completed"]:
-            return existing_job
-        else:
-            db.delete(existing_job)
-            db.commit()
+    # Identical-file policy handling
+    policy = request.identical_file_policy or "create_new_version"
+    
+    if policy == "reject":
+        existing_job = db.query(ImportJob).filter(ImportJob.file_hash == request.file_hash).first()
+        if existing_job:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="File has already been processed (reject policy)."
+            )
+    elif policy == "resume_previous":
+        # Find latest job with this hash
+        existing_job = db.query(ImportJob).filter(
+            ImportJob.file_hash == request.file_hash
+        ).order_by(ImportJob.created_at.desc() if hasattr(ImportJob, 'created_at') else ImportJob.id).first()
+        
+        if existing_job:
+            if existing_job.status in ["pending", "processing", "completed"]:
+                return existing_job
+            else:
+                # Resume failed/cancelled job
+                from app.models import ImportJobItem
+                existing_job.status = "pending"
+                existing_job.error_message = None
+                db.query(ImportJobItem).filter(
+                    ImportJobItem.import_job_id == existing_job.id
+                ).update({"status": "pending", "enrichment_status": "not_requested"})
+                db.commit()
+                background_tasks.add_task(run_job_worker, db, existing_job.id)
+                return existing_job
+    # if policy == "create_new_version", we ignore and create a new job.
 
     # Create Job record
     job = ImportJob(
