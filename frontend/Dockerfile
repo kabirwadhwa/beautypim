@@ -7,9 +7,6 @@ RUN npm install
 
 COPY . .
 
-# In production Compose, we build, but for local workspace we bind mount
-RUN npm run build
-
+# We compile at runtime to ensure Next.js has access to environment variables injected on boot
 EXPOSE 3000
-
-CMD ["npm", "start"]
+CMD ["sh", "-c", "npm run build && npm start"]
