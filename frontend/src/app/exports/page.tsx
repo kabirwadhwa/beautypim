@@ -24,7 +24,7 @@ export default function ExportsPage() {
       const resp = await fetch("http://localhost:8000/api/exports/run", {
         method: "POST",
         headers: {
-          "Authorization": f"Bearer {token}",
+          "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({

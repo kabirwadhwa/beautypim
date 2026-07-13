@@ -19,7 +19,7 @@ export default function ImportsPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>('');
   
-  # Mapping selections states
+  // Mapping selections states
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [saveTemplate, setSaveTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
@@ -41,7 +41,7 @@ export default function ImportsPage() {
       try {
         const token = localStorage.getItem("token");
         const resp = await fetch("http://localhost:8000/api/feeds/templates", {
-          headers: { "Authorization": f"Bearer {token}" }
+          headers: { "Authorization": `Bearer ${token}` }
         });
         if (resp.ok) {
           const data = await resp.json();
@@ -69,7 +69,7 @@ export default function ImportsPage() {
 
       const resp = await fetch("http://localhost:8000/api/feeds/upload", {
         method: "POST",
-        headers: { "Authorization": f"Bearer {token}" },
+        headers: { "Authorization": `Bearer ${token}` },
         body: formData
       });
 
@@ -123,7 +123,7 @@ export default function ImportsPage() {
       const resp = await fetch("http://localhost:8000/api/feeds/process", {
         method: "POST",
         headers: {
-          "Authorization": f"Bearer {token}",
+          "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify(payload)

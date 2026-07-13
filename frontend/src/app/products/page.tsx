@@ -28,7 +28,7 @@ export default function ProductsPage() {
     setLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const headers = { "Authorization": f"Bearer {token}" };
+      const headers = { "Authorization": `Bearer ${token}` };
 
       let url = `http://localhost:8000/api/products?limit=100`;
       if (search) url += `&search=${encodeURIComponent(search)}`;
@@ -75,7 +75,7 @@ export default function ProductsPage() {
       const resp = await fetch("http://localhost:8000/api/products/bulk-action", {
         method: "POST",
         headers: {
-          "Authorization": f"Bearer {token}",
+          "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({ product_ids: selectedIds, action })
