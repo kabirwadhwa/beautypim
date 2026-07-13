@@ -155,8 +155,11 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     raw_brand = str(raw_data.get(mapping.get("brand", "")))
     raw_desc = str(raw_data.get(mapping.get("description", "")))
     raw_ingr = str(raw_data.get(mapping.get("ingredients", "")))
-    raw_ean = str(raw_data.get(mapping.get("ean", ""))) if mapping.get("ean") in raw_data else None
-    raw_size = str(raw_data.get(mapping.get("size", ""))) if mapping.get("size") in raw_data else None
+    val_ean = raw_data.get(mapping.get("ean", ""))
+    raw_ean = None if val_ean is None or str(val_ean).strip().lower() in ["", "none", "nan", "null"] else str(val_ean).strip()
+    
+    val_size = raw_data.get(mapping.get("size", ""))
+    raw_size = None if val_size is None or str(val_size).strip().lower() in ["", "none", "nan", "null"] else str(val_size).strip()
 
     # Start Enrichment Run
     item.enrichment_status = "processing"
@@ -551,8 +554,13 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             
             raw_name = str(raw_data.get(mapping.get("product_name", "")))
             raw_brand = str(raw_data.get(mapping.get("brand", "")))
-            raw_ean = str(raw_data.get(mapping.get("ean", ""))) if mapping.get("ean") in raw_data else None
-            raw_size = str(raw_data.get(mapping.get("size", ""))) if mapping.get("size") in raw_data else None
+            
+            val_ean = raw_data.get(mapping.get("ean", ""))
+            raw_ean = None if val_ean is None or str(val_ean).strip().lower() in ["", "none", "nan", "null"] else str(val_ean).strip()
+            
+            val_size = raw_data.get(mapping.get("size", ""))
+            raw_size = None if val_size is None or str(val_size).strip().lower() in ["", "none", "nan", "null"] else str(val_size).strip()
+            
             raw_price = raw_data.get(mapping.get("price", ""))
             
             # Step 1: Matching / Deduplication
