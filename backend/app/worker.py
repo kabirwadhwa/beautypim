@@ -697,13 +697,21 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             db.commit()
 
         except Exception as e:
-            item.status = "failed"
-            item.enrichment_status = "permanent_failed"
-            item.failure_code = "processing_error"
-            item.failure_message = str(e)
-            job.processed_rows += 1
-            db.commit()
-            logger.error(f"Failed to process row {item.source_row_number}: {str(e)}")
+            db.rollback()
+            try:
+                # Refresh item/job reference after rollback
+                item = db.query(ImportJobItem).filter(ImportJobItem.id == item.id).first()
+                job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+                if item and job:
+                    item.status = "failed"
+                    item.enrichment_status = "permanent_failed"
+                    item.failure_code = "processing_error"
+                    item.failure_message = str(e)
+                    job.processed_rows += 1
+                    db.commit()
+            except Exception as inner_e:
+                logger.error(f"Failed to save failure status for row: {str(inner_e)}")
+            logger.error(f"Failed to process row {item.source_row_number if item else 'unknown'}: {str(e)}")
 
     job.status = "completed"
     db.commit()
