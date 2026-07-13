@@ -5,15 +5,13 @@ services:
     image: postgres:15-alpine
     container_name: beauty_pim_db
     environment:
-      POSTGRES_USER: pim_user
-      POSTGRES_PASSWORD: pim_password
-      POSTGRES_DB: beauty_pim
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pim_user -d beauty_pim"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -22,9 +20,11 @@ services:
     build: ./backend
     container_name: beauty_pim_backend
     environment:
-      - DATABASE_URL=postgresql://pim_user:pim_password@db:5432/beauty_pim
-      - SECRET_KEY=replace_this_with_a_secure_random_string_for_production_use
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=production
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - BATCH_SIZE=5
       - MAX_CONCURRENCY=3
       - LOG_LEVEL=INFO
@@ -33,21 +33,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
 
   frontend:
     build: ./frontend
     container_name: beauty_pim_frontend
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     ports:
       - "3000:3000"
     depends_on:
       - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
 
 volumes:
   pgdata:

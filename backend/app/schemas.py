@@ -301,6 +301,7 @@ class IngestProcessRequest(BaseModel):
     save_template: bool = False
     template_name: Optional[str] = None
     source_name: Optional[str] = None
+    identical_file_policy: str = "create_new_version"  # reject, resume_previous, create_new_version
 
 # Exports request
 class ExportRequest(BaseModel):

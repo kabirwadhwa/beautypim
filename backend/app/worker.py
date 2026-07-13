@@ -155,6 +155,8 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     raw_brand = str(raw_data.get(mapping.get("brand", "")))
     raw_desc = str(raw_data.get(mapping.get("description", "")))
     raw_ingr = str(raw_data.get(mapping.get("ingredients", "")))
+    raw_ean = str(raw_data.get(mapping.get("ean", ""))) if mapping.get("ean") in raw_data else None
+    raw_size = str(raw_data.get(mapping.get("size", ""))) if mapping.get("size") in raw_data else None
 
     # Start Enrichment Run
     item.enrichment_status = "processing"
@@ -235,6 +237,23 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             run_id=run_id
         )
 
+    # Write warning observations
+    for field in ["pregnancy_warning_observation", "allergen_warning_observation"]:
+        field_data = enrichment_result.get(field, {})
+        if field_data:
+            create_field_value_version(
+                db=db,
+                canonical_product_id=item.canonical_product_id,
+                product_variant_id=None,
+                field_name=field,
+                value=field_data,
+                source_type="ai_inference",
+                source_ref=source_ref,
+                confidence=field_data.get("confidence", 0.0),
+                status="processed",
+                run_id=run_id
+            )
+
     # Save formulation
     content_hash = hashlib.sha256(raw_ingr.encode('utf-8')).hexdigest()
     formulation = Formulation(
@@ -282,8 +301,24 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         db.add(form_ing)
 
     # Validation Checks
-    # Check 1: EAN missing validation warning
+    # Clean/delete existing system validation issues for this item
+    if item.canonical_product_id:
+        db.query(ValidationIssue).filter(
+            ValidationIssue.canonical_product_id == item.canonical_product_id,
+            ValidationIssue.created_by_type == "system"
+        ).delete()
+    if item.product_variant_id:
+        db.query(ValidationIssue).filter(
+            ValidationIssue.product_variant_id == item.product_variant_id,
+            ValidationIssue.created_by_type == "system"
+        ).delete()
+
+    from app.services.deduplication import normalize_volume
+    import re
+
     variant = db.query(ProductVariant).filter(ProductVariant.id == item.product_variant_id).first()
+    
+    # 1. EAN missing warning
     if variant and not variant.gtin:
         issue = ValidationIssue(
             id=uuid.uuid4(),
@@ -292,6 +327,163 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             severity="warning",
             issue_type="missing_ean",
             message="Variant has no GTIN/EAN code.",
+            created_by_type="system"
+        )
+        db.add(issue)
+        
+    # 2. Invalid GTIN
+    if variant and variant.gtin:
+        clean_gtin = variant.gtin.strip()
+        if not (clean_gtin.isdigit() and len(clean_gtin) in [8, 12, 13, 14]):
+            issue = ValidationIssue(
+                id=uuid.uuid4(),
+                product_variant_id=item.product_variant_id,
+                field_name="gtin",
+                severity="warning",
+                issue_type="invalid_gtin",
+                message=f"GTIN/EAN '{variant.gtin}' is invalid. Must be 8, 12, 13, or 14 digits.",
+                created_by_type="system"
+            )
+            db.add(issue)
+
+    # 3. Invalid URL
+    raw_url = raw_data.get(mapping.get("product_url", ""))
+    if raw_url:
+        url_str = str(raw_url).strip()
+        if url_str and not (url_str.startswith("http://") or url_str.startswith("https://")):
+            issue = ValidationIssue(
+                id=uuid.uuid4(),
+                canonical_product_id=item.canonical_product_id,
+                field_name="product_url",
+                severity="warning",
+                issue_type="invalid_url",
+                message=f"Product URL '{raw_url}' is invalid.",
+                created_by_type="system"
+            )
+            db.add(issue)
+
+    # 4. Invalid price
+    raw_price = raw_data.get(mapping.get("price", ""))
+    if raw_price is not None:
+        price_str = str(raw_price).strip()
+        if price_str:
+            try:
+                price_val = float(price_str)
+                if price_val <= 0:
+                    raise ValueError()
+            except ValueError:
+                issue = ValidationIssue(
+                    id=uuid.uuid4(),
+                    canonical_product_id=item.canonical_product_id,
+                    field_name="price",
+                    severity="warning",
+                    issue_type="invalid_price",
+                    message=f"Price '{raw_price}' is invalid. Must be a positive number.",
+                    created_by_type="system"
+                )
+                db.add(issue)
+
+    # 5. Invalid size
+    if raw_size:
+        size_val = normalize_volume(raw_size)
+        if size_val is None:
+            issue = ValidationIssue(
+                id=uuid.uuid4(),
+                product_variant_id=item.product_variant_id,
+                field_name="size",
+                severity="warning",
+                issue_type="invalid_size",
+                message=f"Size/volume '{raw_size}' is invalid or cannot be parsed.",
+                created_by_type="system"
+            )
+            db.add(issue)
+
+    # 6. Fragrance-free claims vs Parfum in ingredients
+    claims_str = str(raw_data.get("claims", "")).lower()
+    desc_str = str(raw_data.get("description", "")).lower()
+    ing_str = str(raw_data.get("ingredients", "")).lower()
+    
+    is_fragrance_free = "fragrance-free" in claims_str or "fragrance-free" in desc_str or "fragrance free" in claims_str or "fragrance free" in desc_str
+    frag_pres = enrichment_result.get("fragrance_present", {})
+    if isinstance(frag_pres, dict) and frag_pres.get("value") == "no":
+        is_fragrance_free = True
+        
+    if is_fragrance_free:
+        if any(x in ing_str for x in ["parfum", "fragrance", "perfume", "aroma"]):
+            issue = ValidationIssue(
+                id=uuid.uuid4(),
+                canonical_product_id=item.canonical_product_id,
+                field_name="ingredients",
+                severity="warning",
+                issue_type="conflicting_information",
+                message="Product claims to be fragrance-free, but ingredients contain fragrance components (e.g. Parfum).",
+                created_by_type="system"
+            )
+            db.add(issue)
+
+    # 7. Alcohol-free claims vs Alcohol Denat. in ingredients
+    is_alcohol_free = "alcohol-free" in claims_str or "alcohol-free" in desc_str or "alcohol free" in claims_str or "alcohol free" in desc_str
+    alc_free_field = enrichment_result.get("alcohol_free", {})
+    if isinstance(alc_free_field, dict) and alc_free_field.get("value") == "yes":
+        is_alcohol_free = True
+        
+    if is_alcohol_free:
+        has_drying_alcohol = False
+        if "alcohol denat" in ing_str or "sd alcohol" in ing_str or "ethanol" in ing_str or "ethyl alcohol" in ing_str:
+            has_drying_alcohol = True
+        else:
+            for m in re.finditer(r"\b(\w+\s+)?alcohol\b", ing_str):
+                prefix = m.group(1) or ""
+                prefix = prefix.strip()
+                if prefix not in ["cetearyl", "cetyl", "stearyl", "behenyl", "benzyl", "lanolin", "myristyl", "isopropyl"]:
+                    has_drying_alcohol = True
+                    break
+        if has_drying_alcohol:
+            issue = ValidationIssue(
+                id=uuid.uuid4(),
+                canonical_product_id=item.canonical_product_id,
+                field_name="ingredients",
+                severity="warning",
+                issue_type="conflicting_information",
+                message="Product claims to be alcohol-free, but ingredients contain drying alcohols (e.g. Alcohol Denat.).",
+                created_by_type="system"
+            )
+            db.add(issue)
+
+    # 8. Missing brand (BLOCKING severity)
+    if not raw_brand or raw_brand.strip().lower() in ["", "unknown", "missing"]:
+        issue = ValidationIssue(
+            id=uuid.uuid4(),
+            canonical_product_id=item.canonical_product_id,
+            field_name="brand",
+            severity="blocking",
+            issue_type="missing_brand",
+            message="Product brand is missing or unknown. This blocks approval.",
+            created_by_type="system"
+        )
+        db.add(issue)
+
+    # 9. Sparse row (BLOCKING severity)
+    is_sparse = False
+    if not raw_name or raw_name.strip() == "":
+        is_sparse = True
+    else:
+        empty_count = 0
+        if not raw_desc or raw_desc.strip() == "": empty_count += 1
+        if not raw_ingr or raw_ingr.strip() == "": empty_count += 1
+        if not raw_ean or raw_ean.strip() == "": empty_count += 1
+        if not raw_size or raw_size.strip() == "": empty_count += 1
+        if empty_count >= 3:
+            is_sparse = True
+            
+    if is_sparse:
+        issue = ValidationIssue(
+            id=uuid.uuid4(),
+            canonical_product_id=item.canonical_product_id,
+            field_name="product_name",
+            severity="blocking",
+            issue_type="sparse_row",
+            message="Product row is sparse (missing crucial metadata fields). This blocks approval.",
             created_by_type="system"
         )
         db.add(issue)
@@ -330,14 +522,28 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
 
     mapping = job.column_mapping
 
-    items = db.query(ImportJobItem).filter(
-        ImportJobItem.import_job_id == job_id,
-        ImportJobItem.status == "pending"
-    ).all()
+    # First run stale job recovery to make sure no items are orphaned
+    recover_stale_job_items(db)
 
-    for item in items:
+    while True:
+        # Atomic claim of a single item
+        if db.bind.dialect.name == "postgresql":
+            item = db.query(ImportJobItem).filter(
+                ImportJobItem.import_job_id == job_id,
+                ImportJobItem.status == "pending"
+            ).with_for_update(skip_locked=True).first()
+        else:
+            item = db.query(ImportJobItem).filter(
+                ImportJobItem.import_job_id == job_id,
+                ImportJobItem.status == "pending"
+            ).first()
+
+        if not item:
+            break
+
         try:
             item.status = "processing"
+            item.started_at = datetime.utcnow()
             db.commit()
 
             listing = db.query(SourceListing).filter(SourceListing.id == item.source_listing_id).first()
@@ -368,6 +574,39 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
                 continue
                 
             elif match_status in ["exact_match", "deterministic_match", "candidate"]:
+                # Auto-create missing variant if size is new
+                if not matched_variant_id and matched_canonical_id:
+                    # check if a variant with the same size/gtin already exists
+                    variant = None
+                    if raw_ean:
+                        variant = db.query(ProductVariant).filter(
+                            ProductVariant.gtin == raw_ean,
+                            ProductVariant.is_deleted == False
+                        ).first()
+                    if not variant and raw_size:
+                        # Find by equivalent size
+                        from app.services.deduplication import is_size_equivalent
+                        all_vars = db.query(ProductVariant).filter(
+                            ProductVariant.canonical_product_id == matched_canonical_id,
+                            ProductVariant.is_deleted == False
+                        ).all()
+                        for v in all_vars:
+                            if is_size_equivalent(v.size, raw_size):
+                                variant = v
+                                break
+                    
+                    if not variant:
+                        variant = ProductVariant(
+                            id=uuid.uuid4(),
+                            canonical_product_id=matched_canonical_id,
+                            variant_name=raw_size or "Standard Size",
+                            gtin=raw_ean,
+                            size=raw_size
+                        )
+                        db.add(variant)
+                        db.flush()
+                    matched_variant_id = variant.id
+
                 item.canonical_product_id = matched_canonical_id
                 item.product_variant_id = matched_variant_id
                 item.status = "enriching"
@@ -461,11 +700,27 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
     job.status = "completed"
     db.commit()
 
+def recover_stale_job_items(db: Session, timeout_seconds: int = 600):
+    """Finds items stuck in 'processing' or 'enriching' for longer than the timeout and resets them back to 'pending'."""
+    cutoff = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+    stale_items = db.query(ImportJobItem).filter(
+        ImportJobItem.status.in_(["processing", "enriching"]),
+        ImportJobItem.updated_at <= cutoff
+    ).all()
+    for item in stale_items:
+        item.status = "pending"
+        item.enrichment_status = "not_requested"
+        logger.warning(f"Reset stale ImportJobItem {item.id} back to pending (timeout exceeded)")
+    if stale_items:
+        db.commit()
+
 def recover_unfinished_jobs():
     """Recovers and processes pending/processing jobs upon application startup.
     """
     db = SessionLocal()
     try:
+        recover_stale_job_items(db)
+        
         # Find crashed jobs
         jobs = db.query(ImportJob).filter(
             ImportJob.status.in_(["pending", "processing"])

@@ -65,6 +65,44 @@ def normalize_text(text: str) -> str:
         return ""
     return "".join(c.lower() for c in text if c.isalnum() or c.isspace()).strip()
 
+import re
+
+def normalize_volume(size_str: str) -> Optional[float]:
+    """Normalizes volume size string to milliliters (ml).
+    Supports ml, l, oz, fl. oz, floz.
+    """
+    if not size_str:
+        return None
+    s = size_str.lower().strip()
+    match = re.match(r"([0-9]+(?:\.[0-9]+)?)\s*(ml|l|oz|fl\s*oz|floz|g|kg|piece|pcs|ml|ml|oz|oz|ml)", s)
+    if not match:
+        match_num = re.search(r"([0-9]+(?:\.[0-9]+)?)", s)
+        if match_num:
+            return float(match_num.group(1))
+        return None
+        
+    val = float(match.group(1))
+    unit = match.group(2).replace(" ", "")
+    
+    if unit in ["ml"]:
+        return val
+    elif unit in ["l"]:
+        return val * 1000.0
+    elif unit in ["oz", "floz", "floz"]:
+        # 1 fl oz = 29.5735 ml. Let's round to a clean standard
+        ml_val = val * 29.5735
+        return round(ml_val)
+    return val
+
+def is_size_equivalent(size1: str, size2: str) -> bool:
+    if not size1 or not size2:
+        return False
+    v1 = normalize_volume(size1)
+    v2 = normalize_volume(size2)
+    if v1 is None or v2 is None:
+        return False
+    return abs(v1 - v2) <= max(3.0, 0.05 * v1)
+
 def evaluate_match(
     db: Session,
     raw_name: str,
@@ -118,11 +156,14 @@ def evaluate_match(
     if best_score > 0.98:
         # Check if variant size matches
         if raw_size:
-            exact_variant = db.query(ProductVariant).filter(
+            variants = db.query(ProductVariant).filter(
                 ProductVariant.canonical_product_id == best_prod.id,
-                ProductVariant.size == raw_size,
                 ProductVariant.is_deleted == False
-            ).first()
+            ).all()
+            for v in variants:
+                if is_size_equivalent(v.size, raw_size):
+                    exact_variant = v
+                    break
         
         # Rule: Exact Brand, exact Name, size compatible -> deterministic_match
         return "deterministic_match", best_score, best_prod.id, (exact_variant.id if exact_variant else None)

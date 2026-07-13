@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: beauty_pim_db_dev
+    environment:
+      POSTGRES_USER: pim_user
+      POSTGRES_PASSWORD: pim_password
+      POSTGRES_DB: beauty_pim
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pim_user -d beauty_pim"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: beauty_pim_backend_dev
+    environment:
+      - DATABASE_URL=postgresql://pim_user:pim_password@db:5432/beauty_pim
+      - SECRET_KEY=beauty_pim_super_secret_key_change_in_production
+      - ENVIRONMENT=development
+      - ALLOW_INITIAL_ADMIN_BOOTSTRAP=true
+      - INITIAL_ADMIN_BOOTSTRAP_TOKEN=dev_bootstrap_token
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BATCH_SIZE=5
+      - MAX_CONCURRENCY=3
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    container_name: beauty_pim_frontend_dev
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  pgdata_dev:

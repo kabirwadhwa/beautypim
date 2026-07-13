@@ -14,6 +14,9 @@ from app.schemas import ProductOut, ProductDetailOut, ProductEdit
 from app.worker import record_audit, process_item_enrichment, create_field_value_version
 from pydantic import BaseModel
 
+from app.limiter import rate_limit
+from app.config import settings
+
 class BulkActionRequest(BaseModel):
     product_ids: List[uuid.UUID]
     action: str
@@ -145,7 +148,7 @@ def get_product_detail(
         validation_issues=issues
     )
 
-@router.put("/{product_id}", response_model=ProductDetailOut)
+@router.put("/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(rate_limit("edit_product", "30/minute"))])
 def edit_product_field(
     product_id: uuid.UUID,
     edit_in: ProductEdit,

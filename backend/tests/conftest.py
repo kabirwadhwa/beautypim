@@ -25,13 +25,13 @@ def setup_db():
     # Seed first admin
     admin = User(
         email="admin@test.com",
-        hashed_password=get_password_hash("password123"),
+        hashed_password=get_password_hash("securepassword123"),
         role="admin"
     )
     # Seed a viewer
     viewer = User(
         email="viewer@test.com",
-        hashed_password=get_password_hash("password123"),
+        hashed_password=get_password_hash("securepassword123"),
         role="viewer"
     )
     db.add(admin)

@@ -15,6 +15,34 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
+    # Deployment environment
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    
+    # Account Bootstrap Options
+    ALLOW_INITIAL_ADMIN_BOOTSTRAP: bool = os.getenv("ALLOW_INITIAL_ADMIN_BOOTSTRAP", "false").lower() in ("true", "1")
+    INITIAL_ADMIN_BOOTSTRAP_TOKEN: Optional[str] = os.getenv("INITIAL_ADMIN_BOOTSTRAP_TOKEN", None)
+    
+    # Rate Limits (hits/minute)
+    RATE_LIMIT_LOGIN: str = os.getenv("RATE_LIMIT_LOGIN", "20/minute")
+    RATE_LIMIT_UPLOADS: str = os.getenv("RATE_LIMIT_UPLOADS", "10/minute")
+    RATE_LIMIT_PROCESS: str = os.getenv("RATE_LIMIT_PROCESS", "5/minute")
+    
+    # Webhook SSRF Options
+    WEBHOOK_ALLOWED_DOMAINS: Optional[str] = os.getenv("WEBHOOK_ALLOWED_DOMAINS", None)
+    
+    def __init__(self, **values):
+        super().__init__(**values)
+        is_prod = self.ENVIRONMENT == "production" or self.DATABASE_URL.startswith("postgresql")
+        if is_prod:
+            defaults = [
+                "beauty_pim_super_secret_key_change_in_production",
+                "replace_this_with_a_secure_random_string_for_production_use"
+            ]
+            if not self.SECRET_KEY or self.SECRET_KEY in defaults or len(self.SECRET_KEY) < 32:
+                raise ValueError(
+                    "Production SECRET_KEY must be set, not use default keys, and be at least 32 characters."
+                )
+    
     # Gemini AI API
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
