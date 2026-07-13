@@ -145,12 +145,18 @@ def process_ingest(
         job.total_rows = total_rows
         db.commit()
     except Exception as e:
-        job.status = "failed"
-        job.error_message = f"Failed during ingest parsing: {str(e)}"
-        db.commit()
+        db.rollback()
+        try:
+            db.query(ImportJob).filter(ImportJob.id == job.id).update({
+                "status": "failed",
+                "error_message": f"Failed during ingest parsing: {str(e)}"
+            })
+            db.commit()
+        except Exception:
+            db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=job.error_message
+            detail=f"Failed during ingest parsing: {str(e)}"
         )
 
     # Dispatch to background task worker thread
