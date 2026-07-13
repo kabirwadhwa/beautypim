@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     GEMINI_MODEL_VERSION: str = "2.5"
+    
+    # OpenAI API
+    OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", None)
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    
     PROMPT_VERSION: str = "1.0"
     SCHEMA_VERSION: str = "1.0"
     

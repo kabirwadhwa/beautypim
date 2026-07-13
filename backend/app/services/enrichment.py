@@ -208,7 +208,117 @@ def run_ai_enrichment(
 
     run_id = uuid.uuid4()
     
-    # 1. Fallback if Gemini key is missing
+    # 1. OpenAI Flow if OpenAI key is present
+    if settings.OPENAI_API_KEY:
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        system_prompt = (
+            "You are an expert Cosmetic Chemist and Beauty PIM Assistant. Extract structured beauty data. "
+            "Strictly return JSON matching the specified JSON schema. "
+            "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
+            "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
+            "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes."
+            f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
+        )
+        
+        prompt = f"Analyze the following beauty product and enrich its metadata:\n\n{input_text}"
+        
+        payload = {
+            "model": settings.OPENAI_MODEL,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response_json = response.json()
+            
+            if "error" in response_json:
+                raise Exception(f"OpenAI API Error: {response_json['error'].get('message', 'Unknown error')}")
+            if response.status_code != 200:
+                raise Exception(f"OpenAI API returned status code {response.status_code}: {response.text}")
+                
+            candidate_text = response_json["choices"][0]["message"]["content"]
+            
+            prompt_t = response_json.get("usage", {}).get("prompt_tokens", calculate_token_count_rough(prompt))
+            complete_t = response_json.get("usage", {}).get("completion_tokens", calculate_token_count_rough(candidate_text))
+            cost = (prompt_t * 0.00015 / 1000) + (complete_t * 0.0006 / 1000)
+            
+            parsed_data = json.loads(candidate_text)
+            parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
+            
+            run_record = EnrichmentRun(
+                id=run_id,
+                import_job_id=import_job_id,
+                import_job_item_id=import_job_item_id,
+                source_listing_id=source_listing_id,
+                canonical_product_id=canonical_product_id,
+                product_variant_id=product_variant_id,
+                parent_enrichment_run_id=parent_enrichment_run_id,
+                provider="OpenAI",
+                model=settings.OPENAI_MODEL,
+                model_version="1.0",
+                prompt_version=settings.PROMPT_VERSION,
+                schema_version=settings.SCHEMA_VERSION,
+                status="success",
+                processing_time_ms=int(response.elapsed.total_seconds() * 1000),
+                prompt_tokens=prompt_t,
+                completion_tokens=complete_t,
+                estimated_cost=cost,
+                attempt_number=attempt,
+                input_content_hash=input_content_hash,
+                raw_response=candidate_text
+            )
+            db.add(run_record)
+            db.commit()
+            return parsed_data, run_id
+            
+        except Exception as e:
+            try:
+                db.rollback()
+                run_record = EnrichmentRun(
+                    id=run_id,
+                    import_job_id=import_job_id,
+                    import_job_item_id=import_job_item_id,
+                    source_listing_id=source_listing_id,
+                    canonical_product_id=canonical_product_id,
+                    product_variant_id=product_variant_id,
+                    parent_enrichment_run_id=parent_enrichment_run_id,
+                    provider="OpenAI",
+                    model=settings.OPENAI_MODEL,
+                    model_version="1.0",
+                    prompt_version=settings.PROMPT_VERSION,
+                    schema_version=settings.SCHEMA_VERSION,
+                    status="failed",
+                    error_details=str(e),
+                    attempt_number=attempt,
+                    input_content_hash=input_content_hash,
+                    validation_errors={"error": str(e)}
+                )
+                db.add(run_record)
+                db.commit()
+            except Exception as db_err:
+                db.rollback()
+                print(f"Failed to record OpenAI run: {db_err}")
+                
+            if attempt < 2:
+                return run_ai_enrichment(
+                    db, name, brand, description, raw_ingredients,
+                    import_job_id, import_job_item_id, source_listing_id,
+                    canonical_product_id, product_variant_id,
+                    parent_enrichment_run_id=run_id, attempt=attempt + 1
+                )
+            fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+            return fallback_data, run_id
+
+    # 2. Fallback if Gemini key is missing
     if not settings.GEMINI_API_KEY:
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
         run_record = EnrichmentRun(
@@ -238,7 +348,7 @@ def run_ai_enrichment(
         db.commit()
         return fallback_data, run_id
 
-    # 2. API Invocations Setup
+    # 3. Gemini Invocations Setup
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent?key={settings.GEMINI_API_KEY}"
     
     system_prompt = (
