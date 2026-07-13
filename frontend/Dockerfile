@@ -7,6 +7,12 @@ RUN npm install
 
 COPY . .
 
-# We compile at runtime to ensure Next.js has access to environment variables injected on boot
+# Declare build arguments injected by Railway during compilation
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
+# Build the Next.js application on high-memory build servers
+RUN npm run build
+
 EXPOSE 3000
-CMD ["sh", "-c", "npm run build && npm start"]
+CMD ["npm", "start"]
