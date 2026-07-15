@@ -4,6 +4,11 @@ import json
 import uuid
 from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, User
 
+def test_database_dialect_matches_environment(db):
+    dialect_name = db.bind.dialect.name
+    print(f"DIALECT_NAME: {dialect_name}")
+    assert dialect_name in ["sqlite", "postgresql"]
+
 def get_admin_token(client: TestClient) -> str:
     resp = client.post(
         "/api/auth/token",

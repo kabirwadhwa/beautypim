@@ -3,10 +3,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 import os
+from alembic.config import Config
+from alembic import command
 
 # Set environment before loading modules
-os.environ["SECRET_KEY"] = "testsecretkeytestsecretkeytestsecretkey"
-os.environ["DATABASE_URL"] = "sqlite:///./test_beauty_pim.db"
+os.environ.setdefault("SECRET_KEY", "testsecretkeytestsecretkeytestsecretkey")
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_beauty_pim.db")
 os.environ["ENVIRONMENT"] = "testing"
 
 from app.database import Base, get_db
@@ -15,13 +17,21 @@ from app.models import User
 from app.auth import get_password_hash
 
 # Create test DB
-TEST_DATABASE_URL = "sqlite:///./test_beauty_pim.db"
-engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+TEST_DATABASE_URL = os.environ["DATABASE_URL"]
+connect_args = {}
+if TEST_DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+
+engine = create_engine(TEST_DATABASE_URL, connect_args=connect_args)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():
-    Base.metadata.create_all(bind=engine)
+    # Run migrations using Alembic instead of create_all
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
+    command.upgrade(alembic_cfg, "head")
+
     db = TestingSessionLocal()
     # Seed first admin
     admin = User(
@@ -48,9 +58,14 @@ def setup_db():
     db.close()
     yield
     Base.metadata.drop_all(bind=engine)
-    # Remove file
-    if os.path.exists("./test_beauty_pim.db"):
-        os.remove("./test_beauty_pim.db")
+    # Remove file if SQLite
+    if TEST_DATABASE_URL.startswith("sqlite"):
+        db_path = TEST_DATABASE_URL.replace("sqlite:///", "")
+        if os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except Exception:
+                pass
 
 @pytest.fixture
 def db():
