@@ -37,8 +37,26 @@ for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     l.handlers = []
     l.propagate = True
 
+def run_migrations():
+    import os
+    from alembic.config import Config
+    from alembic import command
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ini_path = os.path.join(base_dir, "alembic.ini")
+        alembic_cfg = Config(ini_path)
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+        logger.info("Running database migrations on startup...")
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations completed successfully.")
+    except Exception as e:
+        logger.error(f"Failed to run database migrations: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run migrations programmatically
+    run_migrations()
+    
     # Create tables automatically (zero-config SQLite/PostgreSQL boot)
     Base.metadata.create_all(bind=engine)
     
