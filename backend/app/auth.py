@@ -3,7 +3,8 @@ import uuid
 from typing import Optional, List
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -90,7 +91,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
-    except JWTError:
+    except PyJWTError:
         raise credentials_exception
     
     user = db.query(User).filter(User.email == normalize_email(email)).first()
