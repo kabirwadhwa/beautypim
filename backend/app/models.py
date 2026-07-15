@@ -13,11 +13,42 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False) # admin, editor, viewer
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+    invited_by_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    accepted_invitation_at = Column(DateTime(timezone=True), nullable=True)
+    disabled_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint(role.in_(['admin', 'editor', 'viewer']), name='check_user_role'),
+    )
+
+class UserInvitation(Base):
+    __tablename__ = 'user_invitations'
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, index=True)
+    role = Column(String(50), nullable=False) # admin, editor, viewer
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    invited_by_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    status = Column(String(50), nullable=False, default='pending') # pending, accepted, revoked, expired
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    last_sent_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resend_count = Column(Integer, default=0, nullable=False)
+    email_delivery_status = Column(String(50), nullable=True) # sent, failed
+    email_delivery_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(role.in_(['admin', 'editor', 'viewer']), name='check_invitation_role'),
+        CheckConstraint(status.in_(['pending', 'accepted', 'revoked', 'expired']), name='check_invitation_status'),
+        Index('uq_invitation_pending_email', 'email', unique=True, 
+              sqlite_where=text("status = 'pending'"),
+              postgresql_where=text("status = 'pending'")),
     )
 
 class MappingTemplate(Base):
@@ -352,8 +383,12 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
-        CheckConstraint(actor_type.in_(['user', 'system', 'ai', 'rule']), name='check_audit_actor_type'),
-        CheckConstraint(action.in_(['create', 'update', 'merge', 'approve', 'reject', 'override']), name='check_audit_action_type'),
+        CheckConstraint(actor_type.in_(['user', 'system', 'ai', 'rule', 'invited_user']), name='check_audit_actor_type'),
+        CheckConstraint(action.in_([
+            'create', 'update', 'merge', 'approve', 'reject', 'override',
+            'invitation_created', 'invitation_resent', 'invitation_revoked', 'invitation_accepted',
+            'user_role_changed', 'user_disabled', 'user_enabled'
+        ]), name='check_audit_action_type'),
     )
 
 class CanonicalProductMerge(Base):

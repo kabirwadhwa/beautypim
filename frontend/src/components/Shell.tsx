@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { 
   LayoutDashboard, FileInput, TableProperties, Download, 
-  Settings, LogOut, ShieldAlert, Sparkles 
+  Settings, LogOut, ShieldAlert, Sparkles, Users 
 } from 'lucide-react';
 import styles from '../app/page.module.css';
 
@@ -50,6 +50,10 @@ export default function Shell({ children }: ShellProps) {
     { name: 'Export Center', path: '/exports', icon: Download },
     { name: 'Taxonomy Settings', path: '/settings/taxonomies', icon: Settings },
   ];
+
+  if (role === 'admin') {
+    navItems.push({ name: 'Team & Access', path: '/settings/team', icon: Users });
+  }
 
   return (
     <div className={styles.shell}>

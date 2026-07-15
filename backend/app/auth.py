@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import uuid
 from typing import Optional, List
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -93,7 +94,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     
     user = db.query(User).filter(User.email == normalize_email(email)).first()
-    if user is None:
+    if user is None or not user.is_active:
         raise credentials_exception
     return user
 
@@ -113,3 +114,36 @@ class RoleChecker:
 require_admin = RoleChecker(["admin"])
 require_editor_or_admin = RoleChecker(["admin", "editor"])
 require_viewer_or_above = RoleChecker(["admin", "editor", "viewer"])
+
+def log_audit_event(
+    db: Session,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    display_label: Optional[str],
+    action: str,
+    before: Optional[dict] = None,
+    after: Optional[dict] = None,
+    changed: Optional[dict] = None,
+    user_id: Optional[uuid.UUID] = None,
+    actor_type: str = "user",
+    reason: Optional[str] = None,
+    request_id: Optional[str] = None
+):
+    from app.models import AuditLog
+    audit = AuditLog(
+        id=uuid.uuid4(),
+        entity_type=entity_type,
+        entity_id=entity_id,
+        entity_display_label=display_label[:255] if display_label else None,
+        user_id=user_id,
+        actor_type=actor_type,
+        action=action,
+        before_snapshot=before,
+        after_snapshot=after,
+        changed_fields=changed or {},
+        reason=reason,
+        request_id=request_id
+    )
+    db.add(audit)
+    db.flush()
+    return audit

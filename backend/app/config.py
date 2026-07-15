@@ -66,6 +66,15 @@ class Settings(BaseSettings):
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Email & SMTP Settings
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3009")
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "localhost")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "1025"))
+    SMTP_TLS: bool = os.getenv("SMTP_TLS", "false").lower() in ("true", "1")
+    SMTP_USER: Optional[str] = os.getenv("SMTP_USER", None)
+    SMTP_PASSWORD: Optional[str] = os.getenv("SMTP_PASSWORD", None)
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "noreply@beautypim.com")
     
     # Business Rules & Validation (Hard UX requirements)
     MANDATORY_FIELDS: list[str] = os.getenv("MANDATORY_FIELDS", "brand,product_name").split(",")

@@ -16,6 +16,11 @@ class UserLogin(UserBase):
 class UserOut(UserBase):
     id: uuid.UUID
     role: str
+    is_active: bool
+    last_login_at: Optional[datetime] = None
+    invited_by_id: Optional[uuid.UUID] = None
+    accepted_invitation_at: Optional[datetime] = None
+    disabled_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
@@ -28,6 +33,43 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
+
+# User Invitation Schemas
+class UserInvitationCreate(BaseModel):
+    email: EmailStr
+    role: str
+
+class UserInvitationOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    role: str
+    status: str
+    expires_at: datetime
+    last_sent_at: datetime
+    resend_count: int
+    email_delivery_status: Optional[str] = None
+    email_delivery_error: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class UserInvitationValidate(BaseModel):
+    token: str
+
+class UserInvitationValidateResponse(BaseModel):
+    valid: bool
+    email: str
+    role: str
+    expires_at: datetime
+
+class UserInvitationAccept(BaseModel):
+    token: str
+    password: str
+    password_confirm: str
+
+class AdminUserUpdateRole(BaseModel):
+    role: str
 
 # Mapping Templates
 class MappingTemplateBase(BaseModel):
