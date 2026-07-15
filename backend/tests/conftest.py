@@ -34,8 +34,15 @@ def setup_db():
         hashed_password=get_password_hash("securepassword123"),
         role="viewer"
     )
+    # Seed an editor
+    editor = User(
+        email="editor@test.com",
+        hashed_password=get_password_hash("securepassword123"),
+        role="editor"
+    )
     db.add(admin)
     db.add(viewer)
+    db.add(editor)
     db.commit()
     db.close()
     yield
