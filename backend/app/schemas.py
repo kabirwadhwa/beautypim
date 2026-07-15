@@ -208,6 +208,56 @@ class BeautyProductEnrichmentSchema(BaseModel):
     
     ingredients_intelligence: List[IngredientIntelligenceSchema] = []
 
+class FieldEnrichmentMetadataOut(BaseModel):
+    enrichment_run_id: Optional[uuid.UUID] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    model_version: Optional[str] = None
+    prompt_version: Optional[str] = None
+    schema_version: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class EnrichmentMetadataSchema(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    prompt_version: Optional[str] = None
+    schema_version: Optional[str] = None
+    status: Optional[str] = None
+    tokens: Optional[int] = None
+    processing_time_ms: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class KeyIngredientOut(BaseModel):
+    name: str
+    normalized_inci_name: Optional[str] = None
+    functions: list[str] = Field(default_factory=list)
+    benefits: list[str] = Field(default_factory=list)
+    is_key_ingredient: bool
+    key_ingredient_status: Optional[str] = None
+    source_type: Optional[str] = None
+    evidence: list[Any] = Field(default_factory=list)
+    confidence: Optional[float] = None
+    formulation_reference: Optional[uuid.UUID] = None
+
+    class Config:
+        from_attributes = True
+
+class DynamicConcernOut(BaseModel):
+    concern_name: str
+    targeting_status: str
+    evidence: list[Any] = Field(default_factory=list)
+    confidence: Optional[float] = None
+    source: str
+
+    class Config:
+        from_attributes = True
+
 # Product Details output schemas
 class FieldValueOut(BaseModel):
     id: uuid.UUID
@@ -221,6 +271,17 @@ class FieldValueOut(BaseModel):
     enrichment_run_id: Optional[uuid.UUID] = None
     is_current: bool
     created_at: datetime
+    updated_at: datetime
+    
+    # Persisted AI Provenance
+    override_reason: Optional[str] = None
+    evidence: list[Any] = Field(default_factory=list)
+    reasoning_summary: Optional[str] = None
+    semantic_status: Optional[str] = None
+    semantic_status_type: Optional[str] = None
+    
+    # Per-field metadata
+    enrichment_run: Optional[FieldEnrichmentMetadataOut] = None
 
     class Config:
         from_attributes = True
@@ -266,7 +327,7 @@ class ValidationIssueOut(BaseModel):
 class ProductOut(BaseModel):
     id: uuid.UUID
     product_name: str
-    brand_name: str
+    brand_name: Optional[str] = None
     category_path: Optional[str] = None
     review_status: str
     is_deleted: bool
@@ -277,16 +338,46 @@ class ProductOut(BaseModel):
         from_attributes = True
 
 class ProductDetailOut(ProductOut):
-    brand_id: uuid.UUID
+    brand_id: Optional[uuid.UUID] = None
     category_id: Optional[uuid.UUID] = None
     reviewer_id: Optional[uuid.UUID] = None
-    variants: List[VariantOut] = []
-    formulations: List[FormulationOut] = []
-    field_values: List[FieldValueOut] = []
-    validation_issues: List[ValidationIssueOut] = []
+    variants: list[VariantOut] = Field(default_factory=list)
+    formulations: list[FormulationOut] = Field(default_factory=list)
+    field_values: list[FieldValueOut] = Field(default_factory=list)
+    validation_issues: list[ValidationIssueOut] = Field(default_factory=list)
+    
+    enrichment_metadata: Optional[EnrichmentMetadataSchema] = None
+    key_ingredients: list[KeyIngredientOut] = Field(default_factory=list)
+    dynamic_concerns: list[DynamicConcernOut] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
+
+EDITABLE_FIELDS_REGISTRY = {
+    "subcategory": str,
+    "product_type": str,
+    "gender_target": str,
+    "texture": str,
+    "application_area": str,
+    "target_audience": str,
+    "vegan": str,
+    "cruelty_free": str,
+    "paraben_free": str,
+    "sulfate_free": str,
+    "silicone_free": str,
+    "alcohol_free": str,
+    "fragrance_present": str,
+    "hydration": bool,
+    "anti_ageing": bool,
+    "pigmentation": bool,
+    "acne": bool,
+    "redness": bool,
+    "sensitivity": bool,
+    "scalp_care": bool,
+    "hair_growth": bool,
+    "fragrance": bool,
+    "freshness": bool
+}
 
 class ProductEdit(BaseModel):
     field_name: str

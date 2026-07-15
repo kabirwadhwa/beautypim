@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.enrichment import run_ai_enrichment
+from app.config import settings
 
 logger = logging.getLogger("worker")
 
@@ -46,6 +47,39 @@ def record_audit(
     db.add(audit)
     db.flush()
 
+def is_unknown_or_not_applicable(value: Any, status: Optional[str]) -> bool:
+    val_str = str(value).strip().lower() if value is not None else ""
+    status_str = str(status).strip().lower() if status is not None else ""
+    return (
+        val_str in ["", "unknown", "none", "nan", "null", "not_applicable"] or
+        status_str in ["unknown", "none", "nan", "null", "not_applicable"]
+    )
+
+def is_conflicting(value: Any, status: Optional[str]) -> bool:
+    val_str = str(value).strip().lower() if value is not None else ""
+    status_str = str(status).strip().lower() if status is not None else ""
+    return val_str == "conflicting" or status_str == "conflicting"
+
+def should_create_low_confidence_warning(
+    field_name: str,
+    value: Any,
+    status: Optional[str],
+    source_type: str,
+    confidence: Optional[float]
+) -> bool:
+    from app.config import settings
+    if source_type == "source_data":
+        return False
+    if is_unknown_or_not_applicable(value, status):
+        return False
+    if is_conflicting(value, status):
+        return False
+    if field_name not in settings.LOW_CONFIDENCE_FIELDS:
+        return False
+    if confidence is not None and confidence < settings.LOW_CONFIDENCE_THRESHOLD:
+        return True
+    return False
+
 def map_ai_status_to_db(ai_status: str) -> str:
     mapping = {
         "explicit_brand_claim": "confirmed",
@@ -74,7 +108,11 @@ def create_field_value_version(
     source_ref: str,
     confidence: float,
     status: str,
-    run_id: Optional[uuid.UUID] = None
+    run_id: Optional[uuid.UUID] = None,
+    evidence: Optional[list] = None,
+    reasoning_summary: Optional[str] = None,
+    semantic_status: Optional[str] = None,
+    semantic_status_type: Optional[str] = None
 ):
     """Saves a candidate field value.
     Ensures that we do NOT overwrite or deactivate any existing human-approved edits.
@@ -139,7 +177,12 @@ def create_field_value_version(
         confidence_score=confidence,
         review_status=db_status,
         enrichment_run_id=run_id,
-        is_current=is_current
+        is_current=is_current,
+        override_reason=None,
+        evidence=evidence,
+        reasoning_summary=reasoning_summary,
+        semantic_status=semantic_status,
+        semantic_status_type=semantic_status_type
     )
     db.add(field_record)
 
@@ -189,6 +232,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     ]
     for field in core_categorical_fields:
         field_data = enrichment_result.get(field, {})
+        status = field_data.get("value_status", "unknown")
         create_field_value_version(
             db=db,
             canonical_product_id=item.canonical_product_id,
@@ -198,8 +242,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             source_type="ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),
-            status=field_data.get("value_status", "unknown"),
-            run_id=run_id
+            status=status,
+            run_id=run_id,
+            evidence=field_data.get("evidence", []),
+            reasoning_summary=field_data.get("reasoning_summary"),
+            semantic_status=status,
+            semantic_status_type="value_status"
         )
 
     core_claims_fields = [
@@ -208,6 +256,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     ]
     for field in core_claims_fields:
         field_data = enrichment_result.get(field, {})
+        status = field_data.get("claim_status", "unknown")
         create_field_value_version(
             db=db,
             canonical_product_id=item.canonical_product_id,
@@ -217,8 +266,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             source_type="ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),
-            status=field_data.get("claim_status", "unknown"),
-            run_id=run_id
+            status=status,
+            run_id=run_id,
+            evidence=field_data.get("evidence", []),
+            reasoning_summary=field_data.get("reasoning_summary"),
+            semantic_status=status,
+            semantic_status_type="claim_status"
         )
 
     core_concerns_fields = [
@@ -227,6 +280,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     ]
     for field in core_concerns_fields:
         field_data = enrichment_result.get(field, {})
+        status = field_data.get("targeting_status", "unknown")
         create_field_value_version(
             db=db,
             canonical_product_id=item.canonical_product_id,
@@ -236,8 +290,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             source_type="ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),
-            status=field_data.get("targeting_status", "unknown"),
-            run_id=run_id
+            status=status,
+            run_id=run_id,
+            evidence=field_data.get("evidence", []),
+            reasoning_summary=field_data.get("reasoning_summary"),
+            semantic_status=status,
+            semantic_status_type="targeting_status"
         )
 
     # Write warning observations
@@ -254,7 +312,11 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
                 source_ref=source_ref,
                 confidence=field_data.get("confidence", 0.0),
                 status="processed",
-                run_id=run_id
+                run_id=run_id,
+                evidence=field_data.get("evidence", []),
+                reasoning_summary=field_data.get("review_message"),
+                semantic_status="processed",
+                semantic_status_type="observation_status"
             )
 
     # Save formulation
@@ -291,6 +353,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             db.add(definition)
             db.flush()
 
+        evidence_list = ing.get("evidence", [])
+        if hasattr(evidence_list, "model_dump"):
+            evidence_list = [e.model_dump() for e in evidence_list]
+        elif isinstance(evidence_list, list):
+            evidence_list = [e if isinstance(e, dict) else (e.model_dump() if hasattr(e, "model_dump") else dict(e)) for e in evidence_list]
+
         form_ing = FormulationIngredient(
             id=uuid.uuid4(),
             formulation_id=formulation.id,
@@ -299,7 +367,9 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             position=pos + 1,
             is_key_ingredient=ing.get("is_key_ingredient", False),
             evidence_source="ai_inference",
-            confidence_score=ing.get("confidence", 0.0)
+            confidence_score=ing.get("confidence", 0.0),
+            evidence=evidence_list,
+            key_ingredient_status=ing.get("key_ingredient_status", "unknown")
         )
         db.add(form_ing)
 
@@ -338,11 +408,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     if variant and variant.gtin:
         clean_gtin = variant.gtin.strip()
         if not (clean_gtin.isdigit() and len(clean_gtin) in [8, 12, 13, 14]):
+            severity = "blocking" if settings.GTIN_MANDATORY else "warning"
             issue = ValidationIssue(
                 id=uuid.uuid4(),
                 product_variant_id=item.product_variant_id,
                 field_name="gtin",
-                severity="warning",
+                severity=severity,
                 issue_type="invalid_gtin",
                 message=f"GTIN/EAN '{variant.gtin}' is invalid. Must be 8, 12, 13, or 14 digits.",
                 created_by_type="system"
@@ -413,11 +484,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         
     if is_fragrance_free:
         if any(x in ing_str for x in ["parfum", "fragrance", "perfume", "aroma"]):
+            severity = "blocking" if "ingredients" in settings.MANDATORY_FIELDS else "warning"
             issue = ValidationIssue(
                 id=uuid.uuid4(),
                 canonical_product_id=item.canonical_product_id,
                 field_name="ingredients",
-                severity="warning",
+                severity=severity,
                 issue_type="conflicting_information",
                 message="Product claims to be fragrance-free, but ingredients contain fragrance components (e.g. Parfum).",
                 created_by_type="system"
@@ -442,31 +514,33 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
                     has_drying_alcohol = True
                     break
         if has_drying_alcohol:
+            severity = "blocking" if "ingredients" in settings.MANDATORY_FIELDS else "warning"
             issue = ValidationIssue(
                 id=uuid.uuid4(),
                 canonical_product_id=item.canonical_product_id,
                 field_name="ingredients",
-                severity="warning",
+                severity=severity,
                 issue_type="conflicting_information",
                 message="Product claims to be alcohol-free, but ingredients contain drying alcohols (e.g. Alcohol Denat.).",
                 created_by_type="system"
             )
             db.add(issue)
 
-    # 8. Missing brand (BLOCKING severity)
+    # 8. Missing brand (BLOCKING severity if configured as mandatory)
     if not raw_brand or raw_brand.strip().lower() in ["", "unknown", "missing"]:
+        severity = "blocking" if "brand" in settings.MANDATORY_FIELDS else "warning"
         issue = ValidationIssue(
             id=uuid.uuid4(),
             canonical_product_id=item.canonical_product_id,
             field_name="brand",
-            severity="blocking",
+            severity=severity,
             issue_type="missing_brand",
-            message="Product brand is missing or unknown. This blocks approval.",
+            message="Product brand is missing or unknown.",
             created_by_type="system"
         )
         db.add(issue)
 
-    # 9. Sparse row (BLOCKING severity)
+    # 9. Sparse row
     is_sparse = False
     if not raw_name or raw_name.strip() == "":
         is_sparse = True
@@ -480,28 +554,61 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             is_sparse = True
             
     if is_sparse:
+        severity = "blocking" if "product_name" in settings.MANDATORY_FIELDS else "warning"
         issue = ValidationIssue(
             id=uuid.uuid4(),
             canonical_product_id=item.canonical_product_id,
             field_name="product_name",
-            severity="blocking",
+            severity=severity,
             issue_type="sparse_row",
-            message="Product row is sparse (missing crucial metadata fields). This blocks approval.",
+            message="Product row is sparse (missing crucial metadata fields).",
             created_by_type="system"
         )
         db.add(issue)
 
-    # Check 2: Low-confidence field validation warning
-    low_conf_found = False
+    # 10. Missing required Category check
+    prod = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
+    if prod and prod.category_id is None:
+        severity = "blocking" if settings.CATEGORY_MANDATORY else "warning"
+        issue = ValidationIssue(
+            id=uuid.uuid4(),
+            canonical_product_id=item.canonical_product_id,
+            field_name="category_id",
+            severity=severity,
+            issue_type="missing_category",
+            message="Product category is missing.",
+            created_by_type="system"
+        )
+        db.add(issue)
+
+    # Check 2: Low-confidence field validation warning and conflicts check
     for field, field_data in enrichment_result.items():
-        if isinstance(field_data, dict) and "confidence" in field_data and field_data["confidence"] is not None:
-            if field_data["confidence"] < 0.6:
-                msg = f"Enriched field '{field}' has low confidence score ({field_data['confidence']})."
+        if isinstance(field_data, dict):
+            val = field_data.get("value")
+            status = field_data.get("value_status") or field_data.get("claim_status") or field_data.get("targeting_status")
+            confidence = field_data.get("confidence")
+            
+            # Check for conflict
+            if is_conflicting(val, status):
+                severity = "blocking" if field in settings.MANDATORY_FIELDS else "warning"
                 issue = ValidationIssue(
                     id=uuid.uuid4(),
                     canonical_product_id=item.canonical_product_id,
                     field_name=field,
-                    severity="informational",
+                    severity=severity,
+                    issue_type="conflicting_information",
+                    message=f"Enriched field '{field}' has conflicting values.",
+                    created_by_type="system"
+                )
+                db.add(issue)
+            # Check for low confidence warning on non-unknowns
+            elif should_create_low_confidence_warning(field, val, status, "ai_inference", confidence):
+                msg = f"Enriched field '{field}' has low confidence score ({confidence})."
+                issue = ValidationIssue(
+                    id=uuid.uuid4(),
+                    canonical_product_id=item.canonical_product_id,
+                    field_name=field,
+                    severity="warning",
                     issue_type="low_confidence_enrichment",
                     message=msg,
                     created_by_type="system"

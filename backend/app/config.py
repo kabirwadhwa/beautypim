@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     
+    # Business Rules & Validation (Hard UX requirements)
+    MANDATORY_FIELDS: list[str] = os.getenv("MANDATORY_FIELDS", "brand,product_name").split(",")
+    GTIN_MANDATORY: bool = os.getenv("GTIN_MANDATORY", "false").lower() in ("true", "1")
+    CATEGORY_MANDATORY: bool = os.getenv("CATEGORY_MANDATORY", "false").lower() in ("true", "1")
+    LOW_CONFIDENCE_THRESHOLD: float = float(os.getenv("LOW_CONFIDENCE_THRESHOLD", "0.6"))
+    LOW_CONFIDENCE_FIELDS: list[str] = os.getenv("LOW_CONFIDENCE_FIELDS", "subcategory,product_type,vegan,cruelty_free,fragrance_present").split(",")
+    MAX_OVERRIDE_REASON_LENGTH: int = int(os.getenv("MAX_OVERRIDE_REASON_LENGTH", "500"))
+    
     class Config:
         case_sensitive = True
 
