@@ -48,9 +48,22 @@ def run_migrations():
         alembic_cfg = Config(ini_path)
         alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
         
-        # Check if users table exists but alembic_version doesn't (existing DB)
         inspector = inspect(engine)
         tables = inspector.get_table_names()
+        
+        # Clean up partially created user_invitations if migration failed previously
+        if "users" in tables:
+            user_cols = [col["name"] for col in inspector.get_columns("users")]
+            if "is_active" not in user_cols and "user_invitations" in tables:
+                logger.info("Dropping partially created user_invitations table to enable clean migration upgrade...")
+                with engine.connect() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS user_invitations CASCADE"))
+                    conn.commit()
+        
+        # Reload inspector to reflect dropped table
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        
         if "users" in tables and "alembic_version" not in tables:
             logger.info("Existing database detected. Stamping to 57b63617a0af before upgrade...")
             command.stamp(alembic_cfg, "57b63617a0af")
@@ -118,9 +131,21 @@ def debug_db(db: Session = Depends(get_db)):
         alembic_cfg = Config(ini_path)
         alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
         
-        # Check if users table exists but alembic_version doesn't (existing DB)
         inspector = inspect(engine)
         tables = inspector.get_table_names()
+        
+        # Clean up partially created user_invitations if migration failed previously
+        if "users" in tables:
+            user_cols = [col["name"] for col in inspector.get_columns("users")]
+            if "is_active" not in user_cols and "user_invitations" in tables:
+                with engine.connect() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS user_invitations CASCADE"))
+                    conn.commit()
+                    
+        # Reload inspector to reflect dropped table
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        
         if "users" in tables and "alembic_version" not in tables:
             command.stamp(alembic_cfg, "57b63617a0af")
             
