@@ -7,6 +7,7 @@ import os
 # Set environment before loading modules
 os.environ["SECRET_KEY"] = "testsecretkeytestsecretkeytestsecretkey"
 os.environ["DATABASE_URL"] = "sqlite:///./test_beauty_pim.db"
+os.environ["ENVIRONMENT"] = "testing"
 
 from app.database import Base, get_db
 from app.main import app
@@ -71,3 +72,8 @@ def client(db):
     app.dependency_overrides[get_db] = override_get_db
     yield TestClient(app)
     app.dependency_overrides.clear()
+
+@pytest.fixture(autouse=True)
+def clear_limiter():
+    from app.limiter import limiter
+    limiter.history.clear()

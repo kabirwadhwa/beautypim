@@ -344,3 +344,81 @@ def test_email_failure_records_delivery_failure(client: TestClient, test_users, 
         assert inv.status == "pending"
         assert inv.email_delivery_status == "failed"
         assert "SMTP Relay Timeout" in inv.email_delivery_error
+
+def test_list_users_endpoints(client: TestClient, test_users, auth_headers):
+    admin_headers = auth_headers("admin@test.com")
+    editor_headers = auth_headers("editor@test.com")
+    
+    # 1. Access checks
+    resp = client.get(f"{settings.API_V1_STR}/admin/users", headers=editor_headers)
+    assert resp.status_code == 403
+    
+    # 2. Get list without filters
+    resp = client.get(f"{settings.API_V1_STR}/admin/users", headers=admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 3
+    emails = [u["email"] for u in data["users"]]
+    assert "admin@test.com" in emails
+    
+    # 3. Filter by role
+    resp = client.get(f"{settings.API_V1_STR}/admin/users?role=admin", headers=admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert all(u["role"] == "admin" for u in data["users"])
+    
+    # 4. Filter by status
+    resp = client.get(f"{settings.API_V1_STR}/admin/users?status_filter=active", headers=admin_headers)
+    assert resp.status_code == 200
+    assert all(u["is_active"] is True for u in resp.json()["users"])
+    
+    # 5. Search filter
+    resp = client.get(f"{settings.API_V1_STR}/admin/users?search=admin", headers=admin_headers)
+    assert resp.status_code == 200
+    assert len(resp.json()["users"]) >= 1
+    assert "admin@test.com" in [u["email"] for u in resp.json()["users"]]
+
+def test_list_invitations_endpoint(client: TestClient, test_users, auth_headers, db: Session):
+    admin_headers = auth_headers("admin@test.com")
+    editor_headers = auth_headers("editor@test.com")
+    
+    # 1. Access checks
+    resp = client.get(f"{settings.API_V1_STR}/admin/invitations", headers=editor_headers)
+    assert resp.status_code == 403
+    
+    # 2. Create invitation to populate the list
+    with patch("app.services.email.SMTPEmailService.send_invitation"):
+        client.post(
+            f"{settings.API_V1_STR}/admin/invitations",
+            json={"email": "list_inv_guest@test.com", "role": "editor"},
+            headers=admin_headers
+        )
+        
+    # 3. Get list
+    resp = client.get(f"{settings.API_V1_STR}/admin/invitations", headers=admin_headers)
+    assert resp.status_code == 200
+    invs = resp.json()["invitations"]
+    assert len(invs) >= 1
+    assert "list_inv_guest@test.com" in [i["email"] for i in invs]
+
+def test_email_service_direct_call(db: Session):
+    from app.services.email import SMTPEmailService
+    service = SMTPEmailService()
+    
+    with patch("smtplib.SMTP") as mock_smtp:
+        mock_server = MagicMock()
+        mock_smtp.return_value = mock_server
+        
+        # Test success path
+        with patch("app.config.settings.ENVIRONMENT", "development"):
+            service.send_invitation(
+                to_email="test_recipient@test.com",
+                role="editor",
+                raw_token="token123",
+                expires_at=datetime.utcnow() + timedelta(days=1),
+                inviter_email="admin@test.com"
+            )
+            
+        mock_smtp.assert_called_once_with(settings.SMTP_HOST, settings.SMTP_PORT, timeout=5)
+        mock_server.sendmail.assert_called_once()
+        mock_server.quit.assert_called_once()
