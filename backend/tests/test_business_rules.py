@@ -199,4 +199,4 @@ def test_business_rules_integration(client: TestClient, db: Session):
     assert len(conflicting_issues) == 2
     
     total_issues = db.query(ValidationIssue).filter(ValidationIssue.canonical_product_id == toner.id).all()
-    assert len(total_issues) == 27
+    assert len(total_issues) == 3

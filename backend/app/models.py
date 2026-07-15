@@ -200,6 +200,8 @@ class FormulationIngredient(Base):
     is_key_ingredient = Column(Boolean, default=False, nullable=False)
     evidence_source = Column(String(255), nullable=True)
     confidence_score = Column(Numeric(3, 2), nullable=True)
+    evidence = Column(PortableJSON(), nullable=True)
+    key_ingredient_status = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -254,6 +256,11 @@ class FieldValue(Base):
     reviewer_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     enrichment_run_id = Column(GUID, ForeignKey('enrichment_runs.id', ondelete='SET NULL'), nullable=True)
     is_current = Column(Boolean, default=True, nullable=False)
+    override_reason = Column(Text, nullable=True)
+    evidence = Column(PortableJSON(), nullable=True)
+    reasoning_summary = Column(Text, nullable=True)
+    semantic_status = Column(String(100), nullable=True)
+    semantic_status_type = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -346,7 +353,7 @@ class AuditLog(Base):
 
     __table_args__ = (
         CheckConstraint(actor_type.in_(['user', 'system', 'ai', 'rule']), name='check_audit_actor_type'),
-        CheckConstraint(action.in_(['create', 'update', 'merge', 'approve', 'reject']), name='check_audit_action_type'),
+        CheckConstraint(action.in_(['create', 'update', 'merge', 'approve', 'reject', 'override']), name='check_audit_action_type'),
     )
 
 class CanonicalProductMerge(Base):

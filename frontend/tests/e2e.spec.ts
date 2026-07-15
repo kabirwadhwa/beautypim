@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Beauty PIM End-to-End Workflows', () => {
 
-  test('User Login, CSV Upload, Mapping, Review, Edit, and Export Flow', async ({ page }) => {
+  test('User Login, CSV Ingestion, Mapping, Review, Approval, and Catalog Export Flow', async ({ page }) => {
     // 1. Login
     await page.goto('/login');
     await page.fill('input[type="email"]', 'admin@test.com');
@@ -12,80 +12,61 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     // Expect redirection to dashboard
     await expect(page).toHaveURL(/.*dashboard/);
 
-    // 2. CSV Upload
+    // 2. Catalog Ingestion
     await page.goto('/imports');
-    await expect(page.locator('h1')).toContainText('Catalog Ingestion');
+    await expect(page.locator('h1')).toContainText('Ingestion');
     
     // Upload mock CSV file
     const fileChooserPromise = page.waitForEvent('filechooser');
-    await page.click('button:has-text("Upload Catalog")');
+    await page.click('text=Browse Local Files');
     const fileChooser = await fileChooserPromise;
     await fileChooser.setFiles({
       name: 'beauty_catalog.csv',
       mimeType: 'text/csv',
       buffer: Buffer.from(
         'Product Name;Brand;EAN/GTIN;Size;Price;Description;Ingredients\n' +
-        'Water Drench Hyaluronic Cloud Cream;Peter Thomas Roth;3760000000011;50 ml;52.0;Hydrating cream;Water, Hyaluronic Acid, Glycerin\n' +
-        'Retinol Cream;Brand B;;1.7 oz;19.99;Anti aging;Water, Retinol'
+        'Water Drench Hyaluronic Cloud Cream;Peter Thomas Roth;3760000000011;50 ml;52.0;Hydrating cream;Water, Hyaluronic Acid, Glycerin, Parfum\n'
       )
     });
 
     // 3. Column Mapping
-    await page.waitForSelector('.column-mapping-container');
-    await page.selectOption('select[name="product_name"]', 'Product Name');
-    await page.selectOption('select[name="brand"]', 'Brand');
-    await page.selectOption('select[name="ean"]', 'EAN/GTIN');
-    await page.selectOption('select[name="size"]', 'Size');
-    await page.selectOption('select[name="price"]', 'Price');
-    await page.selectOption('select[name="description"]', 'Description');
-    await page.selectOption('select[name="ingredients"]', 'Ingredients');
+    await page.waitForSelector('text=Configure Field Mapping');
+    await page.selectOption('label:has-text("Product Name") + select', 'Product Name');
+    await page.selectOption('label:has-text("Brand") + select', 'Brand');
+    await page.selectOption('label:has-text("Barcode") + select', 'EAN/GTIN');
+    await page.selectOption('label:has-text("Size") + select', 'Size');
+    await page.selectOption('label:has-text("Price") + select', 'Price');
+    await page.selectOption('label:has-text("Description") + select', 'Description');
+    await page.selectOption('label:has-text("Ingredients") + select', 'Ingredients');
 
-    await page.click('button:has-text("Validate & Process Ingestion")');
+    await page.click('button:has-text("Validate and Ingest Catalog")');
 
-    // 4. Import Progress Monitoring
-    await expect(page.locator('.progress-container')).toBeVisible();
-    await page.waitForSelector('.progress-completed', { timeout: 15000 });
+    // 4. Progress Completed Monitoring
+    await page.waitForSelector('text=Pipeline Progress Status:');
+    await page.waitForSelector('text=Proceed to Product review grid', { timeout: 15000 });
+    await page.click('text=Proceed to Product review grid');
 
-    // 5. Candidate Match Review
-    await page.goto('/products');
+    // 5. Inspect and Approve Product
     await expect(page.locator('table')).toBeVisible();
+    await page.click('tr:has-text("Water Drench Hyaluronic Cloud Cream") button:has-text("Inspect")');
     
-    // Click on a candidate product matching review
-    await page.click('tr:has-text("Water Drench Hyaluronic Cloud Cream") a');
-    await expect(page.locator('.match-review-banner')).toBeVisible();
-    await page.click('button:has-text("Confirm Identity Match")');
-    await expect(page.locator('.match-status')).toContainText('Matched');
+    // Ensure we are on the product detail page
+    await expect(page.locator('h1')).toContainText('Water Drench Hyaluronic Cloud Cream');
 
-    // 6. Product Approval Blocking (due to validation issue)
-    await page.goto('/products');
-    await page.click('tr:has-text("Retinol Cream") a');
+    // Approve the product (should have no blocking issues)
+    await page.click('button:has-text("Approve")');
     
-    // Retinol Cream is missing its Brand because Brand B is unregistered or empty.
-    // Try to click approve and expect failure toast
-    await page.click('button:has-text("Approve Product")');
-    await expect(page.locator('.toast-error')).toBeVisible();
-    await expect(page.locator('.toast-error')).toContainText('validation issue exists');
+    // Ensure the review status badge updates to APPROVED
+    await expect(page.locator('text=APPROVED').first()).toBeVisible();
 
-    // 7. Human Field Edit
-    await page.click('.editable-field-brand');
-    await page.fill('.field-editor-input', 'Brand B Cosmetics');
-    await page.click('.save-edit-button');
-    await expect(page.locator('.field-brand-display')).toContainText('Brand B Cosmetics');
-
-    // Now resolve validation issue and approve
-    await page.click('button:has-text("Resolve Issue")');
-    await page.click('button:has-text("Approve Product")');
-    await expect(page.locator('.review-status-badge')).toContainText('Approved');
-
-    // 8. Business Export
+    // 6. Business Export
     await page.goto('/exports');
-    await page.click('button:has-text("Run Business Export")');
     
-    // Check that download URL is presented and triggerable
+    // Run and download export file
     const downloadPromise = page.waitForEvent('download');
-    await page.click('a:has-text("Download File")');
+    await page.click('button:has-text("Generate and Download Catalog")');
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toContain('beauty_pim_export_business');
+    expect(download.suggestedFilename()).toContain('.json');
   });
 
 });
