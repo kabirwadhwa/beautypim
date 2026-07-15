@@ -78,22 +78,25 @@ jobs:
         env:
           SECRET_KEY: testsecretkeytestsecretkeytestsecretkeytestsecretkey
           DATABASE_URL: sqlite:///./test_beauty_pim.db
+          PYTHONPATH: .
         run: |
           cd backend
-          pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+          python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 
       - name: Run PostgreSQL Integration Tests
         env:
           SECRET_KEY: testsecretkeytestsecretkeytestsecretkeytestsecretkey
           DATABASE_URL: postgresql://pim_user:pim_password@localhost:5432/beauty_pim_test
+          PYTHONPATH: .
         run: |
           cd backend
-          pytest
+          python -m pytest
 
       - name: Run Backend Smoke Tests
         env:
           SECRET_KEY: testsecretkeytestsecretkeytestsecretkeytestsecretkey
           DATABASE_URL: postgresql://pim_user:pim_password@localhost:5432/beauty_pim_test
+          PYTHONPATH: .
         run: |
           cd backend
           python scripts/ci_smoke_test.py
@@ -175,6 +178,7 @@ jobs:
         env:
           SECRET_KEY: testsecretkeytestsecretkeytestsecretkeytestsecretkey
           DATABASE_URL: postgresql://pim_user:pim_password@localhost:5432/beauty_pim_test
+          PYTHONPATH: .
         run: |
           cd backend
           python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &
