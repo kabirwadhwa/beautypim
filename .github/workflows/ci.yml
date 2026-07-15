@@ -28,12 +28,12 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.11"
           cache: "pip"
 
       - name: Install Dependencies
@@ -41,6 +41,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
           pip install flake8 pytest-cov pip-audit
+
+      - name: Run Pip Integrity Check
+        run: |
+          pip check
 
       - name: Run Backend Linting
         run: |
@@ -82,10 +86,10 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
