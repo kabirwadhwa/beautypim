@@ -1,7 +1,0 @@
-mock_audit.py
-setup.py
-pip_audit.egg-info/PKG-INFO
-pip_audit.egg-info/SOURCES.txt
-pip_audit.egg-info/dependency_links.txt
-pip_audit.egg-info/entry_points.txt
-pip_audit.egg-info/top_level.txt
