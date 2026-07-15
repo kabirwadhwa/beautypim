@@ -66,8 +66,12 @@ def upgrade() -> None:
     op.create_index(op.f('ix_user_invitations_token_hash'), 'user_invitations', ['token_hash'], unique=True)
     op.create_index('uq_invitation_pending_email', 'user_invitations', ['email'], unique=True, sqlite_where=sa.text("status = 'pending'"), postgresql_where=sa.text("status = 'pending'"))
     
+    # SQLite uses '1' for boolean True, while PostgreSQL expects 'true'
+    is_sqlite = connection.dialect.name == 'sqlite'
+    active_default = sa.text('1') if is_sqlite else sa.text('true')
+    
     with op.batch_alter_table('users') as batch_op:
-        batch_op.add_column(sa.Column('is_active', sa.Boolean(), server_default=sa.text('1'), nullable=False))
+        batch_op.add_column(sa.Column('is_active', sa.Boolean(), server_default=active_default, nullable=False))
         batch_op.add_column(sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True))
         batch_op.add_column(sa.Column('invited_by_id', app.database.GUID(), nullable=True))
         batch_op.add_column(sa.Column('accepted_invitation_at', sa.DateTime(timezone=True), nullable=True))
