@@ -1,0 +1,2 @@
+[console_scripts]
+pip-audit = mock_audit:main
