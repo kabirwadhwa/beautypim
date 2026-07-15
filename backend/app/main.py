@@ -115,68 +115,7 @@ app.include_router(exports.router, prefix=settings.API_V1_STR)
 def health_check():
     return {"status": "healthy"}
 
-@app.get("/debug-db")
-def debug_db(db: Session = Depends(get_db)):
-    import traceback
-    import os
-    from sqlalchemy import inspect
-    from alembic.config import Config
-    from alembic import command
-    
-    migration_error = None
-    migration_trace = None
-    try:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ini_path = os.path.join(base_dir, "alembic.ini")
-        alembic_cfg = Config(ini_path)
-        alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-        
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        
-        # Clean up partially created user_invitations if migration failed previously
-        if "users" in tables:
-            user_cols = [col["name"] for col in inspector.get_columns("users")]
-            if "is_active" not in user_cols and "user_invitations" in tables:
-                with engine.connect() as conn:
-                    conn.execute(text("DROP TABLE IF EXISTS user_invitations CASCADE"))
-                    conn.commit()
-                    
-        # Reload inspector to reflect dropped table
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        
-        if "users" in tables and "alembic_version" not in tables:
-            command.stamp(alembic_cfg, "57b63617a0af")
-            
-        command.upgrade(alembic_cfg, "head")
-    except Exception as ex:
-        migration_error = str(ex)
-        migration_trace = traceback.format_exc()
-        
-    try:
-        inspector = inspect(engine)
-        user_columns = [col["name"] for col in inspector.get_columns("users")]
-        user_count = db.execute(text("SELECT count(*) FROM users")).scalar()
-        inv_exists = "user_invitations" in inspector.get_table_names()
-        
-        return {
-            "success": True,
-            "database_url": settings.DATABASE_URL.split("@")[-1] if "@" in settings.DATABASE_URL else "sqlite",
-            "users_table_columns": user_columns,
-            "user_count": user_count,
-            "user_invitations_table_exists": inv_exists,
-            "migration_error": migration_error,
-            "migration_trace": migration_trace
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-            "migration_error": migration_error,
-            "migration_trace": migration_trace
-        }
+
 
 @app.get("/ready", tags=["System Controls"])
 def readiness_check(db: Session = Depends(get_db)):
