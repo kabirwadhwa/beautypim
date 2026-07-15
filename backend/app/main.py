@@ -93,6 +93,37 @@ app.include_router(exports.router, prefix=settings.API_V1_STR)
 def health_check():
     return {"status": "healthy"}
 
+@app.get("/debug-db")
+def debug_db(db: Session = Depends(get_db)):
+    import traceback
+    from sqlalchemy import inspect
+    try:
+        inspector = inspect(engine)
+        user_columns = [col["name"] for col in inspector.get_columns("users")]
+        
+        # Test a query on User invitation and Users
+        db.execute(text("SELECT 1"))
+        
+        # Try fetching a user record
+        user_count = db.execute(text("SELECT count(*) FROM users")).scalar()
+        
+        # Try querying invitations table
+        inv_exists = "user_invitations" in inspector.get_table_names()
+        
+        return {
+            "success": True,
+            "database_url": settings.DATABASE_URL.split("@")[-1] if "@" in settings.DATABASE_URL else "sqlite",
+            "users_table_columns": user_columns,
+            "user_count": user_count,
+            "user_invitations_table_exists": inv_exists
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 @app.get("/ready", tags=["System Controls"])
 def readiness_check(db: Session = Depends(get_db)):
     try:
