@@ -41,11 +41,20 @@ def run_migrations():
     import os
     from alembic.config import Config
     from alembic import command
+    from sqlalchemy import inspect
     try:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         ini_path = os.path.join(base_dir, "alembic.ini")
         alembic_cfg = Config(ini_path)
         alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+        
+        # Check if users table exists but alembic_version doesn't (existing DB)
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        if "users" in tables and "alembic_version" not in tables:
+            logger.info("Existing database detected. Stamping to 57b63617a0af before upgrade...")
+            command.stamp(alembic_cfg, "57b63617a0af")
+            
         logger.info("Running database migrations on startup...")
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations completed successfully.")
@@ -108,6 +117,13 @@ def debug_db(db: Session = Depends(get_db)):
         ini_path = os.path.join(base_dir, "alembic.ini")
         alembic_cfg = Config(ini_path)
         alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+        
+        # Check if users table exists but alembic_version doesn't (existing DB)
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        if "users" in tables and "alembic_version" not in tables:
+            command.stamp(alembic_cfg, "57b63617a0af")
+            
         command.upgrade(alembic_cfg, "head")
     except Exception as ex:
         migration_error = str(ex)
