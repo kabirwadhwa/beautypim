@@ -96,18 +96,27 @@ def health_check():
 @app.get("/debug-db")
 def debug_db(db: Session = Depends(get_db)):
     import traceback
+    import os
     from sqlalchemy import inspect
+    from alembic.config import Config
+    from alembic import command
+    
+    migration_error = None
+    migration_trace = None
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ini_path = os.path.join(base_dir, "alembic.ini")
+        alembic_cfg = Config(ini_path)
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+        command.upgrade(alembic_cfg, "head")
+    except Exception as ex:
+        migration_error = str(ex)
+        migration_trace = traceback.format_exc()
+        
     try:
         inspector = inspect(engine)
         user_columns = [col["name"] for col in inspector.get_columns("users")]
-        
-        # Test a query on User invitation and Users
-        db.execute(text("SELECT 1"))
-        
-        # Try fetching a user record
         user_count = db.execute(text("SELECT count(*) FROM users")).scalar()
-        
-        # Try querying invitations table
         inv_exists = "user_invitations" in inspector.get_table_names()
         
         return {
@@ -115,13 +124,17 @@ def debug_db(db: Session = Depends(get_db)):
             "database_url": settings.DATABASE_URL.split("@")[-1] if "@" in settings.DATABASE_URL else "sqlite",
             "users_table_columns": user_columns,
             "user_count": user_count,
-            "user_invitations_table_exists": inv_exists
+            "user_invitations_table_exists": inv_exists,
+            "migration_error": migration_error,
+            "migration_trace": migration_trace
         }
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
-            "traceback": traceback.format_exc()
+            "traceback": traceback.format_exc(),
+            "migration_error": migration_error,
+            "migration_trace": migration_trace
         }
 
 @app.get("/ready", tags=["System Controls"])
