@@ -422,3 +422,42 @@ def test_email_service_direct_call(db: Session):
         mock_smtp.assert_called_once_with(settings.SMTP_HOST, settings.SMTP_PORT, timeout=5)
         mock_server.sendmail.assert_called_once()
         mock_server.quit.assert_called_once()
+
+def test_admin_routes_edge_cases(client: TestClient, test_users, auth_headers):
+    admin_headers = auth_headers("admin@test.com")
+    fake_id = uuid.uuid4()
+    
+    # 1. Resend non-existent invitation -> 404
+    resp = client.post(f"{settings.API_V1_STR}/admin/invitations/{fake_id}/resend", headers=admin_headers)
+    assert resp.status_code == 404
+    
+    # 2. Revoke non-existent invitation -> 404
+    resp = client.post(f"{settings.API_V1_STR}/admin/invitations/{fake_id}/revoke", headers=admin_headers)
+    assert resp.status_code == 404
+    
+    # 3. Disable non-existent user -> 404
+    resp = client.post(f"{settings.API_V1_STR}/admin/users/{fake_id}/disable", headers=admin_headers)
+    assert resp.status_code == 404
+    
+    # 4. Enable non-existent user -> 404
+    resp = client.post(f"{settings.API_V1_STR}/admin/users/{fake_id}/enable", headers=admin_headers)
+    assert resp.status_code == 404
+    
+    # 5. Role change on non-existent user -> 404
+    resp = client.patch(f"{settings.API_V1_STR}/admin/users/{fake_id}/role", json={"role": "editor"}, headers=admin_headers)
+    assert resp.status_code == 404
+    
+    # 6. Disable already disabled user
+    viewer_id = test_users["viewer"].id
+    resp = client.post(f"{settings.API_V1_STR}/admin/users/{viewer_id}/disable", headers=admin_headers)
+    assert resp.status_code == 200
+    resp = client.post(f"{settings.API_V1_STR}/admin/users/{viewer_id}/disable", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "User is already disabled"
+    
+    # 7. Enable already active user
+    resp = client.post(f"{settings.API_V1_STR}/admin/users/{viewer_id}/enable", headers=admin_headers)
+    assert resp.status_code == 200
+    resp = client.post(f"{settings.API_V1_STR}/admin/users/{viewer_id}/enable", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "User is already active"
