@@ -174,6 +174,15 @@ jobs:
           cd backend
           DATABASE_URL=postgresql://pim_user:pim_password@localhost:5432/beauty_pim_test alembic upgrade head
 
+      - name: Seed E2E Administrator
+        env:
+          SECRET_KEY: testsecretkeytestsecretkeytestsecretkeytestsecretkey
+          DATABASE_URL: postgresql://pim_user:pim_password@localhost:5432/beauty_pim_test
+          PYTHONPATH: .
+        run: |
+          cd backend
+          python -m app.commands.create_admin admin@test.com securepassword123
+
       - name: Start Backend Server
         env:
           SECRET_KEY: testsecretkeytestsecretkeytestsecretkeytestsecretkey
