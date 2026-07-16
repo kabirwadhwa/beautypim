@@ -3,7 +3,14 @@ from app.database import SessionLocal, Base, engine
 from app.models import User
 from app.auth import get_password_hash
 
-def create_admin(email, password):
+ALLOWED_ROLES = {"admin", "editor", "viewer"}
+
+
+def create_user(email, password, role="admin"):
+    if role not in ALLOWED_ROLES:
+        print(f"Error: Role must be one of: {', '.join(sorted(ALLOWED_ROLES))}.")
+        sys.exit(1)
+
     db = SessionLocal()
     try:
         # Auto-create tables if not exists
@@ -17,11 +24,11 @@ def create_admin(email, password):
         user = User(
             email=email,
             hashed_password=get_password_hash(password),
-            role="admin"
+            role=role
         )
         db.add(user)
         db.commit()
-        print(f"Successfully seeded admin user: {email} (Role: admin)")
+        print(f"Successfully seeded user: {email} (Role: {role})")
     except Exception as e:
         print(f"Error creating admin: {e}")
         sys.exit(1)
@@ -30,6 +37,6 @@ def create_admin(email, password):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python3 -m app.commands.create_admin <email> <password>")
+        print("Usage: python3 -m app.commands.create_admin <email> <password> [role]")
         sys.exit(1)
-    create_admin(sys.argv[1], sys.argv[2])
+    create_user(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "admin")
