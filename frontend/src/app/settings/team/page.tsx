@@ -54,6 +54,7 @@ export default function TeamAccessPage() {
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
+  const [invitePassword, setInvitePassword] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   
@@ -140,33 +141,35 @@ export default function TeamAccessPage() {
     }, 4000);
   };
 
-  const handleSendInvitation = async (e: React.FormEvent) => {
+  const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteError(null);
     setInviteLoading(true);
 
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch(`${API_URL}/admin/invitations`, {
+      const resp = await fetch(`${API_URL}/admin/users`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ email: inviteEmail, role: inviteRole })
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole, password: invitePassword })
       });
 
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
-        throw new Error(data.detail || "Failed to create invitation");
+        throw new Error(data.detail || "Failed to create user");
       }
 
-      triggerFeedback("Invitation created and sent successfully!");
+      triggerFeedback("User account created and activated successfully!");
       setInviteEmail('');
+      setInvitePassword('');
       setInviteModalOpen(false);
+      fetchUsers();
       fetchInvitations();
     } catch (err: any) {
-      setInviteError(err.message || "Failed to send invitation.");
+      setInviteError(err.message || "Failed to create user.");
     } finally {
       setInviteLoading(false);
     }
@@ -330,13 +333,13 @@ export default function TeamAccessPage() {
       <div className={styles.pageHeader}>
         <div className={styles.titleGroup}>
           <h1>Team & Access Management</h1>
-          <p>Invite organization members, modify user permission levels, and manage login access controls.</p>
+          <p>Add organization members directly, modify permission levels, and manage login access controls.</p>
         </div>
         <button 
           className={`${styles.btn} ${styles.btnPrimary}`}
           onClick={() => setInviteModalOpen(true)}
         >
-          <UserPlus size={18} /> Invite User
+          <UserPlus size={18} /> Add User Directly
         </button>
       </div>
 
@@ -611,7 +614,10 @@ export default function TeamAccessPage() {
             >
               <X size={20} />
             </button>
-            <h3 style={{ fontSize: 16, marginBottom: 16 }}>Invite Team Member</h3>
+            <h3 style={{ fontSize: 16, marginBottom: 8 }}>Add Team Member Directly</h3>
+            <p style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.5, marginBottom: 16 }}>
+              No email will be sent. The account is activated immediately; share the temporary password privately.
+            </p>
 
             {inviteError && (
               <div style={{ padding: 12, backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', borderRadius: 4, color: '#ef4444', fontSize: 13, marginBottom: 16 }}>
@@ -619,7 +625,7 @@ export default function TeamAccessPage() {
               </div>
             )}
 
-            <form onSubmit={handleSendInvitation}>
+            <form onSubmit={handleAddUser}>
               <div className={styles.formGroup}>
                 <label>Email Address</label>
                 <input 
@@ -646,6 +652,20 @@ export default function TeamAccessPage() {
                 </select>
               </div>
 
+              <div className={styles.formGroup}>
+                <label>Temporary Password</label>
+                <input
+                  type="password"
+                  className={styles.inputField}
+                  required
+                  minLength={12}
+                  autoComplete="new-password"
+                  placeholder="At least 12 characters"
+                  value={invitePassword}
+                  onChange={(e) => setInvitePassword(e.target.value)}
+                />
+              </div>
+
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 24 }}>
                 <button 
                   type="button" 
@@ -660,7 +680,7 @@ export default function TeamAccessPage() {
                   className={`${styles.btn} ${styles.btnPrimary}`}
                   disabled={inviteLoading}
                 >
-                  {inviteLoading ? "Sending invite..." : "Send Invitation"}
+                  {inviteLoading ? "Creating user..." : "Create Active User"}
                 </button>
               </div>
             </form>
