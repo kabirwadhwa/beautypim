@@ -44,12 +44,15 @@ def is_safe_ip(ip_str: str) -> bool:
 def is_safe_url(url: str) -> Tuple[bool, Optional[str]]:
     try:
         parsed = urlparse(url)
-        # HTTPS only in production
-        is_prod = settings.ENVIRONMENT == "production" or settings.DATABASE_URL.startswith("postgresql")
-        if is_prod and parsed.scheme != "https":
-            return False, "HTTPS is required in production."
         if parsed.scheme not in ["http", "https"]:
             return False, "Unsupported scheme. Only HTTP and HTTPS are allowed."
+
+        # HTTPS only in production
+        # Database choice does not determine the runtime environment: tests and
+        # local development commonly use PostgreSQL too.
+        is_prod = settings.ENVIRONMENT == "production"
+        if is_prod and parsed.scheme != "https":
+            return False, "HTTPS is required in production."
 
         hostname = parsed.hostname
         if not hostname:
