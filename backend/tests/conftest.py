@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 import os
@@ -32,30 +32,8 @@ def setup_db():
     alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     command.upgrade(alembic_cfg, "head")
 
-    db = TestingSessionLocal()
-    # Seed first admin
-    admin = User(
-        email="admin@test.com",
-        hashed_password=get_password_hash("securepassword123"),
-        role="admin"
-    )
-    # Seed a viewer
-    viewer = User(
-        email="viewer@test.com",
-        hashed_password=get_password_hash("securepassword123"),
-        role="viewer"
-    )
-    # Seed an editor
-    editor = User(
-        email="editor@test.com",
-        hashed_password=get_password_hash("securepassword123"),
-        role="editor"
-    )
-    db.add(admin)
-    db.add(viewer)
-    db.add(editor)
-    db.commit()
-    db.close()
+    if TEST_DATABASE_URL.startswith("sqlite"):
+        _seed_default_users(TestingSessionLocal())
     yield
     Base.metadata.drop_all(bind=engine)
     # Remove file if SQLite
@@ -67,8 +45,49 @@ def setup_db():
             except Exception:
                 pass
 
+def _seed_default_users(session):
+    try:
+        for email, role in (
+            ("admin@test.com", "admin"),
+            ("viewer@test.com", "viewer"),
+            ("editor@test.com", "editor"),
+        ):
+            session.add(User(
+                email=email,
+                hashed_password=get_password_hash("securepassword123"),
+                role=role,
+                is_active=True,
+            ))
+        session.commit()
+    finally:
+        session.close()
+
+
+def _reset_postgres_database():
+    """Give tests and worker-created sessions the same committed database state."""
+    table_names = [
+        table.name for table in reversed(Base.metadata.sorted_tables)
+        if table.name != "alembic_version"
+    ]
+    if table_names:
+        quoted = ", ".join(f'"{name}"' for name in table_names)
+        with engine.begin() as connection:
+            connection.execute(text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE"))
+
+
 @pytest.fixture
 def db():
+    if TEST_DATABASE_URL.startswith("postgresql"):
+        _reset_postgres_database()
+        _seed_default_users(TestingSessionLocal())
+        session = TestingSessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+            _reset_postgres_database()
+        return
+
     connection = engine.connect()
     transaction = connection.begin()
     session = TestingSessionLocal(bind=connection)
