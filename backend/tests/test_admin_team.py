@@ -82,6 +82,48 @@ def test_editor_and_viewer_cannot_invite(client: TestClient, test_users, auth_he
     )
     assert resp.status_code == 403
 
+def test_admin_can_create_active_admin_without_email(client: TestClient, test_users, auth_headers, db: Session):
+    headers = auth_headers("admin@test.com")
+    resp = client.post(
+        f"{settings.API_V1_STR}/admin/users",
+        json={
+            "email": "direct.admin@test.com",
+            "role": "admin",
+            "password": "temporary-password-123"
+        },
+        headers=headers
+    )
+    assert resp.status_code == 201
+    assert resp.json()["email"] == "direct.admin@test.com"
+    assert resp.json()["role"] == "admin"
+    assert resp.json()["is_active"] is True
+
+    created = db.query(User).filter(User.email == "direct.admin@test.com").first()
+    assert created is not None
+    assert created.invited_by_id == test_users["admin"].id
+
+    login = client.post(
+        f"{settings.API_V1_STR}/auth/token",
+        data={"username": "direct.admin@test.com", "password": "temporary-password-123"}
+    )
+    assert login.status_code == 200
+    assert login.json()["role"] == "admin"
+
+def test_direct_user_creation_requires_admin_and_strong_password(client: TestClient, test_users, auth_headers):
+    editor_resp = client.post(
+        f"{settings.API_V1_STR}/admin/users",
+        json={"email": "blocked@test.com", "role": "admin", "password": "temporary-password-123"},
+        headers=auth_headers("editor@test.com")
+    )
+    assert editor_resp.status_code == 403
+
+    weak_resp = client.post(
+        f"{settings.API_V1_STR}/admin/users",
+        json={"email": "weak@test.com", "role": "admin", "password": "short"},
+        headers=auth_headers("admin@test.com")
+    )
+    assert weak_resp.status_code == 400
+
     # Viewer
     headers = auth_headers("viewer@test.com")
     resp = client.post(
