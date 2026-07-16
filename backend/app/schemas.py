@@ -71,6 +71,11 @@ class UserInvitationAccept(BaseModel):
 class AdminUserUpdateRole(BaseModel):
     role: str
 
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    role: str = "admin"
+
 # Mapping Templates
 class MappingTemplateBase(BaseModel):
     name: str
