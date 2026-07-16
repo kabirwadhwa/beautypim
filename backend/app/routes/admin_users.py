@@ -8,14 +8,66 @@ from typing import Optional, List
 
 from app.database import get_db
 from app.models import User, UserInvitation, AuditLog
-from app.auth import require_admin, normalize_email, log_audit_event
+from app.auth import (
+    require_admin, normalize_email, log_audit_event,
+    get_password_hash, validate_password_strength
+)
 from app.schemas import (
     UserOut, UserInvitationCreate, UserInvitationOut,
-    AdminUserUpdateRole, UserInvitationValidateResponse
+    AdminUserUpdateRole, AdminUserCreate, UserInvitationValidateResponse
 )
 from app.services.email import get_email_service
 
 router = APIRouter(prefix="/admin", tags=["Admin Users"], dependencies=[Depends(require_admin)])
+
+@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_user_directly(
+    data: AdminUserCreate,
+    current_admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Create an active team member without relying on email delivery."""
+    norm_email = normalize_email(data.email)
+    if data.role not in ["admin", "editor", "viewer"]:
+        raise HTTPException(status_code=400, detail="Invalid role selected.")
+    validate_password_strength(data.password)
+
+    if db.query(User).filter(User.email == norm_email).first():
+        raise HTTPException(status_code=400, detail="A user with this email address already exists.")
+
+    try:
+        user = User(
+            id=uuid.uuid4(), email=norm_email,
+            hashed_password=get_password_hash(data.password),
+            role=data.role, is_active=True,
+            invited_by_id=current_admin.id,
+            accepted_invitation_at=datetime.utcnow()
+        )
+        db.add(user)
+        db.flush()
+
+        pending_invitations = db.query(UserInvitation).filter(
+            UserInvitation.email == norm_email,
+            UserInvitation.status == "pending"
+        ).all()
+        for invitation in pending_invitations:
+            invitation.status = "accepted"
+            invitation.accepted_at = datetime.utcnow()
+            db.add(invitation)
+
+        log_audit_event(
+            db=db, entity_type="User", entity_id=user.id,
+            display_label=user.email, action="create", before=None,
+            after={"email": user.email, "role": user.role, "is_active": True},
+            changed={"role": user.role, "is_active": True},
+            user_id=current_admin.id
+        )
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create user account.")
 
 @router.get("/users")
 def list_users(
