@@ -1,5 +1,6 @@
 import logging
 import smtplib
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -75,6 +76,64 @@ class SMTPEmailService(BaseEmailService):
             # Raise the exception so that the caller can handle/record it
             raise e
 
+class ResendEmailService(BaseEmailService):
+    """Deliver invitations through Resend's HTTPS API.
+
+    Railway blocks outbound SMTP below the Pro plan, while HTTPS remains
+    available. Invitation tokens are sent only in the request body and are
+    never written to application logs.
+    """
+
+    API_URL = "https://api.resend.com/emails"
+
+    def send_invitation(
+        self,
+        to_email: str,
+        role: str,
+        raw_token: str,
+        expires_at: datetime,
+        inviter_email: str
+    ) -> None:
+        if not settings.RESEND_API_KEY:
+            raise RuntimeError("Resend email delivery is not configured.")
+
+        accept_link = f"{settings.FRONTEND_URL}/accept-invite?token={raw_token}"
+        expires_str = expires_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        text = (
+            "Hello,\n\n"
+            f"You have been invited to join Beauty PIM by {inviter_email} "
+            f"with the role of '{role}'.\n\n"
+            "To accept this invitation and set up your password, open:\n"
+            f"{accept_link}\n\n"
+            f"This invitation expires on {expires_str}.\n\n"
+            "If you did not expect this invitation, please ignore this email.\n"
+        )
+
+        try:
+            response = requests.post(
+                self.API_URL,
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": settings.RESEND_FROM,
+                    "to": [to_email],
+                    "subject": "You have been invited to join Beauty PIM",
+                    "text": text,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            logger.info("Invitation email sent successfully through Resend.")
+        except requests.RequestException as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            suffix = f" (HTTP {status_code})" if status_code else ""
+            logger.error("Failed to deliver invitation email through Resend%s.", suffix)
+            raise RuntimeError(f"Resend delivery failed{suffix}.") from exc
+
 # Helper to get active email service
 def get_email_service() -> BaseEmailService:
+    if settings.RESEND_API_KEY:
+        return ResendEmailService()
     return SMTPEmailService()
