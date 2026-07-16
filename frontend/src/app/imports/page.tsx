@@ -34,7 +34,11 @@ export default function ImportsPage() {
     { key: "size", label: "Unit Size (e.g. 50ml, 30ml)" },
     { key: "price", label: "List Price" },
     { key: "description", label: "Product Description" },
-    { key: "ingredients", label: "Raw INCI Ingredients List" }
+    { key: "ingredients", label: "Raw INCI Ingredients List" },
+    { key: "category", label: "Product Category" },
+    { key: "product_url", label: "Product Page URL" },
+    { key: "image_url", label: "Product Image URL" },
+    { key: "retailer", label: "Retailer / Source" }
   ];
 
   useEffect(() => {
@@ -121,13 +125,16 @@ export default function ImportsPage() {
         source_name: file.name
       };
 
-      const resp = await fetch(`${API_URL}/feeds/process`, {
+      const processForm = new FormData();
+      processForm.append("file", file);
+      processForm.append("request_json", JSON.stringify(payload));
+
+      const resp = await fetch(`${API_URL}/feeds/process-upload`, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json"
+          "Authorization": `Bearer ${token}`
         },
-        body: JSON.stringify(payload)
+        body: processForm
       });
 
       if (!resp.ok) {

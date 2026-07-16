@@ -137,7 +137,7 @@ export default function DashboardPage() {
                   {jobs.length === 0 ? (
                     <tr>
                       <td colSpan={5} style={{ textAlign: 'center', color: '#64748b', padding: '16px 0' }}>
-                        No feeds uploaded yet. Go to 'Feeds Ingest' tab to upload.
+                        No feeds uploaded yet. Go to the Feeds Ingest tab to upload.
                       </td>
                     </tr>
                   ) : (

@@ -114,6 +114,35 @@ def test_upload_file_valid_csv(client: TestClient):
     assert "suggested_mapping" in data
     assert data["total_rows"] == 1
 
+def test_atomic_upload_and_process_flow(client: TestClient, db):
+    token = get_admin_token(client)
+    csv_data = b"product_name,brand,ean,price,description,ingredients,size\nDaily Cleanser,Cerave,03337875597198,12.50,Hydrating vegan face cleanser,Aqua; Glycerin,236ml"
+    preview = client.post(
+        "/api/feeds/upload",
+        files={"file": ("products.csv", csv_data, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"}
+    ).json()
+    request_json = json.dumps({
+        "filename": "products.csv",
+        "file_hash": preview["file_hash"],
+        "column_mapping": preview["suggested_mapping"]
+    })
+    resp = client.post(
+        "/api/feeds/process-upload",
+        files={"file": ("products.csv", csv_data, "text/csv")},
+        data={"request_json": request_json},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200, resp.text
+    job = resp.json()
+    assert job["total_rows"] == 1
+    # Test fixtures use an isolated transaction that a fresh background-worker
+    # connection cannot see, so execute the queued job in that same transaction.
+    from app.worker import run_job_worker
+    run_job_worker(db, uuid.UUID(job["id"]))
+    product = db.query(CanonicalProduct).filter(CanonicalProduct.product_name == "Daily Cleanser").first()
+    assert product is not None
+
 def test_approve_product_api(client: TestClient, db):
     token = get_admin_token(client)
 

@@ -229,6 +229,17 @@ export default function ProductDetailPage() {
   // Editable fields registry listing
   const coreFields = ["subcategory", "product_type", "gender_target", "vegan", "cruelty_free", "fragrance_present"];
 
+  const displayValue = (value: any, semanticStatus?: string | null) => {
+    if (semanticStatus && ["unknown", "not_applicable"].includes(semanticStatus.toLowerCase())) return 'NOT PROVIDED';
+    if (value === null || value === undefined || value === '') return 'NOT PROVIDED';
+    if (typeof value === 'object') {
+      return value.review_message || value.observation_type || 'STRUCTURED OBSERVATION';
+    }
+    const normalized = String(value).trim().toLowerCase();
+    if (["unknown", "null", "none", "nan"].includes(normalized)) return 'NOT PROVIDED';
+    return String(value).toUpperCase();
+  };
+
   return (
     <Shell>
       <div className={styles.pageHeader}>
@@ -238,7 +249,7 @@ export default function ProductDetailPage() {
           </button>
           <div className={styles.titleGroup}>
             <h1>{product?.product_name}</h1>
-            <p>Brand: <span style={{ fontWeight: 600, color: '#f8fafc' }}>{product?.brand_name || "UNKNOWN"}</span> | Category: <span style={{ color: '#94a3b8' }}>{product?.category_path || "-"}</span></p>
+            <p>Brand: <span style={{ fontWeight: 600, color: '#f8fafc' }}>{product?.brand_name || "Not provided"}</span> | Category: <span style={{ color: '#94a3b8' }}>{product?.category_path || "Not provided"}</span></p>
           </div>
         </div>
 
@@ -304,8 +315,8 @@ export default function ProductDetailPage() {
             </div>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>Run Status</div>
-              <div style={{ fontWeight: 500, color: '#10b981', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <CheckCircle2 size={12} /> {product.enrichment_metadata.status.toUpperCase()}
+              <div style={{ fontWeight: 500, color: product.enrichment_metadata.status === 'failed' ? '#ef4444' : '#10b981', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <CheckCircle2 size={12} /> {product.enrichment_metadata.provider === 'Deterministic Fallback' ? 'FALLBACK ACTIVE' : product.enrichment_metadata.status.toUpperCase()}
               </div>
             </div>
             <div>
@@ -341,7 +352,7 @@ export default function ProductDetailPage() {
                         <span style={{ fontSize: 12, color: '#64748b', textTransform: 'capitalize', fontWeight: 600 }}>{field.replace("_", " ")}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9' }}>
-                            {fv ? String(fv.value).toUpperCase() : 'UNKNOWN'}
+                            {displayValue(fv?.value, fv?.semantic_status)}
                           </span>
                           <span style={{ fontSize: 11, color: '#94a3b8', backgroundColor: '#1e293b', padding: '2px 8px', borderRadius: 4, textTransform: 'capitalize' }}>
                             Source: {fv ? fv.source_type.replace("_", " ") : 'None'}
@@ -387,7 +398,7 @@ export default function ProductDetailPage() {
                               {fv.evidence.map((ev, idx) => (
                                 <div key={idx} style={{ backgroundColor: '#0f172a', padding: 8, borderRadius: 4, borderLeft: '3px solid #6366f1' }}>
                                   <div style={{ fontWeight: 500, color: '#cbd5e1', marginBottom: 2 }}>
-                                    "{ev.supporting_text}"
+                                    &ldquo;{ev.supporting_text}&rdquo;
                                   </div>
                                   <div style={{ fontSize: 10, color: '#64748b' }}>
                                     Source Field: <span style={{ color: '#94a3b8' }}>{ev.source_field}</span> | Type: <span style={{ color: '#94a3b8' }}>{ev.evidence_type}</span>
@@ -412,7 +423,7 @@ export default function ProductDetailPage() {
                         {fv?.override_reason && (
                           <div style={{ marginTop: 10, padding: 8, backgroundColor: 'rgba(245,158,11,0.05)', border: '1px solid #f59e0b33', borderRadius: 4 }}>
                             <div style={{ fontWeight: 600, color: '#f59e0b', marginBottom: 2 }}>Override Audit Log Reason:</div>
-                            <div style={{ color: '#e2e8f0' }}>"{fv.override_reason}" (by User #{fv.reviewer_id})</div>
+                            <div style={{ color: '#e2e8f0' }}>&ldquo;{fv.override_reason}&rdquo; (by User #{fv.reviewer_id})</div>
                           </div>
                         )}
                       </div>
@@ -596,7 +607,7 @@ export default function ProductDetailPage() {
                         concern.targeting_status === 'inferred' ? styles.badgeNeutral :
                         styles.badgeSecondary
                       }`} style={{ fontSize: 10, padding: '2px 8px' }}>
-                        {concern.targeting_status.toUpperCase()}
+                        {displayValue(concern.targeting_status)}
                       </span>
                     </div>
                     {concern.confidence && (
@@ -623,7 +634,7 @@ export default function ProductDetailPage() {
                   <div className={styles.timelineDot} />
                   <div className={styles.timelineContent}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                      <span style={{ fontWeight: 600, color: '#f8fafc' }}>{fv.field_name} set to '{String(fv.value)}'</span>
+                      <span style={{ fontWeight: 600, color: '#f8fafc' }}>{fv.field_name} set to &ldquo;{displayValue(fv.value, fv.semantic_status)}&rdquo;</span>
                       <span className={styles.timelineTime}>{new Date(fv.created_at).toLocaleDateString()}</span>
                     </div>
                     <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>

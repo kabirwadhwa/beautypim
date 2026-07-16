@@ -1,8 +1,18 @@
 import pytest
+import socket
 from app.services.webhooks import is_safe_url, dispatch_webhook_safe
 from app.config import settings
 
-def test_ssrf_url_validation():
+def test_ssrf_url_validation(monkeypatch):
+    original_getaddrinfo = socket.getaddrinfo
+
+    def deterministic_dns(host, port, *args, **kwargs):
+        public_hosts = {"example.com", "google.com", "www.google.com", "attacker.com"}
+        if host in public_hosts:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+        return original_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", deterministic_dns)
     # Save original settings
     orig_env = settings.ENVIRONMENT
     orig_domains = settings.WEBHOOK_ALLOWED_DOMAINS
@@ -72,4 +82,3 @@ def test_webhook_edge_cases():
     from app.services.webhooks import is_safe_ip
     assert is_safe_ip("999.999.999.999") is False
     assert is_safe_ip("not-an-ip") is False
-
