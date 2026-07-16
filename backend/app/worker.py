@@ -18,6 +18,16 @@ from app.config import settings
 
 logger = logging.getLogger("worker")
 
+def source_value(raw_data: Dict[str, Any], mapping: Dict[str, str], field_name: str) -> str:
+    """Return a clean mapped source value without leaking Python sentinel strings."""
+    column = mapping.get(field_name)
+    if not column:
+        return ""
+    value = raw_data.get(column)
+    if value is None or str(value).strip().lower() in {"", "none", "nan", "null"}:
+        return ""
+    return str(value).strip()
+
 def record_audit(
     db: Session,
     entity_type: str,
@@ -194,15 +204,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         raise ValueError("Source listing not found")
 
     raw_data = listing.raw_data
-    raw_name = str(raw_data.get(mapping.get("product_name", "")))
-    raw_brand = str(raw_data.get(mapping.get("brand", "")))
-    raw_desc = str(raw_data.get(mapping.get("description", "")))
-    raw_ingr = str(raw_data.get(mapping.get("ingredients", "")))
-    val_ean = raw_data.get(mapping.get("ean", ""))
-    raw_ean = None if val_ean is None or str(val_ean).strip().lower() in ["", "none", "nan", "null"] else str(val_ean).strip()
-    
-    val_size = raw_data.get(mapping.get("size", ""))
-    raw_size = None if val_size is None or str(val_size).strip().lower() in ["", "none", "nan", "null"] else str(val_size).strip()
+    raw_name = source_value(raw_data, mapping, "product_name")
+    raw_brand = source_value(raw_data, mapping, "brand")
+    raw_desc = source_value(raw_data, mapping, "description")
+    raw_ingr = source_value(raw_data, mapping, "ingredients")
+    raw_ean = source_value(raw_data, mapping, "ean") or None
+    raw_size = source_value(raw_data, mapping, "size") or None
 
     # Start Enrichment Run
     item.enrichment_status = "processing"
@@ -659,16 +666,11 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             listing = db.query(SourceListing).filter(SourceListing.id == item.source_listing_id).first()
             raw_data = listing.raw_data
             
-            raw_name = str(raw_data.get(mapping.get("product_name", "")))
-            raw_brand = str(raw_data.get(mapping.get("brand", "")))
-            
-            val_ean = raw_data.get(mapping.get("ean", ""))
-            raw_ean = None if val_ean is None or str(val_ean).strip().lower() in ["", "none", "nan", "null"] else str(val_ean).strip()
-            
-            val_size = raw_data.get(mapping.get("size", ""))
-            raw_size = None if val_size is None or str(val_size).strip().lower() in ["", "none", "nan", "null"] else str(val_size).strip()
-            
-            raw_price = raw_data.get(mapping.get("price", ""))
+            raw_name = source_value(raw_data, mapping, "product_name")
+            raw_brand = source_value(raw_data, mapping, "brand")
+            raw_ean = source_value(raw_data, mapping, "ean") or None
+            raw_size = source_value(raw_data, mapping, "size") or None
+            raw_price = source_value(raw_data, mapping, "price")
             
             # Step 1: Matching / Deduplication
             match_status, score, matched_canonical_id, matched_variant_id = evaluate_match(

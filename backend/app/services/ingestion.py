@@ -3,6 +3,7 @@ import json
 import hashlib
 import io
 import uuid
+import csv
 from typing import Dict, Any, List, Tuple
 from sqlalchemy.orm import Session
 from app.models import ImportJob, ImportJobItem, SourceListing
@@ -12,11 +13,47 @@ def compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 def detect_delimiter(file_bytes: bytes) -> str:
-    # Read first line to detect separator
-    line = file_bytes.split(b'\n')[0].decode('utf-8', errors='ignore')
-    if ';' in line:
-        return ';'
-    return ','
+    sample = file_bytes[:8192].decode("utf-8-sig", errors="replace")
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except csv.Error:
+        return ";" if sample.splitlines() and sample.splitlines()[0].count(";") > sample.splitlines()[0].count(",") else ","
+
+def _validate_dataframe(df: pd.DataFrame) -> None:
+    if df.empty:
+        raise ValueError("The uploaded file contains no product rows.")
+    if not len(df.columns):
+        raise ValueError("The uploaded file has no header row.")
+    headers = [str(column).strip() for column in df.columns]
+    if any(not header or header.lower().startswith("unnamed:") for header in headers):
+        raise ValueError("Every column must have a non-empty header.")
+    duplicates = sorted({header for header in headers if headers.count(header) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate column headers are not supported: {', '.join(duplicates)}")
+    df.columns = headers
+
+def _read_table(file_bytes: bytes, file_type: str) -> pd.DataFrame:
+    if not file_bytes:
+        raise ValueError("The uploaded file is empty.")
+    if file_type == "csv":
+        return pd.read_csv(
+            io.BytesIO(file_bytes), sep=detect_delimiter(file_bytes), dtype=str,
+            keep_default_na=False, encoding="utf-8-sig"
+        )
+    if file_type == "xlsx":
+        return pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
+    if file_type == "json":
+        data = json.loads(file_bytes.decode("utf-8-sig"))
+        if isinstance(data, list):
+            products = data
+        elif isinstance(data, dict) and isinstance(data.get("products"), list):
+            products = data["products"]
+        else:
+            raise ValueError("JSON must be an array of products or contain a 'products' array.")
+        if any(not isinstance(product, dict) for product in products):
+            raise ValueError("Every JSON product must be an object.")
+        return pd.DataFrame(products)
+    raise ValueError("Unsupported file type")
 
 def read_preview(file_bytes: bytes, file_type: str) -> Tuple[List[str], List[Dict[str, Any]], int]:
     """Reads a preview of the file (first 5 rows) and returns header columns, sample rows, and total row count.
@@ -25,39 +62,11 @@ def read_preview(file_bytes: bytes, file_type: str) -> Tuple[List[str], List[Dic
     headers = []
     preview_rows = []
 
-    if file_type == "csv":
-        delim = detect_delimiter(file_bytes)
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=delim, nrows=5)
-        headers = df.columns.tolist()
-        preview_rows = df.fillna("").to_dict(orient="records")
-        # Count total rows
-        df_full = pd.read_csv(io.BytesIO(file_bytes), sep=delim, usecols=[0])
-        total_rows = len(df_full)
-
-    elif file_type == "xlsx":
-        df = pd.read_excel(io.BytesIO(file_bytes), nrows=5)
-        headers = df.columns.tolist()
-        preview_rows = df.fillna("").to_dict(orient="records")
-        df_full = pd.read_excel(io.BytesIO(file_bytes), usecols=[0])
-        total_rows = len(df_full)
-
-    elif file_type == "json":
-        data = json.loads(file_bytes.decode('utf-8'))
-        if isinstance(data, list):
-            total_rows = len(data)
-            sample = data[:5]
-            if sample:
-                headers = list(sample[0].keys())
-                preview_rows = sample
-        elif isinstance(data, dict) and "products" in data:
-            products = data["products"]
-            total_rows = len(products)
-            sample = products[:5]
-            if sample:
-                headers = list(sample[0].keys())
-                preview_rows = sample
-        else:
-            raise ValueError("Unsupported JSON layout. Must be a list of products or contain a 'products' array.")
+    df = _read_table(file_bytes, file_type)
+    _validate_dataframe(df)
+    headers = df.columns.tolist()
+    total_rows = len(df)
+    preview_rows = df.head(5).fillna("").to_dict(orient="records")
 
     # Convert UUIDs or objects to strings for serialization
     for row in preview_rows:
@@ -77,19 +86,18 @@ def ingest_file_to_source_listings(
     """Parses the uploaded file and stores each row as a SourceListing.
     Creates corresponding ImportJobItem tasks.
     """
-    if file_type == "csv":
-        delim = detect_delimiter(file_bytes)
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=delim)
-    elif file_type == "xlsx":
-        df = pd.read_excel(io.BytesIO(file_bytes))
-    elif file_type == "json":
-        data = json.loads(file_bytes.decode('utf-8'))
-        if isinstance(data, list):
-            df = pd.DataFrame(data)
-        else:
-            df = pd.DataFrame(data.get("products", []))
-    else:
-        raise ValueError("Unsupported file type")
+    df = _read_table(file_bytes, file_type)
+    _validate_dataframe(df)
+
+    missing_columns = sorted({column for column in column_mapping.values() if column and column not in df.columns})
+    if missing_columns:
+        raise ValueError(f"Mapped columns are missing from the file: {', '.join(missing_columns)}")
+    for required in ("product_name", "brand"):
+        source_column = column_mapping.get(required)
+        if not source_column:
+            raise ValueError(f"A mapping for '{required}' is required.")
+        if not df[source_column].astype(str).str.strip().any():
+            raise ValueError(f"The mapped '{required}' column contains no values.")
 
     df = df.fillna("")
     records = df.to_dict(orient="records")
@@ -170,17 +178,37 @@ def suggest_mapping(headers: List[str]) -> Dict[str, str]:
         "price": ["price", "prix", "cost", "value"],
         "size": ["size", "volume", "capacity", "continence", "format"],
         "product_url": ["url", "link", "product_url", "href"],
-        "image_url": ["image", "img", "picture", "image_url", "photo"]
+        "image_url": ["image", "img", "picture", "image_url", "photo"],
+        "retailer": ["retailer", "retailer_name", "store", "merchant", "source"]
     }
 
+    def normalize_header(value: str) -> str:
+        return "".join(character for character in value.lower() if character.isalnum())
+
+    claimed_headers = set()
     for canonical, keywords in mapping_keywords.items():
+        normalized_keywords = [normalize_header(keyword) for keyword in keywords]
+        # Exact normalized matches are reliable and avoid mistakes such as
+        # mapping "manufacturer" to product_name merely because it contains "name".
         for header in headers:
-            clean_header = header.lower().strip().replace("_", "").replace(" ", "")
-            for keyword in keywords:
-                if keyword in clean_header:
-                    suggestions[canonical] = header
-                    break
-            if canonical in suggestions:
+            if header in claimed_headers:
+                continue
+            if normalize_header(str(header)) in normalized_keywords:
+                suggestions[canonical] = header
+                claimed_headers.add(header)
                 break
+        if canonical not in suggestions:
+            for header in headers:
+                if header in claimed_headers:
+                    continue
+                normalized_header = normalize_header(str(header))
+                if any(
+                    len(keyword) >= 3 and
+                    (normalized_header.startswith(keyword) or normalized_header.endswith(keyword))
+                    for keyword in normalized_keywords
+                ):
+                    suggestions[canonical] = header
+                    claimed_headers.add(header)
+                    break
 
     return suggestions

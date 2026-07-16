@@ -9,10 +9,10 @@ def test_deterministic_fallback_no_fabrications():
         raw_ingredients="Aqua, Glycerin, Ceramide NP"
     )
 
-    # 1. AI fields must remain unknown
-    assert fallback["subcategory"]["value"] is None
-    assert fallback["subcategory"]["value_status"] == "unknown"
-    assert fallback["hydration"]["targeting_status"] == "unknown"
+    # 1. Explicit source keywords are extracted without fabricating claims
+    assert fallback["subcategory"]["value"] == "moisturizer"
+    assert fallback["subcategory"]["value_status"] == "explicit_source"
+    assert fallback["hydration"]["targeting_status"] == "explicit"
 
     # 2. Vegan detected claim
     assert fallback["vegan"]["value"] == "yes"

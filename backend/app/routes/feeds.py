@@ -7,7 +7,7 @@ from app.database import get_db
 from app.auth import get_current_user, require_editor_or_admin
 from app.models import ImportJob, ImportJobItem, MappingTemplate, User
 from app.services.ingestion import compute_file_hash, read_preview, suggest_mapping, ingest_file_to_source_listings
-from app.worker import run_job_worker
+from app.worker import run_job_in_background
 from app.schemas import ImportJobOut, ImportJobItemOut, MappingTemplateOut, MappingTemplateCreate, IngestProcessRequest
 
 from app.limiter import rate_limit
@@ -130,7 +130,7 @@ def process_ingest(
                     ImportJobItem.import_job_id == existing_job.id
                 ).update({"status": "pending", "enrichment_status": "not_requested"})
                 db.commit()
-                background_tasks.add_task(run_job_worker, db, existing_job.id)
+                background_tasks.add_task(run_job_in_background, existing_job.id)
                 return existing_job
     # if policy == "create_new_version", we ignore and create a new job.
 
@@ -186,9 +186,49 @@ def process_ingest(
         )
 
     # Dispatch to background task worker thread
-    background_tasks.add_task(run_job_worker, db, job.id)
+    # Never pass the request-scoped SQLAlchemy session to a background task.
+    # It is closed as soon as the response completes.
+    background_tasks.add_task(run_job_in_background, job.id)
 
     return job
+
+@router.post("/process-upload", response_model=ImportJobOut, dependencies=[Depends(rate_limit("process", "RATE_LIMIT_PROCESS"))])
+async def process_uploaded_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    request_json: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin)
+):
+    """Atomically receives and processes a file.
+
+    The preview endpoint intentionally remains available, but production processing
+    must not rely on its in-memory cache: Railway may route the two requests to
+    different instances or restart an instance between them.
+    """
+    try:
+        request = IngestProcessRequest.model_validate_json(request_json)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid import configuration: {exc}")
+
+    if file.filename != request.filename:
+        raise HTTPException(status_code=400, detail="The processed file does not match the previewed filename.")
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in settings.ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file format '.{ext}'.")
+    contents = await file.read()
+    if len(contents) > settings.MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="File size exceeds the 50MB limit.")
+    if compute_file_hash(contents) != request.file_hash:
+        raise HTTPException(status_code=400, detail="The file changed after preview. Please preview it again.")
+
+    # The legacy handler contains duplicate-file policy and job creation logic.
+    # Supplying the bytes immediately before invoking it makes the operation atomic.
+    file_cache[request.file_hash] = contents
+    try:
+        return process_ingest(request, background_tasks, db, current_user)
+    finally:
+        file_cache.pop(request.file_hash, None)
 
 @router.get("/jobs", response_model=List[ImportJobOut])
 def list_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
