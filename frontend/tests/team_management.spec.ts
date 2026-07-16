@@ -1,20 +1,4 @@
 import { test, expect } from '@playwright/test';
-import fs from 'fs';
-import path from 'path';
-
-const tokenPath = path.join(__dirname, '../../test_invitation_token.txt');
-
-function getLatestToken(): string {
-  // Wait up to 3 seconds for file to be created/updated
-  const start = Date.now();
-  while (Date.now() - start < 3000) {
-    if (fs.existsSync(tokenPath)) {
-      const content = fs.readFileSync(tokenPath, 'utf8').trim();
-      if (content) return content;
-    }
-  }
-  throw new Error("Invitation token file was not written by the backend.");
-}
 
 test.describe('Team & Access Management E2E Workflows', () => {
 
@@ -63,12 +47,7 @@ test.describe('Team & Access Management E2E Workflows', () => {
     await expect(page.locator('h1')).toContainText('Team & Access');
   });
 
-  test('2. Resend invalidation and invitation acceptance flows', async ({ page }) => {
-    // Clean old token file if exists
-    if (fs.existsSync(tokenPath)) {
-      fs.unlinkSync(tokenPath);
-    }
-
+  test('2. Admin creates an active user without email delivery', async ({ page }) => {
     // A. Admin login
     await page.goto('/login');
     await page.fill('input[type="email"]', 'admin@test.com');
@@ -77,52 +56,22 @@ test.describe('Team & Access Management E2E Workflows', () => {
     await expect(page).toHaveURL(/.*dashboard/);
     await page.goto('/settings/team');
 
-    // B. Invite e2e_editor@test.com
-    await page.click('button:has-text("Invite User")');
+    // B. Create e2e_editor@test.com as an active editor
+    await page.click('button:has-text("Add User Directly")');
     await page.fill('input[placeholder="colleague@brand.com"]', 'e2e_editor@test.com');
     await page.selectOption('label:has-text("System Role") + select', 'editor');
-    await page.click('button:has-text("Send Invitation")');
-    
-    const pendingRow = page.locator('table').last().locator('tr:has-text("e2e_editor@test.com")');
-    await expect(pendingRow).toBeVisible();
+    await page.fill('input[placeholder="At least 12 characters"]', 'newsecurepassword123');
+    await page.click('button:has-text("Create Active User")');
 
-    // Read first raw token
-    const firstToken = getLatestToken();
-    fs.unlinkSync(tokenPath);
+    const activeRow = page.locator('table').first().locator('tr:has-text("e2e_editor@test.com")');
+    await expect(activeRow).toBeVisible();
+    await expect(activeRow.locator('text=Active')).toBeVisible();
 
-    // C. Resend the invitation (invalidates the first token)
-    await pendingRow.locator('button:has-text("Resend")').click();
-    await page.click('button:has-text("Confirm Action")');
-    await page.waitForTimeout(1000);
-
-    // Read second raw token
-    const secondToken = getLatestToken();
-    expect(firstToken).not.toBe(secondToken);
-
-    // Logout admin
+    // C. Logout admin
     await page.click('text=Sign Out');
 
-    // D. Try accepting with the first (now invalidated) token
-    await page.goto(`/accept-invite?token=${firstToken}`);
-    await expect(page.locator('h2:has-text("Invitation Error")')).toBeVisible();
-
-    // E. Try accepting with the second (valid) token
-    await page.goto(`/accept-invite?token=${secondToken}`);
-    await expect(page.locator('h2')).toContainText('Join Beauty PIM');
-    await expect(page.locator('text=Invited Role: editor')).toBeVisible();
-
-    // Input invalid details (password mismatch)
-    await page.fill('input[placeholder="Minimum 12 characters"]', 'newsecurepassword123');
-    await page.fill('input[placeholder="Confirm password"]', 'mismatchingpassword');
-    await page.click('button:has-text("Accept Invitation & Join")');
-    await expect(page.locator('text=Passwords do not match')).toBeVisible();
-
-    // Input valid details
-    await page.fill('input[placeholder="Confirm password"]', 'newsecurepassword123');
-    await page.click('button:has-text("Accept Invitation & Join")');
-    await page.waitForURL(/.*login/, { timeout: 5000 });
-
-    // F. Verify login works
+    // D. Verify the directly created account can log in immediately
+    await page.goto('/login');
     await page.fill('input[type="email"]', 'e2e_editor@test.com');
     await page.fill('input[type="password"]', 'newsecurepassword123');
     await page.click('button[type="submit"]');
