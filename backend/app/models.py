@@ -216,9 +216,11 @@ class Formulation(Base):
 class IngredientDefinition(Base):
     __tablename__ = 'ingredient_definitions'
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
-    name = Column(String(255), nullable=False)
-    normalized_name = Column(String(255), unique=True, nullable=False, index=True)
-    common_name = Column(String(255), nullable=True)
+    # CosIng contains a small number of unusually long systematic ingredient
+    # names, so these externally sourced values must not be truncated.
+    name = Column(Text, nullable=False)
+    normalized_name = Column(Text, unique=True, nullable=False, index=True)
+    common_name = Column(Text, nullable=True)
     aliases = Column(PortableJSON(), nullable=True) # JSON list of strings
     function = Column(Text, nullable=True)
     benefits = Column(Text, nullable=True)
