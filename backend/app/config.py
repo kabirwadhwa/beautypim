@@ -51,8 +51,20 @@ class Settings(BaseSettings):
     # OpenAI API
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", None)
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    ENRICHMENT_CUSTOM_INSTRUCTIONS: str = os.getenv(
+        "ENRICHMENT_CUSTOM_INSTRUCTIONS",
+        (
+            "Act as a conservative beauty-product data steward. Extract only facts explicitly "
+            "supported by the supplied product fields or exact glossary records. Preserve the "
+            "source language and market context. Never convert an ingredient's presence or "
+            "CosIng function into an efficacy, safety, suitability, compliance, vegan, "
+            "cruelty-free, free-from, medical, or brand claim. Never infer concentration from "
+            "ingredient order. Keep unsupported fields unknown and attach evidence to every "
+            "non-unknown value."
+        ),
+    )
     
-    PROMPT_VERSION: str = "1.0"
+    PROMPT_VERSION: str = "2.0-grounded"
     SCHEMA_VERSION: str = "1.0"
     
     # AI Cost and Job Processing Controls
