@@ -223,6 +223,12 @@ class IngredientDefinition(Base):
     function = Column(Text, nullable=True)
     benefits = Column(Text, nullable=True)
     possible_concerns = Column(Text, nullable=True)
+    source_name = Column(String(255), nullable=True)
+    source_url = Column(Text, nullable=True)
+    source_record_id = Column(String(255), nullable=True, index=True)
+    regulatory_status = Column(String(100), nullable=True)
+    cas_number = Column(String(100), nullable=True)
+    ec_number = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class FormulationIngredient(Base):

@@ -7,6 +7,11 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.schemas import BeautyProductEnrichmentSchema
 from app.models import EnrichmentRun
+from app.services.ingredient_knowledge import (
+    build_ingredient_grounding_context,
+    ground_fallback_ingredients,
+    retrieve_ingredient_knowledge,
+)
 
 def calculate_token_count_rough(text: str) -> int:
     # Basic rough calculation: ~4 chars per token
@@ -264,6 +269,8 @@ def run_ai_enrichment(
     """
     input_text = f"Title: {name}\nBrand: {brand}\nDescription: {description}\nIngredients: {raw_ingredients}"
     input_content_hash = hashlib.sha256(input_text.encode('utf-8')).hexdigest()
+    ingredient_knowledge = retrieve_ingredient_knowledge(db, raw_ingredients)
+    grounding_context = build_ingredient_grounding_context(ingredient_knowledge)
 
     run_id = uuid.uuid4()
     
@@ -277,15 +284,22 @@ def run_ai_enrichment(
         
         system_prompt = (
             "You are an expert Cosmetic Chemist and Beauty PIM Assistant. Extract structured beauty data. "
+            f"Custom enrichment policy: {settings.ENRICHMENT_CUSTOM_INSTRUCTIONS} "
             "Strictly return JSON matching the specified JSON schema. "
             "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
             "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
             "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes. "
+            "The supplied ingredient reference context contains exact glossary matches. Use it only "
+            "to normalize INCI names and report declared cosmetic functions. It is informative and "
+            "does not establish safety, legal compliance, product benefits, or brand claims. "
             "For the pregnancy_warning_observation field: if the ingredient list contains 'retinol', you must create a factual observation indicating the presence of retinol (review_required=true, observed_items=['retinol'], review_message='Contains retinol'). However, do NOT write a medical conclusion or state that it is unsafe or prohibited for pregnancy; keep the message purely factual."
             f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
         )
         
-        prompt = f"Analyze the following beauty product and enrich its metadata:\n\n{input_text}"
+        prompt = (
+            f"Analyze the following beauty product and enrich its metadata:\n\n{input_text}"
+            f"\n\nExact ingredient reference context:\n{grounding_context}"
+        )
         
         payload = {
             "model": settings.OPENAI_MODEL,
@@ -376,11 +390,13 @@ def run_ai_enrichment(
                     parent_enrichment_run_id=run_id, attempt=attempt + 1
                 )
             fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+            fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
             return fallback_data, run_id
 
     # 2. Fallback if Gemini key is missing
     if not settings.GEMINI_API_KEY:
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+        fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
         run_record = EnrichmentRun(
             id=run_id,
             import_job_id=import_job_id,
@@ -413,14 +429,21 @@ def run_ai_enrichment(
     
     system_prompt = (
         "You are an expert Cosmetic Chemist and Beauty PIM Assistant. Extract structured beauty data. "
+        f"Custom enrichment policy: {settings.ENRICHMENT_CUSTOM_INSTRUCTIONS} "
         "Strictly return JSON matching the specified JSON schema. "
         "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
         "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
         "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes. "
+        "The supplied ingredient reference context contains exact glossary matches. Use it only "
+        "to normalize INCI names and report declared cosmetic functions. It is informative and "
+        "does not establish safety, legal compliance, product benefits, or brand claims. "
         "For the pregnancy_warning_observation field: if the ingredient list contains 'retinol', you must create a factual observation indicating the presence of retinol (review_required=true, observed_items=['retinol'], review_message='Contains retinol'). However, do NOT write a medical conclusion or state that it is unsafe or prohibited for pregnancy; keep the message purely factual."
     )
 
-    prompt = f"Analyze the following beauty product and enrich its metadata:\n\n{input_text}"
+    prompt = (
+        f"Analyze the following beauty product and enrich its metadata:\n\n{input_text}"
+        f"\n\nExact ingredient reference context:\n{grounding_context}"
+    )
 
     # Define evidence schema to reuse
     evidence_schema = {
@@ -606,4 +629,5 @@ def run_ai_enrichment(
             )
             
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+        fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
         return fallback_data, run_id
