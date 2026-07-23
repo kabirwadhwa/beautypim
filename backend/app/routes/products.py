@@ -177,7 +177,7 @@ def re_enrich_product(
             entity_type="CanonicalProduct",
             entity_id=product.id,
             display_label=product.product_name,
-            action="re_enrich",
+            action="update",
             before={"enrichment_status": "existing"},
             after={"enrichment_status": "completed"},
             changed={"enrichment": ["existing", "regenerated"]},
