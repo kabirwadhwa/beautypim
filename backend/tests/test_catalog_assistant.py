@@ -1,7 +1,9 @@
 import hashlib
 import uuid
+from unittest.mock import Mock
 
 from app.config import settings
+from app.routes.catalog_assistant import interpret_question
 from app.models import (
     Brand,
     CanonicalProduct,
@@ -251,3 +253,40 @@ def test_catalogue_assistant_matches_legacy_source_category(client, db, monkeypa
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["products"]] == [str(product.id)]
     assert response.json()["products"][0]["description"] == "A gentle archive cleanser."
+
+
+def test_ai_interpretation_cannot_weaken_explicit_product_type_or_exclusion(monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    ai_payload = {
+        "query_terms": [],
+        "brand_names": [],
+        "category_terms": ["body care"],
+        "product_types": [],
+        "ingredients_include": [],
+        "ingredients_exclude": [],
+        "concerns": [],
+        "claims": [],
+        "review_statuses": [],
+        "explanation": "Broad body care search",
+        "limit": 20,
+    }
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {
+        "choices": [{"message": {"content": __import__("json").dumps(ai_payload)}}]
+    }
+    monkeypatch.setattr(
+        "app.routes.catalog_assistant.requests.post",
+        Mock(return_value=response),
+    )
+
+    filters, provider = interpret_question(
+        "Find vegan body oils without retinol",
+        [],
+        [],
+        ["Body Care > Body Oil"],
+    )
+    assert provider.startswith("OpenAI")
+    assert "body oil" in filters["product_types"]
+    assert "vegan" in filters["claims"]
+    assert "retinol" in filters["ingredients_exclude"]

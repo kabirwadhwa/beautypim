@@ -217,6 +217,15 @@ def interpret_question(
             "review_statuses",
         ):
             filters[key] = _clean_terms(filters.get(key))
+        # Explicit catalogue phrases from the user's current question are hard
+        # constraints. The model may add useful interpretation, but it cannot
+        # weaken "body oil", "vegan", or "without retinol" into a broader query.
+        deterministic = _fallback_filters(message)
+        for key in (
+            "category_terms", "product_types", "ingredients_include",
+            "ingredients_exclude", "concerns", "claims", "review_statuses",
+        ):
+            filters[key] = list(dict.fromkeys(filters[key] + deterministic[key]))
         filters["limit"] = max(1, min(int(filters.get("limit", 20)), 50))
         return filters, f"OpenAI {settings.OPENAI_MODEL}"
     except Exception:
