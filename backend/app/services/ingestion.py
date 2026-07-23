@@ -13,11 +13,44 @@ def compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 def detect_delimiter(file_bytes: bytes) -> str:
-    sample = file_bytes[:8192].decode("utf-8-sig", errors="replace")
-    try:
-        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
-    except csv.Error:
-        return ";" if sample.splitlines() and sample.splitlines()[0].count(";") > sample.splitlines()[0].count(",") else ","
+    """Detect delimiters from parsed record structure, not raw character counts.
+
+    ``csv.Sniffer`` is easily misled by comma-heavy JSON embedded in a
+    semicolon-delimited export. Comparing candidate delimiters against the
+    header width and subsequent record consistency correctly handles those
+    fields while still respecting quoted delimiters.
+    """
+    sample = file_bytes[:131072].decode("utf-8-sig", errors="replace")
+    candidates = [",", ";", "\t", "|"]
+    scored = []
+    for candidate in candidates:
+        try:
+            reader = csv.reader(io.StringIO(sample), delimiter=candidate)
+            parsed_rows = []
+            for row in reader:
+                if row and any(str(value).strip() for value in row):
+                    parsed_rows.append(row)
+                if len(parsed_rows) >= 25:
+                    break
+            if not parsed_rows:
+                continue
+            header_width = len(parsed_rows[0])
+            data_widths = [len(row) for row in parsed_rows[1:]]
+            consistent_rows = sum(width == header_width for width in data_widths)
+            inconsistent_distance = sum(abs(width - header_width) for width in data_widths)
+            scored.append((
+                header_width > 1,
+                consistent_rows,
+                -inconsistent_distance,
+                header_width,
+                candidate,
+            ))
+        except (csv.Error, UnicodeError):
+            continue
+
+    if not scored:
+        return ","
+    return max(scored)[-1]
 
 def _validate_dataframe(df: pd.DataFrame) -> None:
     if df.empty:
