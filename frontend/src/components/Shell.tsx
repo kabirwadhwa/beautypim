@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { 
   LayoutDashboard, FileInput, TableProperties, Download, 
-  Settings, LogOut, ShieldAlert, Sparkles, Users 
+  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle
 } from 'lucide-react';
 import styles from '../app/page.module.css';
 
@@ -47,6 +47,7 @@ export default function Shell({ children }: ShellProps) {
     { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Feeds Ingest', path: '/imports', icon: FileInput },
     { name: 'Product Grid', path: '/products', icon: TableProperties },
+    { name: 'AI Catalogue Chat', path: '/assistant', icon: MessageCircle },
     { name: 'Export Center', path: '/exports', icon: Download },
     { name: 'Taxonomy Settings', path: '/settings/taxonomies', icon: Settings },
   ];
