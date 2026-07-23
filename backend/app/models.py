@@ -149,6 +149,7 @@ class CanonicalProduct(Base):
     product_name = Column(String(255), nullable=False)
     normalized_name = Column(String(255), nullable=False, index=True)
     category_id = Column(GUID, ForeignKey('categories.id', ondelete='SET NULL'), nullable=True)
+    image_url = Column(Text, nullable=True)
     review_status = Column(String(50), nullable=False, default='imported') 
     # imported, queued, enriching, enrichment_failed, needs_review, in_review, approved, rejected, published, exported, merged
     reviewer_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)

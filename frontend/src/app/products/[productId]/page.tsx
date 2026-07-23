@@ -8,6 +8,7 @@ import {
   ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle, 
   History, Settings, Sparkles, BookOpen, User,
   ChevronDown, ChevronUp, Info, ExternalLink, RefreshCw, AlertCircle
+  , Download, Image as ImageIcon
 } from 'lucide-react';
 import styles from '../../page.module.css';
 
@@ -45,7 +46,11 @@ interface FieldValue {
 
 interface ProductDetail {
   id: string;
+  internal_code: string;
   product_name: string;
+  description: string | null;
+  image_url: string | null;
+  gtin: string | null;
   brand_id: string | null;
   brand_name: string | null;
   category_id: string | null;
@@ -121,6 +126,10 @@ export default function ProductDetailPage() {
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [saveLoading, setSaveLoading] = useState(false);
   const [reEnrichLoading, setReEnrichLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [imageSaving, setImageSaving] = useState(false);
+  const [imageUrlDraft, setImageUrlDraft] = useState('');
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
 
   const fetchDetail = async () => {
     try {
@@ -130,6 +139,8 @@ export default function ProductDetailPage() {
       if (!resp.ok) throw new Error("Product details not found.");
       const data = await resp.json();
       setProduct(data);
+      setImageUrlDraft(data.image_url || '');
+      setImageLoadFailed(false);
     } catch (e: any) {
       setError(e.message || "Failed to load.");
     } finally {
@@ -178,6 +189,61 @@ export default function ProductDetailPage() {
       setError(e.message || "Re-enrichment failed.");
     } finally {
       setReEnrichLoading(false);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    setPdfLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem("token");
+      const resp = await fetch(`${API_URL}/products/${productId}/pdf`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || "PDF generation failed.");
+      }
+      const blob = await resp.blob();
+      const disposition = resp.headers.get("content-disposition") || "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "beauty-pim-product-sheet.pdf";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e.message || "PDF generation failed.");
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  const handleSaveImageUrl = async () => {
+    setImageSaving(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem("token");
+      const resp = await fetch(`${API_URL}/products/${productId}/image`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ image_url: imageUrlDraft.trim() || null })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "Image URL could not be saved.");
+      setProduct(data);
+      setImageUrlDraft(data.image_url || "");
+      setImageLoadFailed(false);
+    } catch (e: any) {
+      setError(e.message || "Image URL could not be saved.");
+    } finally {
+      setImageSaving(false);
     }
   };
 
@@ -312,6 +378,16 @@ export default function ProductDetailPage() {
           </span>
 
           <button
+            onClick={handleDownloadPdf}
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            disabled={pdfLoading}
+            title="Download a catalogue-grounded product intelligence sheet"
+          >
+            <Download size={16} />
+            {pdfLoading ? "Generating..." : "Generate PDF"}
+          </button>
+
+          <button
             onClick={handleReEnrich}
             className={`${styles.btn} ${styles.btnSecondary}`}
             disabled={reEnrichLoading}
@@ -351,6 +427,72 @@ export default function ProductDetailPage() {
           <span>Product cannot be approved until all blocking validation issues are resolved.</span>
         </div>
       )}
+
+      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 20, alignItems: 'center' }}>
+          <div style={{
+            width: 180, height: 180, borderRadius: 10, overflow: 'hidden',
+            border: '1px solid #334155', background: '#0b1220', display: 'flex',
+            alignItems: 'center', justifyContent: 'center'
+          }}>
+            {product?.image_url && !imageLoadFailed ? (
+              // Product imagery is supplied dynamically by catalogue users, so Next Image
+              // cannot safely predeclare every remote host.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={product.image_url}
+                alt={`${product.product_name} product`}
+                style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#fff' }}
+                onError={() => setImageLoadFailed(true)}
+              />
+            ) : (
+              <div style={{ textAlign: 'center', color: '#64748b' }}>
+                <ImageIcon size={34} style={{ marginBottom: 8 }} />
+                <div style={{ fontSize: 12 }}>No product image</div>
+              </div>
+            )}
+          </div>
+          <div>
+            <div className={styles.panelTitle} style={{ marginBottom: 10 }}>
+              <ImageIcon size={18} color="#60a5fa" />
+              <span>Product Image URL</span>
+            </div>
+            <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>
+              Add a public HTTPS image URL. It will appear on this page and in generated product PDFs.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <input
+                type="url"
+                value={imageUrlDraft}
+                onChange={(event) => setImageUrlDraft(event.target.value)}
+                placeholder="https://cdn.example.com/product-image.jpg"
+                aria-label="Product image URL"
+                style={{
+                  flex: 1, minWidth: 0, background: '#0b1220', border: '1px solid #334155',
+                  borderRadius: 6, color: '#e2e8f0', padding: '10px 12px', fontSize: 13
+                }}
+              />
+              <button
+                className={`${styles.btn} ${styles.btnPrimary}`}
+                onClick={handleSaveImageUrl}
+                disabled={imageSaving || imageUrlDraft === (product?.image_url || '')}
+              >
+                {imageSaving ? "Saving..." : "Save Image"}
+              </button>
+            </div>
+            {product?.image_url && (
+              <a
+                href={product.image_url}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 9, color: '#60a5fa', fontSize: 12 }}
+              >
+                Open original image <ExternalLink size={12} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Global AI Enrichment Run Metadata */}
       {product?.enrichment_metadata && (
