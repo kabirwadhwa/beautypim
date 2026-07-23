@@ -216,6 +216,17 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     raw_directions = source_value(raw_data, mapping, "directions")
     raw_market = source_value(raw_data, mapping, "market") or "global"
     raw_language = source_value(raw_data, mapping, "language") or "en"
+    raw_image_url = source_value(raw_data, mapping, "image_url") or None
+
+    if raw_image_url:
+        from app.services.image_urls import normalize_public_image_url
+        normalized_image_url = normalize_public_image_url(raw_image_url)
+        if normalized_image_url:
+            product = db.query(CanonicalProduct).filter(
+                CanonicalProduct.id == item.canonical_product_id
+            ).first()
+            if product:
+                product.image_url = normalized_image_url
 
     # Start Enrichment Run
     item.enrichment_status = "processing"

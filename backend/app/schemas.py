@@ -378,6 +378,7 @@ class ProductOut(BaseModel):
     brand_name: Optional[str] = None
     category_path: Optional[str] = None
     gtin: Optional[str] = None
+    image_url: Optional[str] = None
     review_status: str
     validation_issue_count: int = 0
     highest_issue_severity: Optional[str] = None
@@ -391,6 +392,7 @@ class ProductOut(BaseModel):
 class ProductDetailOut(ProductOut):
     brand_id: Optional[uuid.UUID] = None
     category_id: Optional[uuid.UUID] = None
+    description: Optional[str] = None
     reviewer_id: Optional[uuid.UUID] = None
     variants: list[VariantOut] = Field(default_factory=list)
     formulations: list[FormulationOut] = Field(default_factory=list)
@@ -403,6 +405,9 @@ class ProductDetailOut(ProductOut):
 
     class Config:
         from_attributes = True
+
+class ProductImageUpdate(BaseModel):
+    image_url: Optional[str] = None
 
 EDITABLE_FIELDS_REGISTRY = {
     "subcategory": str,

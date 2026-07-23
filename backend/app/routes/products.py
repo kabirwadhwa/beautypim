@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, func
 from typing import List, Optional, Dict, Any
@@ -8,12 +8,12 @@ from app.database import get_db
 from app.auth import get_current_user, require_editor_or_admin, require_viewer_or_above
 from app.models import (
     CanonicalProduct, ProductVariant, Brand, Category, FieldValue, 
-    ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem
+    ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem, SourceListing
 )
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
     FieldValueOut, EnrichmentMetadataSchema, KeyIngredientOut, DynamicConcernOut,
-    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate
+    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate, ProductImageUpdate
 )
 from app.worker import record_audit, process_item_enrichment, create_field_value_version
 from pydantic import BaseModel
@@ -134,6 +134,7 @@ def list_products(
             brand_name=prod.brand.name,
             category_path=category_path,
             gtin=variant.gtin if variant else None,
+            image_url=prod.image_url,
             review_status=prod.review_status,
             validation_issue_count=len(issues),
             highest_issue_severity=highest_severity,
@@ -386,6 +387,37 @@ def get_product_detail(
                 source=fv.source_type
             ))
 
+    # Preserve source-authored marketing copy and image URLs for existing imports.
+    # New enrichment runs also persist image_url directly on CanonicalProduct.
+    source_description = None
+    source_image_url = prod.image_url
+    latest_source = db.query(SourceListing).filter(
+        SourceListing.canonical_product_id == product_id,
+        SourceListing.is_deleted == False,
+    ).order_by(SourceListing.created_at.desc()).first()
+    if latest_source:
+        source_job = db.query(ImportJob).filter(ImportJob.id == latest_source.import_job_id).first()
+        mapping = source_job.column_mapping if source_job else {}
+        raw = latest_source.raw_data or {}
+        description_key = (mapping or {}).get("description")
+        image_key = (mapping or {}).get("image_url")
+        if description_key and raw.get(description_key):
+            source_description = str(raw[description_key]).strip()
+        if not source_description:
+            for key in ("description", "marketing_description", "marketing_copy", "details"):
+                if raw.get(key):
+                    source_description = str(raw[key]).strip()
+                    break
+        if not source_image_url:
+            from app.services.image_urls import normalize_public_image_url
+            candidate = raw.get(image_key) if image_key else None
+            if not candidate:
+                for key in ("image_url", "image", "image_link", "photo_url", "picture"):
+                    if raw.get(key):
+                        candidate = raw[key]
+                        break
+            source_image_url = normalize_public_image_url(candidate)
+
     return ProductDetailOut(
         id=prod.id,
         internal_code=product_internal_code(prod.id),
@@ -395,6 +427,8 @@ def get_product_detail(
         category_id=prod.category_id,
         category_path=category_path,
         gtin=variants[0].gtin if variants else None,
+        image_url=source_image_url,
+        description=source_description,
         review_status=prod.review_status,
         validation_issue_count=len([issue for issue in issues if not issue.resolved]),
         highest_issue_severity=max(
@@ -413,6 +447,62 @@ def get_product_detail(
         enrichment_metadata=global_meta,
         key_ingredients=key_ingredients_out,
         dynamic_concerns=concerns_out
+    )
+
+@router.put("/{product_id}/image", response_model=ProductDetailOut)
+def update_product_image(
+    product_id: uuid.UUID,
+    payload: ProductImageUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    from app.services.image_urls import normalize_public_image_url
+
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id,
+        CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    normalized = normalize_public_image_url(payload.image_url)
+    if payload.image_url and not normalized:
+        raise HTTPException(status_code=400, detail="Image URL must be a valid public HTTP or HTTPS URL.")
+    before = product.image_url
+    product.image_url = normalized
+    record_audit(
+        db=db,
+        entity_type="CanonicalProduct",
+        entity_id=product.id,
+        display_label=product.product_name,
+        action="update",
+        before={"image_url": before},
+        after={"image_url": normalized},
+        changed={"image_url": [before, normalized]},
+        user_id=current_user.id,
+        actor_type="user",
+        reason="Updated product image URL.",
+    )
+    db.commit()
+    return get_product_detail(product_id, db, current_user)
+
+@router.get("/{product_id}/pdf")
+def download_product_pdf(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_viewer_or_above),
+):
+    from app.services.product_pdf import build_product_pdf
+
+    detail = get_product_detail(product_id, db, current_user)
+    pdf = build_product_pdf(detail)
+    safe_name = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in detail.product_name
+    ).strip("-") or "product"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}-product-sheet.pdf"'},
     )
 
 @router.put("/{product_id}/category", response_model=ProductDetailOut)
