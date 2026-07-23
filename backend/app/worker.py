@@ -210,6 +210,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     raw_ingr = source_value(raw_data, mapping, "ingredients")
     raw_ean = source_value(raw_data, mapping, "ean") or None
     raw_size = source_value(raw_data, mapping, "size") or None
+    raw_category = source_value(raw_data, mapping, "category")
+    raw_product_family = source_value(raw_data, mapping, "product_family")
+    raw_claims = source_value(raw_data, mapping, "claims")
+    raw_directions = source_value(raw_data, mapping, "directions")
+    raw_market = source_value(raw_data, mapping, "market") or "global"
+    raw_language = source_value(raw_data, mapping, "language") or "en"
 
     # Start Enrichment Run
     item.enrichment_status = "processing"
@@ -227,10 +233,85 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         import_job_item_id=item.id,
         source_listing_id=listing.id,
         canonical_product_id=item.canonical_product_id,
-        product_variant_id=item.product_variant_id
+        product_variant_id=item.product_variant_id,
+        source_context=raw_data,
     )
 
     source_ref = f"source_listing_id:{listing.id}"
+
+    # Explicit source hierarchy and instructions outrank model inference.
+    if raw_product_family:
+        explicit_family = raw_product_family.strip()
+        for field_name in ("subcategory", "product_type"):
+            enrichment_result[field_name] = {
+                "value": explicit_family,
+                "value_status": "explicit_source",
+                "confidence": 1.0,
+                "evidence": [{
+                    "source_field": mapping.get("product_family", "product_family"),
+                    "supporting_text": explicit_family,
+                    "evidence_type": "explicit",
+                }],
+                "reasoning_summary": "Copied from the mapped source product family.",
+            }
+    if raw_directions:
+        enrichment_result["directions"] = {
+            "value": raw_directions,
+            "value_status": "explicit_source",
+            "confidence": 1.0,
+            "evidence": [{
+                "source_field": mapping.get("directions", "directions"),
+                "supporting_text": raw_directions,
+                "evidence_type": "explicit",
+            }],
+            "reasoning_summary": "Copied from mapped source directions.",
+        }
+    if raw_claims:
+        source_claim_entries = [
+            {
+                "statement": claim.strip(),
+                "benefit_status": "explicit_source",
+                "confidence": 1.0,
+                "evidence": [{
+                    "source_field": mapping.get("claims", "claims"),
+                    "supporting_text": claim.strip(),
+                    "evidence_type": "explicit",
+                }],
+            }
+            for claim in raw_claims.replace("|", ";").split(";")
+            if claim.strip()
+        ]
+        enrichment_result["source_claims"] = source_claim_entries
+        existing_benefits = enrichment_result.get("benefits")
+        if not isinstance(existing_benefits, list):
+            existing_benefits = []
+        enrichment_result["benefits"] = source_claim_entries + existing_benefits
+
+    # Assign a stable materialized taxonomy path from explicit source hierarchy.
+    # AI classification is only used as a fallback when the source has no family.
+    if raw_category:
+        root_name = " ".join(raw_category.split()).title()
+        root = db.query(Category).filter(Category.path.ilike(root_name)).first()
+        if not root:
+            root = Category(id=uuid.uuid4(), name=root_name, level=0, path=root_name)
+            db.add(root)
+            db.flush()
+        family_value = raw_product_family or (enrichment_result.get("subcategory") or {}).get("value")
+        assigned = root
+        if family_value:
+            family_name = " ".join(str(family_value).replace("_", " ").split()).title()
+            family_path = f"{root.path} > {family_name}"
+            assigned = db.query(Category).filter(Category.path.ilike(family_path)).first()
+            if not assigned:
+                assigned = Category(
+                    id=uuid.uuid4(), name=family_name, parent_id=root.id,
+                    level=1, path=family_path,
+                )
+                db.add(assigned)
+                db.flush()
+        product = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
+        if product:
+            product.category_id = assigned.id
 
     # Write core enriched fields
     core_categorical_fields = [
@@ -293,7 +374,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             canonical_product_id=item.canonical_product_id,
             product_variant_id=None,
             field_name=field,
-            value=field_data.get("targeting_status") == "explicit" or field_data.get("targeting_status") == "inferred",
+        value=field_data.get("targeting_status") in {"explicit", "inferred"},
             source_type="ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),
@@ -305,8 +386,35 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             semantic_status_type="targeting_status"
         )
 
+    # Persist rich enrichment blocks that were previously discarded.
+    for field in ["source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence"]:
+        field_data = enrichment_result.get(field)
+        if field_data is None:
+            continue
+        confidence = 0.0
+        if isinstance(field_data, dict):
+            confidence = field_data.get("confidence") or 0.0
+        elif isinstance(field_data, list) and field_data:
+            confidence = max((entry.get("confidence", 0.0) for entry in field_data if isinstance(entry, dict)), default=0.0)
+        create_field_value_version(
+            db=db,
+            canonical_product_id=item.canonical_product_id,
+            product_variant_id=None,
+            field_name=field,
+            value=field_data,
+            source_type="ai_inference",
+            source_ref=source_ref,
+            confidence=confidence,
+            status="inferred",
+            run_id=run_id,
+            evidence=field_data.get("evidence", []) if isinstance(field_data, dict) else [],
+            reasoning_summary=f"Structured {field.replace('_', ' ')} enrichment.",
+            semantic_status="inferred",
+            semantic_status_type="structured_enrichment",
+        )
+
     # Write warning observations
-    for field in ["pregnancy_warning_observation", "allergen_warning_observation"]:
+    for field in ["pregnancy_warning_observation", "allergen_warning_observation", "sensitivity_warning_observation"]:
         field_data = enrichment_result.get(field, {})
         if field_data:
             create_field_value_version(
@@ -328,18 +436,32 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
 
     # Save formulation
     content_hash = hashlib.sha256(raw_ingr.encode('utf-8')).hexdigest()
-    formulation = Formulation(
-        id=uuid.uuid4(),
-        canonical_product_id=item.canonical_product_id,
-        product_variant_id=item.product_variant_id,
-        source_listing_id=listing.id,
-        raw_inci_text=raw_ingr,
-        market="global",
-        language="en",
-        content_hash=content_hash
-    )
-    db.add(formulation)
-    db.flush()
+    formulation = db.query(Formulation).filter(
+        Formulation.canonical_product_id == item.canonical_product_id,
+        Formulation.product_variant_id == item.product_variant_id,
+        Formulation.content_hash == content_hash,
+        Formulation.is_deleted == False,
+    ).order_by(Formulation.created_at.desc()).first()
+    if formulation:
+        db.query(FormulationIngredient).filter(
+            FormulationIngredient.formulation_id == formulation.id
+        ).delete(synchronize_session=False)
+        formulation.source_listing_id = listing.id
+        formulation.market = raw_market
+        formulation.language = raw_language
+    else:
+        formulation = Formulation(
+            id=uuid.uuid4(),
+            canonical_product_id=item.canonical_product_id,
+            product_variant_id=item.product_variant_id,
+            source_listing_id=listing.id,
+            raw_inci_text=raw_ingr,
+            market=raw_market,
+            language=raw_language,
+            content_hash=content_hash
+        )
+        db.add(formulation)
+        db.flush()
 
     # Save formulation ingredients
     ai_ingredients = enrichment_result.get("ingredients_intelligence", [])

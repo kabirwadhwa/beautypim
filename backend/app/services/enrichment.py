@@ -2,6 +2,7 @@ import json
 import requests
 import hashlib
 import uuid
+import re
 from typing import Dict, Any, Tuple, Optional
 from sqlalchemy.orm import Session
 from app.config import settings
@@ -27,6 +28,62 @@ BALANCED_INFERENCE_GUIDANCE = (
     "support. The presence of Parfum/Fragrance may support fragrance_present=yes, but ingredient "
     "absence alone does not prove a free-from claim. "
 )
+
+def normalize_and_validate_enrichment(data: Dict[str, Any], raw_ingredients: str) -> Dict[str, Any]:
+    """Normalize provider vocabulary and reject ingredient observations not in source."""
+    positive = {"explicit", "inferred", "targeted", "yes", "true"}
+    negative = {"not_targeted", "not targeted", "no", "false", "unknown", "not_applicable"}
+    for field in (
+        "hydration", "anti_ageing", "pigmentation", "acne", "redness",
+        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
+    ):
+        payload = data.get(field) or {}
+        raw_status = str(payload.get("targeting_status", "unknown")).strip().lower()
+        if raw_status in positive:
+            payload["targeting_status"] = "explicit" if raw_status == "explicit" else "inferred"
+        elif raw_status in negative:
+            payload["targeting_status"] = "not_targeted" if raw_status not in {"unknown", "not_applicable"} else raw_status
+        else:
+            payload["targeting_status"] = "unknown"
+
+    ingredient_text = (raw_ingredients or "").lower()
+    ingredient_names = {
+        re.sub(r"\s+", " ", part.strip())
+        for part in re.split(r"[,;\n]", ingredient_text)
+        if part.strip()
+    }
+    pregnancy = data.get("pregnancy_warning_observation") or {}
+    observed = [str(item).strip().lower() for item in pregnancy.get("observed_items", [])]
+    verified = [item for item in observed if item and item in ingredient_text]
+    retinoids = ("retinol", "retinal", "retinaldehyde", "retinyl palmitate", "retinyl acetate")
+    verified_retinoids = [
+        name for name in retinoids
+        if any(candidate == name or candidate.startswith(f"{name} (") for candidate in ingredient_names)
+    ]
+    if verified_retinoids:
+        pregnancy.update({
+            "review_required": True,
+            "observation_type": "retinoid_present",
+            "observed_items": verified_retinoids,
+            "review_message": (
+                f"Contains {', '.join(verified_retinoids)}. "
+                "Factual review required; no safety conclusion is made."
+            ),
+            "confidence": 1.0,
+        })
+    elif not verified:
+        pregnancy.update({
+            "review_required": False,
+            "observation_type": "none_observed",
+            "observed_items": [],
+            "review_message": "No pregnancy-related ingredient observation was verified from the supplied list.",
+            "confidence": 1.0,
+            "evidence": [],
+        })
+    else:
+        pregnancy["observed_items"] = verified
+    data["pregnancy_warning_observation"] = pregnancy
+    return data
 
 def calculate_token_count_rough(text: str) -> int:
     # Basic rough calculation: ~4 chars per token
@@ -389,12 +446,18 @@ def run_ai_enrichment(
     canonical_product_id: Optional[uuid.UUID] = None,
     product_variant_id: Optional[uuid.UUID] = None,
     parent_enrichment_run_id: Optional[uuid.UUID] = None,
-    attempt: int = 1
+    attempt: int = 1,
+    source_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Optional[uuid.UUID]]:
     """Runs Gemini API enrichment, validates it via Pydantic, calculates token pricing,
     saves the enrichment run diagnostics log, and returns parsed JSON.
     """
-    input_text = f"Title: {name}\nBrand: {brand}\nDescription: {description}\nIngredients: {raw_ingredients}"
+    source_context = source_context or {}
+    input_text = (
+        f"Title: {name}\nBrand: {brand}\nDescription: {description}\n"
+        f"Ingredients: {raw_ingredients}\n"
+        f"Complete supplied source record: {json.dumps(source_context, ensure_ascii=False, default=str)}"
+    )
     input_content_hash = hashlib.sha256(input_text.encode('utf-8')).hexdigest()
     ingredient_knowledge = retrieve_ingredient_knowledge(db, raw_ingredients)
     grounding_context = build_ingredient_grounding_context(ingredient_knowledge)
@@ -420,7 +483,7 @@ def run_ai_enrichment(
             "The supplied ingredient reference context contains exact glossary matches. Use it only "
             "to normalize INCI names and report declared cosmetic functions. It is informative and "
             "does not establish safety, legal compliance, product benefits, or brand claims. "
-            "For the pregnancy_warning_observation field: if the ingredient list contains 'retinol', you must create a factual observation indicating the presence of retinol (review_required=true, observed_items=['retinol'], review_message='Contains retinol'). However, do NOT write a medical conclusion or state that it is unsafe or prohibited for pregnancy; keep the message purely factual."
+            "Only report a pregnancy ingredient observation when a named retinoid is explicitly present as an INCI item. Never infer retinol from product type, benefits, marketing language, or unrelated oils. Keep any observation factual and make no medical safety conclusion."
             f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
         )
         
@@ -455,6 +518,7 @@ def run_ai_enrichment(
             
             parsed_data = json.loads(candidate_text)
             parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
+            parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
             
             run_record = EnrichmentRun(
                 id=run_id,
@@ -515,16 +579,19 @@ def run_ai_enrichment(
                     db, name, brand, description, raw_ingredients,
                     import_job_id, import_job_item_id, source_listing_id,
                     canonical_product_id, product_variant_id,
-                    parent_enrichment_run_id=run_id, attempt=attempt + 1
+                    parent_enrichment_run_id=run_id, attempt=attempt + 1,
+                    source_context=source_context,
                 )
             fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
             fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
+            fallback_data = normalize_and_validate_enrichment(fallback_data, raw_ingredients)
             return fallback_data, run_id
 
     # 2. Fallback if Gemini key is missing
     if not settings.GEMINI_API_KEY:
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
         fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
+        fallback_data = normalize_and_validate_enrichment(fallback_data, raw_ingredients)
         run_record = EnrichmentRun(
             id=run_id,
             import_job_id=import_job_id,
@@ -566,7 +633,7 @@ def run_ai_enrichment(
         "The supplied ingredient reference context contains exact glossary matches. Use it only "
         "to normalize INCI names and report declared cosmetic functions. It is informative and "
         "does not establish safety, legal compliance, product benefits, or brand claims. "
-        "For the pregnancy_warning_observation field: if the ingredient list contains 'retinol', you must create a factual observation indicating the presence of retinol (review_required=true, observed_items=['retinol'], review_message='Contains retinol'). However, do NOT write a medical conclusion or state that it is unsafe or prohibited for pregnancy; keep the message purely factual."
+        "Only report a pregnancy ingredient observation when a named retinoid is explicitly present as an INCI item. Never infer retinol from product type, benefits, marketing language, or unrelated oils. Keep any observation factual and make no medical safety conclusion."
     )
 
     prompt = (
@@ -690,6 +757,7 @@ def run_ai_enrichment(
         
         # Ensure default array properties that model might omit
         parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
+        parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
         
         # Save Success Run
         run_record = EnrichmentRun(
@@ -754,9 +822,11 @@ def run_ai_enrichment(
                 db, name, brand, description, raw_ingredients,
                 import_job_id, import_job_item_id, source_listing_id,
                 canonical_product_id, product_variant_id,
-                parent_enrichment_run_id=run_id, attempt=attempt + 1
+                parent_enrichment_run_id=run_id, attempt=attempt + 1,
+                source_context=source_context,
             )
             
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
         fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
+        fallback_data = normalize_and_validate_enrichment(fallback_data, raw_ingredients)
         return fallback_data, run_id

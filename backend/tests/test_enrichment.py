@@ -2,7 +2,10 @@ import pytest
 import uuid
 
 from app.models import IngredientDefinition
-from app.services.enrichment import generate_deterministic_fallback
+from app.services.enrichment import (
+    generate_deterministic_fallback,
+    normalize_and_validate_enrichment,
+)
 from app.services.ingredient_knowledge import (
     build_ingredient_grounding_context,
     ground_fallback_ingredients,
@@ -110,3 +113,39 @@ def test_ingredient_knowledge_does_not_fuzzy_match(db):
     )
     db.flush()
     assert retrieve_ingredient_knowledge(db, "Retinal") == []
+
+
+def test_normalization_rejects_false_retinol_and_normalizes_concern_vocabulary():
+    result = normalize_and_validate_enrichment(
+        {
+            "fragrance": {"targeting_status": "targeted"},
+            "hydration": {"targeting_status": "not_targeted"},
+            "pregnancy_warning_observation": {
+                "review_required": True,
+                "observation_type": "retinol_present",
+                "observed_items": ["retinol"],
+                "review_message": "Contains retinol",
+                "confidence": 0.9,
+                "evidence": [{"supporting_text": "Model inference"}],
+            },
+        },
+        "Coco-Caprylate/Caprate, Helianthus Annuus Seed Oil, Squalane, Mica, Parfum, Tocopherol",
+    )
+
+    assert result["fragrance"]["targeting_status"] == "inferred"
+    assert result["hydration"]["targeting_status"] == "not_targeted"
+    observation = result["pregnancy_warning_observation"]
+    assert observation["review_required"] is False
+    assert observation["observed_items"] == []
+    assert observation["evidence"] == []
+
+
+def test_normalization_requires_an_exact_retinoid_inci_item():
+    result = normalize_and_validate_enrichment(
+        {"pregnancy_warning_observation": {"observed_items": []}},
+        "Aqua, Retinyl Palmitate, Glycerin",
+    )
+
+    observation = result["pregnancy_warning_observation"]
+    assert observation["review_required"] is True
+    assert observation["observed_items"] == ["retinyl palmitate"]

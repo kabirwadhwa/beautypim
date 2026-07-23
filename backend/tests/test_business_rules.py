@@ -199,4 +199,6 @@ def test_business_rules_integration(client: TestClient, db: Session):
     assert len(conflicting_issues) == 2
     
     total_issues = db.query(ValidationIssue).filter(ValidationIssue.canonical_product_id == toner.id).all()
-    assert len(total_issues) == 3
+    # Source category mapping now materializes a taxonomy path, so the former
+    # missing-category warning is correctly absent.
+    assert len(total_issues) == 2
