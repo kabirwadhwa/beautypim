@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Literal
 from datetime import datetime, date
 import uuid
 
@@ -373,10 +373,14 @@ class ValidationIssueOut(BaseModel):
 
 class ProductOut(BaseModel):
     id: uuid.UUID
+    internal_code: str
     product_name: str
     brand_name: Optional[str] = None
     category_path: Optional[str] = None
+    gtin: Optional[str] = None
     review_status: str
+    validation_issue_count: int = 0
+    highest_issue_severity: Optional[str] = None
     is_deleted: bool
     created_at: datetime
     updated_at: datetime
@@ -443,11 +447,30 @@ class IngestProcessRequest(BaseModel):
 
 # Exports request
 class ExportRequest(BaseModel):
-    export_mode: str = "business" # business, audit
-    file_format: str = "json" # json, csv, xlsx
+    export_mode: Literal["business", "audit"] = "business"
+    file_format: Literal["json", "csv", "xlsx"] = "json"
     include_inferred: bool = False
     webhook_url: Optional[str] = None
 
 class ExportResponse(BaseModel):
     download_url: str
     webhook_triggered: bool = False
+    row_count: int = 0
+
+class CategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    parent_id: Optional[uuid.UUID] = None
+
+class CategoryUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+class CategoryOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    parent_id: Optional[uuid.UUID] = None
+    level: int
+    path: str
+    product_count: int = 0
+
+class ProductCategoryUpdate(BaseModel):
+    category_id: Optional[uuid.UUID] = None
