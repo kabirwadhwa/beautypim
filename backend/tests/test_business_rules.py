@@ -3,7 +3,7 @@ import io
 import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from app.models import CanonicalProduct, ProductVariant, ValidationIssue, FieldValue, ImportJob, User
+from app.models import CanonicalProduct, ProductVariant, ValidationIssue, FieldValue, ImportJob, User, AuditLog
 from app.worker import run_job_worker
 from app.routes.feeds import file_cache
 from app.routes.products import approve_product
@@ -202,3 +202,16 @@ def test_business_rules_integration(client: TestClient, db: Session):
     # Source category mapping now materializes a taxonomy path, so the former
     # missing-category warning is correctly absent.
     assert len(total_issues) == 2
+
+    # Assertion 10: manual re-enrichment succeeds and records an allowed audit action.
+    re_enrich_resp = client.post(
+        f"/api/products/{retinol_prod.id}/re-enrich",
+        headers=headers,
+    )
+    assert re_enrich_resp.status_code == 200
+    audit = db.query(AuditLog).filter(
+        AuditLog.entity_id == retinol_prod.id,
+        AuditLog.reason == "Manual re-enrichment from the latest source record.",
+    ).first()
+    assert audit is not None
+    assert audit.action == "update"
