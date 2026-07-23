@@ -13,6 +13,21 @@ from app.services.ingredient_knowledge import (
     retrieve_ingredient_knowledge,
 )
 
+BALANCED_INFERENCE_GUIDANCE = (
+    "Aim for high field coverage. For classification fields such as subcategory, product type, "
+    "gender target, texture, application area and target audience, make a reasonable inference "
+    "when the product title or description strongly implies one. For concern targeting, skin or "
+    "hair fit, benefits, directions and fragrance intelligence, infer typical values when they "
+    "are reasonably supported by the product type, wording or ingredient functions. Mark these "
+    "as inferred and normally use confidence between 0.55 and 0.79; use 0.80 or higher for direct "
+    "source statements or exact reference matches. Populate each schema field with the best "
+    "supported answer, using unknown only when there is genuinely no reasonable signal. A "
+    "plausible inference must never be worded as a verified brand claim. Ethical claims, "
+    "free-from claims, safety, medical conclusions and legal compliance still require explicit "
+    "support. The presence of Parfum/Fragrance may support fragrance_present=yes, but ingredient "
+    "absence alone does not prove a free-from claim. "
+)
+
 def calculate_token_count_rough(text: str) -> int:
     # Basic rough calculation: ~4 chars per token
     return len(text) // 4
@@ -23,8 +38,11 @@ def generate_deterministic_fallback(
     description: str,
     raw_ingredients: str
 ) -> Dict[str, Any]:
-    """Runs deterministic extraction rules. Does NOT simulate AI inferences.
-    AI fields remain unknown/unprocessed.
+    """Run balanced deterministic extraction when no model is available.
+
+    Direct keyword matches remain explicit. Safe catalogue classifications may
+    be inferred at moderate confidence so a temporary provider outage does not
+    turn an otherwise useful product record into a page of unknown values.
     """
     evidence = []
     
@@ -93,6 +111,21 @@ def generate_deterministic_fallback(
             "confidence": 0.0
         }
 
+    def make_inferred_categorical(value: str, reason: str, confidence: float = 0.62) -> Dict[str, Any]:
+        return {
+            "value": value,
+            "value_status": "inferred",
+            "evidence": [{
+                "source_reference": None,
+                "source_field": "title/description",
+                "supporting_text": reason,
+                "evidence_type": "catalogue_rule_inference",
+                "char_offsets": None
+            }],
+            "reasoning_summary": reason,
+            "confidence": confidence
+        }
+
     def make_unknown_concern() -> Dict[str, Any]:
         return {
             "targeting_status": "unknown",
@@ -143,7 +176,10 @@ def generate_deterministic_fallback(
         ("moisturizer", "moisturizer"), ("moisturiser", "moisturizer"),
         ("cream", "cream"), ("lotion", "lotion"), ("toner", "toner"),
         ("shampoo", "shampoo"), ("conditioner", "conditioner"),
-        ("mascara", "mascara"), ("lipstick", "lipstick"), ("fragrance", "fragrance")
+        ("mascara", "mascara"), ("lipstick", "lipstick"), ("fragrance", "fragrance"),
+        ("perfume", "fragrance"), ("eau de parfum", "fragrance"), ("foundation", "foundation"),
+        ("concealer", "concealer"), ("sunscreen", "sunscreen"), ("spf", "sunscreen"),
+        ("deodorant", "deodorant"), ("body wash", "body wash"), ("mask", "mask")
     ], "product type")
     texture = detect_categorical([
         ("gel", "gel"), ("cream", "cream"), ("lotion", "lotion"),
@@ -154,13 +190,98 @@ def generate_deterministic_fallback(
         ("lip", "lips"), ("face", "face"), ("body", "body")
     ], "application area")
 
+    inferred_type = product_type.get("value")
+    if application_area["value_status"] == "unknown" and inferred_type:
+        area_by_type = {
+            "cleanser": "face", "serum": "face", "moisturizer": "face",
+            "toner": "face", "foundation": "face", "concealer": "face",
+            "sunscreen": "face/body", "mascara": "eye area", "lipstick": "lips",
+            "shampoo": "hair/scalp", "conditioner": "hair", "deodorant": "underarms",
+            "body wash": "body", "fragrance": "body",
+        }
+        inferred_area = area_by_type.get(inferred_type)
+        if inferred_area:
+            application_area = make_inferred_categorical(
+                inferred_area, f"Application area inferred from product type '{inferred_type}'."
+            )
+
+    gender_target = detect_categorical([
+        ("for men", "men"), ("men's", "men"), ("for women", "women"),
+        ("women's", "women"), ("unisex", "unisex")
+    ], "gender target")
+    if gender_target["value_status"] == "unknown":
+        gender_target = make_inferred_categorical(
+            "unisex",
+            "No gender restriction is stated; the catalogue default is unisex.",
+            0.55
+        )
+
+    target_audience = detect_categorical([
+        ("baby", "babies"), ("kids", "children"), ("children", "children"),
+        ("teen", "teenagers"), ("mature skin", "mature skin")
+    ], "target audience")
+    if target_audience["value_status"] == "unknown":
+        target_audience = make_inferred_categorical(
+            "adults",
+            "No age-specific audience is stated; the catalogue default is adults.",
+            0.55
+        )
+
+    if texture["value_status"] == "unknown" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
+        texture_defaults = {
+            "serum": "serum/liquid", "toner": "liquid",
+            "shampoo": "liquid/gel", "conditioner": "cream"
+        }
+        texture = make_inferred_categorical(
+            texture_defaults[inferred_type],
+            f"Typical texture inferred from product type '{inferred_type}'.",
+            0.58
+        )
+
+    hydration = detect_concern(["hydrat", "moistur"])
+    anti_ageing = detect_concern(["anti-age", "anti age", "anti-wrinkle", "wrinkle"])
+    pigmentation = detect_concern(["pigmentation", "dark spot", "brightening"])
+    acne = detect_concern(["acne", "blemish", "breakout"])
+    redness = detect_concern(["redness", "red skin"])
+    sensitivity = detect_concern(["sensitive skin", "sensitivity", "soothing"])
+    scalp_care = detect_concern(["scalp"])
+    hair_growth = detect_concern(["hair growth", "thinning hair"])
+    fragrance = detect_concern(["fragrance", "perfume", "parfum"])
+    freshness = detect_concern(["freshness", "refreshing"])
+
+    benefits = []
+    for label, field in [
+        ("Hydration support", hydration), ("Anti-ageing targeting", anti_ageing),
+        ("Brightening or pigmentation targeting", pigmentation), ("Blemish targeting", acne),
+        ("Soothing or sensitivity targeting", sensitivity), ("Scalp care", scalp_care),
+        ("Freshness", freshness),
+    ]:
+        if field["targeting_status"] == "explicit":
+            benefits.append({
+                "statement": label,
+                "source_type": "source_claim",
+                "evidence": field["evidence"][0]["supporting_text"],
+                "confidence": field["confidence"]
+            })
+
+    directions_by_type = {
+        "cleanser": "Apply to damp skin, gently massage, then rinse.",
+        "serum": "Apply a small amount to clean skin.",
+        "moisturizer": "Apply to clean skin and massage until absorbed.",
+        "toner": "Apply to clean skin before serum or moisturizer.",
+        "shampoo": "Apply to wet hair and scalp, massage, then rinse.",
+        "conditioner": "Apply to hair lengths after shampooing, then rinse.",
+        "sunscreen": "Apply evenly before sun exposure and reapply as needed.",
+    }
+    inferred_directions = directions_by_type.get(inferred_type)
+
     return {
         "subcategory": product_type,
         "product_type": product_type,
-        "gender_target": make_unknown_categorical(),
+        "gender_target": gender_target,
         "texture": texture,
         "application_area": application_area,
-        "target_audience": make_unknown_categorical(),
+        "target_audience": target_audience,
         
         "vegan": detect_simple_claim("vegan", "vegan"),
         "cruelty_free": detect_simple_claim("cruelty-free", "cruelty_free"),
@@ -170,23 +291,29 @@ def generate_deterministic_fallback(
         "alcohol_free": detect_simple_claim("alcohol-free", "alcohol_free"),
         "fragrance_present": detect_simple_claim("fragrance", "fragrance_present"),
         
-        "hydration": detect_concern(["hydrat", "moistur"]),
-        "anti_ageing": detect_concern(["anti-age", "anti age", "anti-wrinkle", "wrinkle"]),
-        "pigmentation": detect_concern(["pigmentation", "dark spot", "brightening"]),
-        "acne": detect_concern(["acne", "blemish", "breakout"]),
-        "redness": detect_concern(["redness", "red skin"]),
-        "sensitivity": detect_concern(["sensitive skin", "sensitivity", "soothing"]),
-        "scalp_care": detect_concern(["scalp"]),
-        "hair_growth": detect_concern(["hair growth", "thinning hair"]),
-        "fragrance": detect_concern(["fragrance", "perfume", "parfum"]),
-        "freshness": detect_concern(["freshness", "refreshing"]),
+        "hydration": hydration,
+        "anti_ageing": anti_ageing,
+        "pigmentation": pigmentation,
+        "acne": acne,
+        "redness": redness,
+        "sensitivity": sensitivity,
+        "scalp_care": scalp_care,
+        "hair_growth": hair_growth,
+        "fragrance": fragrance,
+        "freshness": freshness,
         
-        "benefits": [],
+        "benefits": benefits,
         "directions": {
-            "text": None,
-            "source_status": "unknown",
-            "evidence": [],
-            "confidence": None
+            "text": inferred_directions,
+            "source_status": "inferred" if inferred_directions else "unknown",
+            "evidence": [{
+                "source_reference": None,
+                "source_field": "product_type",
+                "supporting_text": f"General usage inferred from product type '{inferred_type}'.",
+                "evidence_type": "catalogue_rule_inference",
+                "char_offsets": None
+            }] if inferred_directions else [],
+            "confidence": 0.55 if inferred_directions else None
         },
         "skin_type_fit": {
             "applicable": False,
@@ -285,9 +412,10 @@ def run_ai_enrichment(
         system_prompt = (
             "You are an expert Cosmetic Chemist and Beauty PIM Assistant. Extract structured beauty data. "
             f"Custom enrichment policy: {settings.ENRICHMENT_CUSTOM_INSTRUCTIONS} "
+            f"{BALANCED_INFERENCE_GUIDANCE}"
             "Strictly return JSON matching the specified JSON schema. "
             "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
-            "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
+            "Distinguish direct extraction from reasonable inference in the semantic status and confidence. "
             "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes. "
             "The supplied ingredient reference context contains exact glossary matches. Use it only "
             "to normalize INCI names and report declared cosmetic functions. It is informative and "
@@ -430,9 +558,10 @@ def run_ai_enrichment(
     system_prompt = (
         "You are an expert Cosmetic Chemist and Beauty PIM Assistant. Extract structured beauty data. "
         f"Custom enrichment policy: {settings.ENRICHMENT_CUSTOM_INSTRUCTIONS} "
+        f"{BALANCED_INFERENCE_GUIDANCE}"
         "Strictly return JSON matching the specified JSON schema. "
         "Ensure uncertainty is captured in CategoricalField, ClaimField, ConcernField structures. "
-        "Do not invent functions or claims if evidence is insufficient; set them to 'unknown' or 'not_applicable'. "
+        "Distinguish direct extraction from reasonable inference in the semantic status and confidence. "
         "Provide evidence matching the raw fields strictly. Do not fabricate supporting quotes. "
         "The supplied ingredient reference context contains exact glossary matches. Use it only "
         "to normalize INCI names and report declared cosmetic functions. It is informative and "

@@ -54,17 +54,23 @@ class Settings(BaseSettings):
     ENRICHMENT_CUSTOM_INSTRUCTIONS: str = os.getenv(
         "ENRICHMENT_CUSTOM_INSTRUCTIONS",
         (
-            "Act as a conservative beauty-product data steward. Extract only facts explicitly "
-            "supported by the supplied product fields or exact glossary records. Preserve the "
-            "source language and market context. Never convert an ingredient's presence or "
-            "CosIng function into an efficacy, safety, suitability, compliance, vegan, "
-            "cruelty-free, free-from, medical, or brand claim. Never infer concentration from "
-            "ingredient order. Keep unsupported fields unknown and attach evidence to every "
-            "non-unknown value."
+            "Act as a pragmatic, evidence-aware beauty-product data steward. Maximize useful "
+            "field coverage using both direct extraction and reasonable beauty-domain inference "
+            "from the title, description, product type, claims and ingredient context. Prefer an "
+            "explicit value when stated; otherwise provide the most reasonable inferred value "
+            "and label its semantic status as inferred with moderate confidence. Use unknown only "
+            "when the supplied information gives no reasonable basis for a value. Preserve the "
+            "source language and market context and attach source evidence or a concise inference "
+            "rationale to every populated value. Ingredient functions may support clearly labeled "
+            "potential benefits or suitability inferences, but must not be presented as proven "
+            "finished-product efficacy. Never turn ingredient presence or a CosIng function into "
+            "a safety, legal-compliance, medical, vegan, cruelty-free or certified brand claim. "
+            "Do not infer a free-from or ethical claim merely from an ingredient's absence, and "
+            "never infer concentration from ingredient order."
         ),
     )
     
-    PROMPT_VERSION: str = "2.0-grounded"
+    PROMPT_VERSION: str = "2.1-balanced"
     SCHEMA_VERSION: str = "1.0"
     
     # AI Cost and Job Processing Controls
@@ -94,7 +100,7 @@ class Settings(BaseSettings):
     MANDATORY_FIELDS: list[str] = os.getenv("MANDATORY_FIELDS", "brand,product_name").split(",")
     GTIN_MANDATORY: bool = os.getenv("GTIN_MANDATORY", "false").lower() in ("true", "1")
     CATEGORY_MANDATORY: bool = os.getenv("CATEGORY_MANDATORY", "false").lower() in ("true", "1")
-    LOW_CONFIDENCE_THRESHOLD: float = float(os.getenv("LOW_CONFIDENCE_THRESHOLD", "0.6"))
+    LOW_CONFIDENCE_THRESHOLD: float = float(os.getenv("LOW_CONFIDENCE_THRESHOLD", "0.5"))
     LOW_CONFIDENCE_FIELDS: list[str] = os.getenv("LOW_CONFIDENCE_FIELDS", "subcategory,product_type,vegan,cruelty_free,fragrance_present").split(",")
     MAX_OVERRIDE_REASON_LENGTH: int = int(os.getenv("MAX_OVERRIDE_REASON_LENGTH", "500"))
     

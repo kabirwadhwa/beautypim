@@ -35,6 +35,37 @@ def test_deterministic_fallback_no_fabrications():
     assert fallback["ingredients_intelligence"][1]["ingredient_name"] == "Glycerin"
     assert fallback["ingredients_intelligence"][2]["ingredient_name"] == "Ceramide NP"
 
+    # 4. Safe catalogue defaults are populated but transparently marked inferred
+    assert fallback["gender_target"]["value"] == "unisex"
+    assert fallback["gender_target"]["value_status"] == "inferred"
+    assert fallback["gender_target"]["confidence"] < 0.8
+    assert fallback["target_audience"]["value"] == "adults"
+    assert fallback["target_audience"]["value_status"] == "inferred"
+    assert fallback["directions"]["source_status"] == "inferred"
+    assert fallback["directions"]["text"]
+    assert fallback["benefits"][0]["statement"] == "Hydration support"
+
+
+def test_balanced_fallback_infers_catalogue_fields_without_inventing_sensitive_claims():
+    fallback = generate_deterministic_fallback(
+        name="Daily Repair Shampoo",
+        brand="Example",
+        description="A refreshing wash for dry hair.",
+        raw_ingredients="Aqua, Sodium Cocoyl Isethionate"
+    )
+
+    assert fallback["product_type"]["value"] == "shampoo"
+    assert fallback["application_area"]["value"] == "hair"
+    assert fallback["gender_target"]["value"] == "unisex"
+    assert fallback["target_audience"]["value"] == "adults"
+    assert fallback["texture"]["value_status"] == "inferred"
+    assert fallback["directions"]["source_status"] == "inferred"
+
+    # Ethical and free-from claims still require direct source support.
+    assert fallback["vegan"]["value"] == "unknown"
+    assert fallback["cruelty_free"]["value"] == "unknown"
+    assert fallback["paraben_free"]["value"] == "unknown"
+
 
 def test_cosing_exact_match_grounds_ingredient_without_inventing_claims(db):
     db.add(

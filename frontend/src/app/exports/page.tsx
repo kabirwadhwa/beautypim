@@ -3,7 +3,7 @@ import { API_URL, BACKEND_URL } from '../../config';
 
 import React, { useState } from 'react';
 import Shell from '../../components/Shell';
-import { Download, Link, Info } from 'lucide-react';
+import { Download, Info, RefreshCw } from 'lucide-react';
 import styles from '../page.module.css';
 
 export default function ExportsPage() {
@@ -15,12 +15,39 @@ export default function ExportsPage() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const downloadExport = async (downloadUrl: string) => {
+    const token = localStorage.getItem("token");
+    const response = await fetch(`${BACKEND_URL}${downloadUrl}`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.detail || "The export file could not be downloaded.");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+    const filename = filenameMatch?.[1] || `beauty_pim_export_${mode}.${format}`;
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  };
+
   const handleRunExport = async () => {
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
+      if (webhookUrl) {
+        const parsed = new URL(webhookUrl);
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Webhook must use HTTP or HTTPS.");
+      }
       const token = localStorage.getItem("token");
       const resp = await fetch(`${API_URL}/exports/run`, {
         method: "POST",
@@ -36,12 +63,13 @@ export default function ExportsPage() {
         })
       });
 
-      if (!resp.ok) throw new Error("Failed to generate export catalog.");
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null);
+        throw new Error(body?.detail || "Failed to generate export catalog.");
+      }
       const data = await resp.json();
       setResult(data);
-
-      // Programmatically trigger browser file download
-      window.open(`${BACKEND_URL}${data.download_url}`, '_blank');
+      await downloadExport(data.download_url);
     } catch (err: any) {
       setError(err.message || "Failed to run export.");
     } finally {
@@ -128,6 +156,17 @@ export default function ExportsPage() {
           >
             <Download size={18} /> {loading ? "Generating Download File..." : "Generate and Download Catalog"}
           </button>
+
+          {result && (
+            <button
+              type="button"
+              onClick={() => downloadExport(result.download_url).catch((err) => setError(err.message))}
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              style={{ width: '100%', justifyContent: 'center', marginTop: 10 }}
+            >
+              <RefreshCw size={16} /> Download Again
+            </button>
+          )}
         </div>
 
         <div>
@@ -153,8 +192,10 @@ export default function ExportsPage() {
 
               {result && (
                 <div style={{ padding: 12, backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid #10b981', borderRadius: 4, color: '#10b981', marginTop: 16 }}>
-                  Export completed! File generated successfully.
+                  Export completed with {result.row_count} product{result.row_count === 1 ? "" : "s"}.
+                  {result.row_count === 0 && mode === "business" && " Approve products in Product Grid to include them in a business export."}
                   {result.webhook_triggered && " Webhook API trigger sent successfully."}
+                  {webhookUrl && !result.webhook_triggered && " The file was generated, but the webhook was not delivered."}
                 </div>
               )}
             </div>

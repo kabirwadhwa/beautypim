@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 import json
 import uuid
-from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, User
+from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, User, ProductVariant, ValidationIssue, Category
 
 def test_database_dialect_matches_environment(db):
     dialect_name = db.bind.dialect.name
@@ -51,6 +51,87 @@ def test_list_products_api(client: TestClient, db):
     data = resp.json()
     assert len(data) >= 1
     assert data[0]["product_name"] == "Lala Retro"
+    assert data[0]["internal_code"].startswith("ICN-")
+
+
+def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Grid Test", normalized_name="gridtest")
+    db.add(brand)
+    db.flush()
+    product = CanonicalProduct(
+        id=uuid.uuid4(),
+        brand_id=brand.id,
+        product_name="Searchable Serum",
+        normalized_name="searchableserum",
+        review_status="needs_review",
+    )
+    db.add(product)
+    db.flush()
+    variant = ProductVariant(
+        id=uuid.uuid4(),
+        canonical_product_id=product.id,
+        gtin="1234567890123",
+    )
+    db.add(variant)
+    db.flush()
+    db.add(ValidationIssue(
+        id=uuid.uuid4(),
+        product_variant_id=variant.id,
+        severity="warning",
+        issue_type="test_issue",
+        message="Variant needs attention.",
+        created_by_type="system",
+    ))
+    db.commit()
+
+    by_gtin = client.get("/api/products?search=1234567890123", headers=headers)
+    assert by_gtin.status_code == 200
+    assert [row["id"] for row in by_gtin.json()] == [str(product.id)]
+    assert by_gtin.json()[0]["validation_issue_count"] == 1
+
+    internal_code = by_gtin.json()[0]["internal_code"]
+    by_icn = client.get(f"/api/products?search={internal_code}", headers=headers)
+    assert [row["id"] for row in by_icn.json()] == [str(product.id)]
+
+    with_issues = client.get("/api/products?issue_filter=true", headers=headers)
+    assert str(product.id) in [row["id"] for row in with_issues.json()]
+    clear = client.get("/api/products?issue_filter=false", headers=headers)
+    assert str(product.id) not in [row["id"] for row in clear.json()]
+    status_filtered = client.get("/api/products?status_filter=needs_review", headers=headers)
+    assert str(product.id) in [row["id"] for row in status_filtered.json()]
+
+
+def test_taxonomy_crud_and_guards(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    root = client.post("/api/settings/categories", json={"name": "Skincare"}, headers=headers)
+    assert root.status_code == 201, root.text
+    root_id = root.json()["id"]
+    child = client.post(
+        "/api/settings/categories",
+        json={"name": "Serums", "parent_id": root_id},
+        headers=headers,
+    )
+    assert child.status_code == 201
+    assert child.json()["path"] == "Skincare > Serums"
+
+    renamed = client.put(
+        f"/api/settings/categories/{root_id}",
+        json={"name": "Face Care"},
+        headers=headers,
+    )
+    assert renamed.status_code == 200
+    categories = client.get("/api/settings/categories", headers=headers).json()
+    assert any(category["path"] == "Face Care > Serums" for category in categories)
+
+    blocked = client.delete(f"/api/settings/categories/{root_id}", headers=headers)
+    assert blocked.status_code == 409
+    child_id = child.json()["id"]
+    assert client.delete(f"/api/settings/categories/{child_id}", headers=headers).status_code == 204
+    assert client.delete(f"/api/settings/categories/{root_id}", headers=headers).status_code == 204
 
 def test_edit_product_api(client: TestClient, db):
     token = get_admin_token(client)

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, func
 from typing import List, Optional, Dict, Any
 from app.database import get_db
 from app.auth import get_current_user, require_editor_or_admin, require_viewer_or_above
@@ -13,7 +13,7 @@ from app.models import (
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
     FieldValueOut, EnrichmentMetadataSchema, KeyIngredientOut, DynamicConcernOut,
-    EDITABLE_FIELDS_REGISTRY
+    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate
 )
 from app.worker import record_audit, process_item_enrichment, create_field_value_version
 from pydantic import BaseModel
@@ -26,6 +26,9 @@ class BulkActionRequest(BaseModel):
     action: str
 
 router = APIRouter(prefix="/products", tags=["Product PIM Center"])
+
+def product_internal_code(product_id: uuid.UUID) -> str:
+    return f"ICN-{product_id.hex.upper()}"
 
 @router.get("", response_model=List[ProductOut])
 def list_products(
@@ -40,14 +43,26 @@ def list_products(
 ):
     query = db.query(CanonicalProduct).join(Brand).filter(CanonicalProduct.is_deleted == False)
 
-    if search:
-        search_term = f"%{search.lower()}%"
-        query = query.filter(
-            or_(
-                CanonicalProduct.product_name.lower().like(search_term),
-                Brand.name.lower().like(search_term)
-            )
-        )
+    if search and search.strip():
+        raw_search = search.strip()
+        search_term = f"%{raw_search.lower()}%"
+        search_conditions = [
+            func.lower(CanonicalProduct.product_name).like(search_term),
+            func.lower(Brand.name).like(search_term),
+            CanonicalProduct.id.in_(
+                db.query(ProductVariant.canonical_product_id).filter(
+                    func.lower(ProductVariant.gtin).like(search_term),
+                    ProductVariant.is_deleted == False,
+                )
+            ),
+        ]
+        normalized_icn = raw_search.upper().removeprefix("ICN-").replace("-", "")
+        if len(normalized_icn) == 32:
+            try:
+                search_conditions.append(CanonicalProduct.id == uuid.UUID(hex=normalized_icn))
+            except ValueError:
+                pass
+        query = query.filter(or_(*search_conditions))
 
     if status_filter:
         query = query.filter(CanonicalProduct.review_status == status_filter)
@@ -56,18 +71,27 @@ def list_products(
         query = query.filter(Brand.name == brand_filter)
 
     if issue_filter is not None:
-        if issue_filter:
-            # Only products with unresolved validation issues
-            query = query.filter(
-                CanonicalProduct.id.in_(
-                    db.query(ValidationIssue.canonical_product_id).filter(ValidationIssue.resolved == False)
-                )
+        canonical_issue_ids = db.query(ValidationIssue.canonical_product_id).filter(
+            ValidationIssue.resolved == False,
+            ValidationIssue.canonical_product_id.isnot(None),
+        )
+        variant_issue_ids = (
+            db.query(ProductVariant.canonical_product_id)
+            .join(ValidationIssue, ValidationIssue.product_variant_id == ProductVariant.id)
+            .filter(
+                ValidationIssue.resolved == False,
+                ProductVariant.is_deleted == False,
             )
+        )
+        if issue_filter:
+            query = query.filter(or_(
+                CanonicalProduct.id.in_(canonical_issue_ids),
+                CanonicalProduct.id.in_(variant_issue_ids),
+            ))
         else:
             query = query.filter(
-                ~CanonicalProduct.id.in_(
-                    db.query(ValidationIssue.canonical_product_id).filter(ValidationIssue.resolved == False)
-                )
+                ~CanonicalProduct.id.in_(canonical_issue_ids),
+                ~CanonicalProduct.id.in_(variant_issue_ids),
             )
 
     offset = (page - 1) * limit
@@ -81,12 +105,38 @@ def list_products(
             cat = db.query(Category).filter(Category.id == prod.category_id).first()
             category_path = cat.path if cat else None
             
+        variant = db.query(ProductVariant).filter(
+            ProductVariant.canonical_product_id == prod.id,
+            ProductVariant.is_deleted == False,
+        ).order_by(ProductVariant.created_at.asc()).first()
+        issues = (
+            db.query(ValidationIssue)
+            .outerjoin(ProductVariant, ValidationIssue.product_variant_id == ProductVariant.id)
+            .filter(
+                ValidationIssue.resolved == False,
+                or_(
+                    ValidationIssue.canonical_product_id == prod.id,
+                    ProductVariant.canonical_product_id == prod.id,
+                ),
+            )
+            .all()
+        )
+        severity_rank = {"blocking": 3, "error": 2, "warning": 1, "info": 0}
+        highest_severity = max(
+            (issue.severity for issue in issues),
+            key=lambda value: severity_rank.get(value, 0),
+            default=None,
+        )
         out.append(ProductOut(
             id=prod.id,
+            internal_code=product_internal_code(prod.id),
             product_name=prod.product_name,
             brand_name=prod.brand.name,
             category_path=category_path,
+            gtin=variant.gtin if variant else None,
             review_status=prod.review_status,
+            validation_issue_count=len(issues),
+            highest_issue_severity=highest_severity,
             is_deleted=prod.is_deleted,
             created_at=prod.created_at,
             updated_at=prod.updated_at
@@ -289,12 +339,20 @@ def get_product_detail(
 
     return ProductDetailOut(
         id=prod.id,
+        internal_code=product_internal_code(prod.id),
         product_name=prod.product_name,
         brand_id=prod.brand_id,
         brand_name=brand_name,
         category_id=prod.category_id,
         category_path=category_path,
+        gtin=variants[0].gtin if variants else None,
         review_status=prod.review_status,
+        validation_issue_count=len([issue for issue in issues if not issue.resolved]),
+        highest_issue_severity=max(
+            (issue.severity for issue in issues if not issue.resolved),
+            key=lambda value: {"blocking": 3, "error": 2, "warning": 1, "info": 0}.get(value, 0),
+            default=None,
+        ),
         reviewer_id=prod.reviewer_id,
         is_deleted=prod.is_deleted,
         created_at=prod.created_at,
@@ -307,6 +365,35 @@ def get_product_detail(
         key_ingredients=key_ingredients_out,
         dynamic_concerns=concerns_out
     )
+
+@router.put("/{product_id}/category", response_model=ProductDetailOut)
+def update_product_category(
+    product_id: uuid.UUID,
+    payload: ProductCategoryUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id,
+        CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if payload.category_id and not db.query(Category).filter(Category.id == payload.category_id).first():
+        raise HTTPException(status_code=404, detail="Category not found.")
+    before = str(product.category_id) if product.category_id else None
+    product.category_id = payload.category_id
+    record_audit(
+        db,
+        entity_type="canonical_product",
+        entity_id=product.id,
+        action="category_updated",
+        changed={"category_id": [before, str(payload.category_id) if payload.category_id else None]},
+        user_id=current_user.id,
+        actor_type="user",
+    )
+    db.commit()
+    return get_product_detail(product_id, db, current_user)
 
 @router.put("/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(rate_limit("edit_product", "30/minute"))])
 def edit_product_field(

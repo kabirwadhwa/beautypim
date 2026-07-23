@@ -4,53 +4,70 @@ import { API_URL, BACKEND_URL } from '../../config';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Shell from '../../components/Shell';
-import { Search, Filter, AlertTriangle, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Search, Filter, AlertTriangle, ArrowRight, X } from 'lucide-react';
 import styles from '../page.module.css';
 
 interface Product {
   id: string;
+  internal_code: string;
   product_name: string;
   brand_name: string;
   category_path: string | null;
+  gtin: string | null;
   review_status: string;
+  validation_issue_count: number;
+  highest_issue_severity: string | null;
 }
 
 export default function ProductsPage() {
   const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [issueFilter, setIssueFilter] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchProducts = async () => {
+  const fetchProducts = async (signal?: AbortSignal) => {
     setLoading(true);
+    setError(null);
     try {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
 
       let url = `${API_URL}/products?limit=100`;
-      if (search) url += `&search=${encodeURIComponent(search)}`;
-      if (statusFilter) url += `&status_filter=${statusFilter}`;
+      if (debouncedSearch) url += `&search=${encodeURIComponent(debouncedSearch)}`;
+      if (statusFilter) url += `&status_filter=${encodeURIComponent(statusFilter)}`;
       if (issueFilter !== null) url += `&issue_filter=${issueFilter}`;
 
-      const resp = await fetch(url, { headers });
-      if (resp.ok) {
-        const data = await resp.json();
-        setProducts(data || []);
+      const resp = await fetch(url, { headers, signal });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null);
+        throw new Error(body?.detail || "Unable to load products.");
       }
-    } catch (e) {
-      console.error(e);
+      const data = await resp.json();
+      setProducts(data || []);
+      setSelectedIds(previous => previous.filter(id => data.some((product: Product) => product.id === id)));
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setError(e?.message || "Unable to load products.");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchProducts();
-  }, [search, statusFilter, issueFilter]);
+    const timeout = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => window.clearTimeout(timeout);
+  }, [search]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchProducts(controller.signal);
+    return () => controller.abort();
+  }, [debouncedSearch, statusFilter, issueFilter]);
 
   const handleSelectRow = (id: string) => {
     if (selectedIds.includes(id)) {
@@ -81,12 +98,13 @@ export default function ProductsPage() {
         },
         body: JSON.stringify({ product_ids: selectedIds, action })
       });
-      if (resp.ok) {
-        setSelectedIds([]);
-        fetchProducts();
-      }
-    } catch (e) {
-      console.error(e);
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) throw new Error(data?.detail || `Bulk ${action} failed.`);
+      if (data.failed_count) throw new Error(`${data.success_count} updated; ${data.failed_count} failed.`);
+      setSelectedIds([]);
+      await fetchProducts();
+    } catch (e: any) {
+      setError(e?.message || `Bulk ${action} failed.`);
     } finally {
       setActionLoading(false);
     }
@@ -135,7 +153,7 @@ export default function ProductsPage() {
         <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
           <input 
             type="text" 
-            placeholder="Search products by brand or title..." 
+            placeholder="Search by ICN, barcode, brand, or product name..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className={styles.inputField}
@@ -155,8 +173,12 @@ export default function ProductsPage() {
             <option value="">All statuses</option>
             <option value="imported">Imported</option>
             <option value="needs_review">Needs Review</option>
+            <option value="in_review">In Review</option>
+            <option value="enriching">Enriching</option>
+            <option value="enrichment_failed">Enrichment Failed</option>
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
+            <option value="published">Published</option>
           </select>
 
           <select 
@@ -172,8 +194,28 @@ export default function ProductsPage() {
             <option value="true">Has validation issues</option>
             <option value="false">Clear of issues</option>
           </select>
+          {(search || statusFilter || issueFilter !== null) && (
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              onClick={() => {
+                setSearch('');
+                setStatusFilter('');
+                setIssueFilter(null);
+              }}
+              title="Clear all filters"
+            >
+              <X size={15} /> Clear
+            </button>
+          )}
         </div>
       </div>
+
+      {error && (
+        <div role="alert" style={{ marginBottom: 16, padding: 12, border: '1px solid #ef4444', borderRadius: 6, color: '#fecaca', background: 'rgba(239,68,68,.1)' }}>
+          {error}
+        </div>
+      )}
 
       <div className={styles.tableContainer}>
         {loading ? (
@@ -191,9 +233,12 @@ export default function ProductsPage() {
                     onChange={(e) => handleSelectAll(e.target.checked)}
                   />
                 </th>
+                <th>ICN</th>
                 <th>Brand Name</th>
                 <th>Product Name</th>
+                <th>GTIN / EAN</th>
                 <th>Taxonomy Category</th>
+                <th>Issues</th>
                 <th>Review State</th>
                 <th style={{ width: 80 }}>Actions</th>
               </tr>
@@ -201,7 +246,7 @@ export default function ProductsPage() {
             <tbody>
               {products.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
+                  <td colSpan={9} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
                     No products found matching active filter parameters.
                   </td>
                 </tr>
@@ -215,9 +260,22 @@ export default function ProductsPage() {
                         onChange={() => handleSelectRow(p.id)}
                       />
                     </td>
+                    <td style={{ fontFamily: 'monospace', color: '#a5b4fc' }} title={p.internal_code}>
+                      {p.internal_code.slice(0, 12)}…
+                    </td>
                     <td style={{ fontWeight: 600 }}>{p.brand_name}</td>
                     <td>{p.product_name}</td>
+                    <td style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{p.gtin || "—"}</td>
                     <td style={{ color: '#94a3b8' }}>{p.category_path || "-"}</td>
+                    <td>
+                      {p.validation_issue_count > 0 ? (
+                        <span className={`${styles.badge} ${p.highest_issue_severity === 'blocking' ? styles.badgeDanger : styles.badgeWarning}`}>
+                          <AlertTriangle size={11} /> {p.validation_issue_count}
+                        </span>
+                      ) : (
+                        <span className={`${styles.badge} ${styles.badgeSuccess}`}>Clear</span>
+                      )}
+                    </td>
                     <td>
                       <span className={`${styles.badge} ${getStatusClass(p.review_status)}`}>
                         {p.review_status}

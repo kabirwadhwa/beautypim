@@ -155,7 +155,8 @@ def execute_export(
     download_url = f"/api/exports/download?mode={req.export_mode}&format={req.file_format}&inferred={req.include_inferred}"
     return ExportResponse(
         download_url=download_url,
-        webhook_triggered=webhook_triggered
+        webhook_triggered=webhook_triggered,
+        row_count=len(data),
     )
 
 @router.get("/download")
@@ -163,7 +164,8 @@ def download_file(
     mode: str = "business",
     format: str = "json",
     inferred: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(require_viewer_or_above),
 ):
     if mode == "business":
         data = build_business_export_data(db, inferred)
@@ -183,15 +185,7 @@ def download_file(
         if data:
             writer = csv.DictWriter(output, fieldnames=data[0].keys(), delimiter=";", quoting=csv.QUOTE_MINIMAL)
             writer.writeheader()
-            for row in data:
-                # Escape values containing semicolons
-                escaped_row = {}
-                for k, v in row.items():
-                    if isinstance(v, str) and ";" in v:
-                        escaped_row[k] = f'"{v}"'
-                    else:
-                        escaped_row[k] = v
-                writer.writerow(escaped_row)
+            writer.writerows(data)
         
         return StreamingResponse(
             io.BytesIO(output.getvalue().encode("utf-8")),
