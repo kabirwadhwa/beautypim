@@ -200,3 +200,54 @@ def test_catalogue_assistant_never_returns_nonexistent_products(client, db, monk
     assert response.status_code == 200
     assert response.json()["products"] == []
     assert response.json()["total_matches"] == 0
+
+
+def test_catalogue_assistant_matches_legacy_source_category(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    brand = Brand(
+        id=uuid.uuid4(),
+        name="Legacy Beauty",
+        normalized_name="legacybeauty",
+    )
+    db.add(brand)
+    db.flush()
+    product = CanonicalProduct(
+        id=uuid.uuid4(),
+        product_name="Archive Gel Cleanser",
+        normalized_name="archivegelcleanser",
+        brand_id=brand.id,
+        category_id=None,
+        review_status="imported",
+    )
+    db.add(product)
+    job = ImportJob(
+        id=uuid.uuid4(),
+        filename="legacy.csv",
+        file_hash=hashlib.sha256(b"legacy").hexdigest(),
+        status="completed",
+        total_rows=1,
+        processed_rows=1,
+        column_mapping={"category": "department", "description": "copy"},
+    )
+    db.add(job)
+    db.flush()
+    db.add(SourceListing(
+        id=uuid.uuid4(),
+        import_job_id=job.id,
+        canonical_product_id=product.id,
+        raw_data={
+            "department": "Skincare",
+            "copy": "A gentle archive cleanser.",
+        },
+        source_hash=hashlib.sha256(b"legacy-row").hexdigest(),
+    ))
+    db.commit()
+
+    response = client.post(
+        "/api/assistant/chat",
+        headers=auth_headers(client),
+        json={"message": "Show me skincare products", "history": []},
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["products"]] == [str(product.id)]
+    assert response.json()["products"][0]["description"] == "A gentle archive cleanser."

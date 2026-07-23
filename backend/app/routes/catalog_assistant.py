@@ -284,9 +284,11 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
 
         if not matches_any(filters["brand_names"], (product.brand.name if product.brand else "").lower()):
             continue
-        if not matches_any(filters["category_terms"], category_path.lower()):
+        category_search_text = f"{category_path} {raw_text}".lower()
+        if not matches_any(filters["category_terms"], category_search_text):
             continue
-        if not matches_any(filters["product_types"], product_type + " " + product.product_name.lower()):
+        product_type_search_text = f"{product_type} {product.product_name} {raw_text}".lower()
+        if not matches_any(filters["product_types"], product_type_search_text):
             continue
         if not all(term in ingredients for term in filters["ingredients_include"]):
             continue
@@ -315,8 +317,12 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
         if failed_field_filter:
             continue
 
-        if filters["category_terms"] and category_path:
-            reasons.append(f"Category: {category_path}")
+        if filters["category_terms"]:
+            reasons.append(
+                f"Category: {category_path}"
+                if category_path
+                else "Category matched in the imported source record"
+            )
         if filters["product_types"] and product_type:
             reasons.append(f"Product type: {product_type}")
         if filters["ingredients_include"]:
