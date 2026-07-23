@@ -70,7 +70,7 @@ class Settings(BaseSettings):
         ),
     )
     
-    PROMPT_VERSION: str = "2.1-balanced"
+    PROMPT_VERSION: str = "2.2-complete"
     SCHEMA_VERSION: str = "1.0"
     
     # AI Cost and Job Processing Controls

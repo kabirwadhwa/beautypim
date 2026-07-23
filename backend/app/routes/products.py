@@ -8,7 +8,7 @@ from app.database import get_db
 from app.auth import get_current_user, require_editor_or_admin, require_viewer_or_above
 from app.models import (
     CanonicalProduct, ProductVariant, Brand, Category, FieldValue, 
-    ValidationIssue, AuditLog, User, Formulation
+    ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem
 )
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
@@ -142,6 +142,55 @@ def list_products(
             updated_at=prod.updated_at
         ))
     return out
+
+@router.post("/{product_id}/re-enrich", response_model=ProductDetailOut)
+def re_enrich_product(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    """Re-run enrichment from the most recent source record for this product."""
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id,
+        CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    item = db.query(ImportJobItem).filter(
+        ImportJobItem.canonical_product_id == product_id,
+        ImportJobItem.source_listing_id.isnot(None),
+    ).order_by(ImportJobItem.created_at.desc()).first()
+    if not item:
+        raise HTTPException(
+            status_code=409,
+            detail="No source record is available for re-enrichment.",
+        )
+    job = db.query(ImportJob).filter(ImportJob.id == item.import_job_id).first()
+    if not job:
+        raise HTTPException(status_code=409, detail="The source import job is unavailable.")
+
+    try:
+        process_item_enrichment(db, item, job.column_mapping or {})
+        record_audit(
+            db=db,
+            entity_type="CanonicalProduct",
+            entity_id=product.id,
+            display_label=product.product_name,
+            action="re_enrich",
+            before={"enrichment_status": "existing"},
+            after={"enrichment_status": "completed"},
+            changed={"enrichment": ["existing", "regenerated"]},
+            user_id=current_user.id,
+            actor_type="user",
+            reason="Manual re-enrichment from the latest source record.",
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {exc}")
+
+    return get_product_detail(product_id, db, current_user)
 
 @router.get("/{product_id}", response_model=ProductDetailOut)
 def get_product_detail(
@@ -296,7 +345,7 @@ def get_product_detail(
 
                 key_ingredients_out.append(KeyIngredientOut(
                     name=fi.raw_inci_name,
-                    normalized_inci_name=defn.common_name,
+                    normalized_inci_name=defn.common_name or defn.name,
                     functions=[fn for fn in funcs if fn],
                     benefits=[bn for bn in bens if bn],
                     is_key_ingredient=fi.is_key_ingredient,

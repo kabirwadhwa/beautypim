@@ -120,6 +120,7 @@ export default function ProductDetailPage() {
   const [overrideValue, setOverrideValue] = useState<string>('');
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [saveLoading, setSaveLoading] = useState(false);
+  const [reEnrichLoading, setReEnrichLoading] = useState(false);
 
   const fetchDetail = async () => {
     try {
@@ -158,6 +159,25 @@ export default function ProductDetailPage() {
       fetchDetail();
     } catch (e: any) {
       setError(e.message);
+    }
+  };
+
+  const handleReEnrich = async () => {
+    setReEnrichLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem("token");
+      const resp = await fetch(`${API_URL}/products/${productId}/re-enrich`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "Re-enrichment failed.");
+      setProduct(data);
+    } catch (e: any) {
+      setError(e.message || "Re-enrichment failed.");
+    } finally {
+      setReEnrichLoading(false);
     }
   };
 
@@ -227,7 +247,36 @@ export default function ProductDetailPage() {
   const infoIssues = activeIssues.filter(i => i.severity === "informational" || i.severity === "info");
 
   // Editable fields registry listing
-  const coreFields = ["subcategory", "product_type", "gender_target", "vegan", "cruelty_free", "fragrance_present"];
+  const coreFields = [
+    "subcategory", "product_type", "gender_target", "texture", "application_area",
+    "target_audience", "vegan", "cruelty_free", "paraben_free", "sulfate_free",
+    "silicone_free", "alcohol_free", "fragrance_present"
+  ];
+  const richFields = [
+    "source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit",
+    "fragrance_intelligence", "pregnancy_warning_observation",
+    "allergen_warning_observation", "sensitivity_warning_observation"
+  ];
+
+  const prettyStructuredValue = (value: any): string[] => {
+    if (value === null || value === undefined || value === "") return ["Not provided"];
+    if (Array.isArray(value)) {
+      if (value.length === 0) return ["Not provided"];
+      return value.map(item => {
+        if (typeof item !== "object") return String(item);
+        return item.statement || item.value || item.name || item.ingredient_name ||
+          Object.entries(item).filter(([, val]) => typeof val !== "object")
+            .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}`).join(" · ");
+      });
+    }
+    if (typeof value === "object") {
+      if (typeof value.value === "string") return [value.value];
+      return Object.entries(value)
+        .filter(([, val]) => val !== null && val !== "" && !Array.isArray(val) && typeof val !== "object")
+        .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}`);
+    }
+    return [String(value)];
+  };
 
   const displayValue = (value: any, semanticStatus?: string | null) => {
     if (semanticStatus && ["unknown", "not_applicable"].includes(semanticStatus.toLowerCase())) return 'NOT PROVIDED';
@@ -261,6 +310,16 @@ export default function ProductDetailPage() {
           }`}>
             {product?.review_status.toUpperCase()}
           </span>
+
+          <button
+            onClick={handleReEnrich}
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            disabled={reEnrichLoading}
+            title="Regenerate enrichment from the latest imported source record"
+          >
+            <RefreshCw size={16} className={reEnrichLoading ? styles.spin : undefined} />
+            {reEnrichLoading ? "Enriching..." : "Re-enrich"}
+          </button>
 
           <button 
             onClick={() => handleStatusChange('approve')} 
@@ -426,6 +485,38 @@ export default function ProductDetailPage() {
                             <div style={{ color: '#e2e8f0' }}>&ldquo;{fv.override_reason}&rdquo; (by User #{fv.reviewer_id})</div>
                           </div>
                         )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Complete structured enrichment, including the fields previously discarded. */}
+          <div className={styles.panelCard}>
+            <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
+              <Info size={18} color="#38bdf8" />
+              <span>Claims, Usage, Suitability & Safety Observations</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
+              {richFields.map(field => {
+                const fv = currentValDict[field];
+                return (
+                  <div key={field} style={{ padding: 12, backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid #2e3c64', borderRadius: 6 }}>
+                    <div style={{ color: '#7dd3fc', fontSize: 12, fontWeight: 700, textTransform: 'capitalize', marginBottom: 8 }}>
+                      {field.replaceAll("_", " ")}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {prettyStructuredValue(fv?.value).map((line, index) => (
+                        <div key={index} style={{ color: line === "Not provided" ? '#64748b' : '#e2e8f0', fontSize: 12, lineHeight: 1.5 }}>
+                          {line}
+                        </div>
+                      ))}
+                    </div>
+                    {fv?.confidence_score !== null && fv?.confidence_score !== undefined && (
+                      <div style={{ color: '#94a3b8', fontSize: 10, marginTop: 8 }}>
+                        {Math.round(fv.confidence_score * 100)}% confidence · {fv.source_type.replaceAll("_", " ")}
                       </div>
                     )}
                   </div>
