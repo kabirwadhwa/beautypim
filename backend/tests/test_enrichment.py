@@ -3,6 +3,7 @@ import uuid
 
 from app.models import IngredientDefinition
 from app.services.enrichment import (
+    ensure_catalogue_coverage,
     generate_deterministic_fallback,
     normalize_and_validate_enrichment,
 )
@@ -91,6 +92,21 @@ def test_sparse_product_gets_complete_safe_catalogue_defaults():
     assert fallback["benefits"][0]["source_type"] == "catalogue_inference"
     assert fallback["fragrance_intelligence"]["fragrance_presence_status"] != "unknown"
     assert fallback["hydration"]["targeting_status"] == "not_targeted"
+
+
+def test_coverage_replaces_nested_unknown_fragrance_status():
+    enriched = ensure_catalogue_coverage(
+        {"fragrance_intelligence": {
+            "applicable": False,
+            "fragrance_presence_status": "unknown",
+        }},
+        "Mystery Beauty Essential",
+        "Example",
+        "",
+        "",
+    )
+
+    assert enriched["fragrance_intelligence"]["fragrance_presence_status"] == "not_detected_from_supplied_data"
 
 
 def test_cosing_exact_match_grounds_ingredient_without_inventing_claims(db):

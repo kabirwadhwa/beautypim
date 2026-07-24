@@ -82,6 +82,9 @@ def ensure_catalogue_coverage(
         payload = data.get(field)
         if payload is None or payload == [] or (
             field == "directions" and _is_missing_field(payload, "text")
+        ) or (
+            field == "fragrance_intelligence"
+            and _is_missing_field(payload, "fragrance_presence_status")
         ):
             data[field] = fallback[field]
     return data
