@@ -325,9 +325,9 @@ export default function ProductDetailPage() {
   ];
 
   const prettyStructuredValue = (value: any): string[] => {
-    if (value === null || value === undefined || value === "") return ["Not provided"];
+    if (value === null || value === undefined || value === "") return ["No explicit source claim"];
     if (Array.isArray(value)) {
-      if (value.length === 0) return ["Not provided"];
+      if (value.length === 0) return ["No explicit source claim"];
       return value.map(item => {
         if (typeof item !== "object") return String(item);
         return item.statement || item.value || item.name || item.ingredient_name ||
@@ -345,13 +345,13 @@ export default function ProductDetailPage() {
   };
 
   const displayValue = (value: any, semanticStatus?: string | null) => {
-    if (semanticStatus && ["unknown", "not_applicable"].includes(semanticStatus.toLowerCase())) return 'NOT PROVIDED';
-    if (value === null || value === undefined || value === '') return 'NOT PROVIDED';
+    if (semanticStatus && ["unknown", "not_applicable"].includes(semanticStatus.toLowerCase())) return 'UNVERIFIED';
+    if (value === null || value === undefined || value === '') return 'UNVERIFIED';
     if (typeof value === 'object') {
       return value.review_message || value.observation_type || 'STRUCTURED OBSERVATION';
     }
     const normalized = String(value).trim().toLowerCase();
-    if (["unknown", "null", "none", "nan"].includes(normalized)) return 'NOT PROVIDED';
+    if (["unknown", "null", "none", "nan", "not provided", "not_provided"].includes(normalized)) return 'UNVERIFIED';
     return String(value).toUpperCase();
   };
 
@@ -364,7 +364,7 @@ export default function ProductDetailPage() {
           </button>
           <div className={styles.titleGroup}>
             <h1>{product?.product_name}</h1>
-            <p>Brand: <span style={{ fontWeight: 600, color: '#f8fafc' }}>{product?.brand_name || "Not provided"}</span> | Category: <span style={{ color: '#94a3b8' }}>{product?.category_path || "Not provided"}</span></p>
+            <p>Brand: <span style={{ fontWeight: 600, color: '#f8fafc' }}>{product?.brand_name || "Unbranded / source unavailable"}</span> | Category: <span style={{ color: '#94a3b8' }}>{product?.category_path || "Beauty & Personal Care"}</span></p>
           </div>
         </div>
 
@@ -651,7 +651,7 @@ export default function ProductDetailPage() {
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {prettyStructuredValue(fv?.value).map((line, index) => (
-                        <div key={index} style={{ color: line === "Not provided" ? '#64748b' : '#e2e8f0', fontSize: 12, lineHeight: 1.5 }}>
+                        <div key={index} style={{ color: line === "No explicit source claim" ? '#64748b' : '#e2e8f0', fontSize: 12, lineHeight: 1.5 }}>
                           {line}
                         </div>
                       ))}

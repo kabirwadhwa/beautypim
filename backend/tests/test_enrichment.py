@@ -87,6 +87,8 @@ def test_sparse_product_gets_complete_safe_catalogue_defaults():
         assert fallback[field]["value_status"] != "unknown"
 
     assert fallback["directions"]["text"]
+    assert fallback["benefits"][0]["statement"]
+    assert fallback["benefits"][0]["source_type"] == "catalogue_inference"
     assert fallback["fragrance_intelligence"]["fragrance_presence_status"] != "unknown"
     assert fallback["hydration"]["targeting_status"] == "not_targeted"
 
