@@ -65,9 +65,30 @@ def test_balanced_fallback_infers_catalogue_fields_without_inventing_sensitive_c
     assert fallback["directions"]["source_status"] == "inferred"
 
     # Ethical and free-from claims still require direct source support.
-    assert fallback["vegan"]["value"] == "unknown"
-    assert fallback["cruelty_free"]["value"] == "unknown"
-    assert fallback["paraben_free"]["value"] == "unknown"
+    assert fallback["vegan"]["value"] == "unverified"
+    assert fallback["cruelty_free"]["value"] == "unverified"
+    assert fallback["paraben_free"]["value"] == "unverified"
+    assert fallback["vegan"]["claim_status"] == "unverified"
+
+
+def test_sparse_product_gets_complete_safe_catalogue_defaults():
+    fallback = generate_deterministic_fallback(
+        name="Mystery Beauty Essential",
+        brand="Example",
+        description="",
+        raw_ingredients="",
+    )
+
+    for field in (
+        "subcategory", "product_type", "gender_target", "texture",
+        "application_area", "target_audience",
+    ):
+        assert fallback[field]["value"]
+        assert fallback[field]["value_status"] != "unknown"
+
+    assert fallback["directions"]["text"]
+    assert fallback["fragrance_intelligence"]["fragrance_presence_status"] != "unknown"
+    assert fallback["hydration"]["targeting_status"] == "not_targeted"
 
 
 def test_cosing_exact_match_grounds_ingredient_without_inventing_claims(db):

@@ -377,6 +377,9 @@ class ProductOut(BaseModel):
     product_name: str
     brand_name: Optional[str] = None
     category_path: Optional[str] = None
+    product_category: Optional[str] = None
+    subcategory: Optional[str] = None
+    product_type: Optional[str] = None
     gtin: Optional[str] = None
     image_url: Optional[str] = None
     review_status: str

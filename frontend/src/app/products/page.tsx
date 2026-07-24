@@ -4,7 +4,7 @@ import { API_URL, BACKEND_URL } from '../../config';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Shell from '../../components/Shell';
-import { Search, Filter, AlertTriangle, ArrowRight, X } from 'lucide-react';
+import { Search, Filter, AlertTriangle, ArrowRight, X, Sparkles } from 'lucide-react';
 import styles from '../page.module.css';
 
 interface Product {
@@ -13,6 +13,9 @@ interface Product {
   product_name: string;
   brand_name: string;
   category_path: string | null;
+  product_category: string | null;
+  subcategory: string | null;
+  product_type: string | null;
   gtin: string | null;
   review_status: string;
   validation_issue_count: number;
@@ -26,6 +29,8 @@ export default function ProductsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [issueFilter, setIssueFilter] = useState<boolean | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [productTypeFilter, setProductTypeFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
@@ -77,30 +82,44 @@ export default function ProductsPage() {
     }
   };
 
+  const categoryOptions = Array.from(new Set(products.map(p => p.product_category).filter(Boolean) as string[])).sort();
+  const productTypeOptions = Array.from(new Set(products.map(p => p.product_type).filter(Boolean) as string[])).sort();
+  const visibleProducts = products.filter(product =>
+    (!categoryFilter || product.product_category === categoryFilter) &&
+    (!productTypeFilter || product.product_type === productTypeFilter)
+  );
+
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(products.map(p => p.id));
+      setSelectedIds(visibleProducts.map(p => p.id));
     } else {
       setSelectedIds([]);
     }
   };
 
-  const handleBulkAction = async (action: 'approve' | 'reject') => {
+  const handleBulkAction = async (action: 'approve' | 'reject' | 're_enrich') => {
     if (selectedIds.length === 0) return;
     setActionLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch(`${API_URL}/products/bulk-action`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ product_ids: selectedIds, action })
-      });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok) throw new Error(data?.detail || `Bulk ${action} failed.`);
-      if (data.failed_count) throw new Error(`${data.success_count} updated; ${data.failed_count} failed.`);
+      const chunkSize = action === 're_enrich' ? 2 : selectedIds.length;
+      let successful = 0;
+      const failures: string[] = [];
+      for (let offset = 0; offset < selectedIds.length; offset += chunkSize) {
+        const resp = await fetch(`${API_URL}/products/bulk/actions`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ product_ids: selectedIds.slice(offset, offset + chunkSize), action })
+        });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) throw new Error(data?.detail || `Bulk ${action} failed.`);
+        successful += data.success_count || 0;
+        if (data.failed_count) failures.push(...(data.errors || []).map((item: any) => item.error));
+      }
+      if (failures.length) throw new Error(`${successful} updated; ${failures.length} failed. ${failures[0]}`);
       setSelectedIds([]);
       await fetchProducts();
     } catch (e: any) {
@@ -135,6 +154,14 @@ export default function ProductsPage() {
               disabled={actionLoading}
             >
               Bulk Approve ({selectedIds.length})
+            </button>
+            <button
+              onClick={() => handleBulkAction('re_enrich')}
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              disabled={actionLoading}
+              title="Regenerate enrichment from each product's latest source record"
+            >
+              <Sparkles size={15} /> Re-enrich ({selectedIds.length})
             </button>
             <button 
               onClick={() => handleBulkAction('reject')} 
@@ -180,6 +207,24 @@ export default function ProductsPage() {
             <option value="rejected">Rejected</option>
             <option value="published">Published</option>
           </select>
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className={styles.inputField}
+            style={{ backgroundColor: '#0b0f19', width: '170px' }}
+          >
+            <option value="">All categories</option>
+            {categoryOptions.map(category => <option key={category} value={category}>{category}</option>)}
+          </select>
+          <select
+            value={productTypeFilter}
+            onChange={(e) => setProductTypeFilter(e.target.value)}
+            className={styles.inputField}
+            style={{ backgroundColor: '#0b0f19', width: '170px' }}
+          >
+            <option value="">All product types</option>
+            {productTypeOptions.map(type => <option key={type} value={type}>{type}</option>)}
+          </select>
 
           <select 
             value={issueFilter === null ? '' : String(issueFilter)}
@@ -194,7 +239,7 @@ export default function ProductsPage() {
             <option value="true">Has validation issues</option>
             <option value="false">Clear of issues</option>
           </select>
-          {(search || statusFilter || issueFilter !== null) && (
+          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter) && (
             <button
               type="button"
               className={`${styles.btn} ${styles.btnSecondary}`}
@@ -202,6 +247,8 @@ export default function ProductsPage() {
                 setSearch('');
                 setStatusFilter('');
                 setIssueFilter(null);
+                setCategoryFilter('');
+                setProductTypeFilter('');
               }}
               title="Clear all filters"
             >
@@ -229,7 +276,7 @@ export default function ProductsPage() {
                 <th style={{ width: 40 }}>
                   <input 
                     type="checkbox" 
-                    checked={products.length > 0 && selectedIds.length === products.length}
+                    checked={visibleProducts.length > 0 && visibleProducts.every(product => selectedIds.includes(product.id))}
                     onChange={(e) => handleSelectAll(e.target.checked)}
                   />
                 </th>
@@ -237,21 +284,23 @@ export default function ProductsPage() {
                 <th>Brand Name</th>
                 <th>Product Name</th>
                 <th>GTIN / EAN</th>
-                <th>Taxonomy Category</th>
+                <th>Category</th>
+                <th>Subcategory</th>
+                <th>Product Type</th>
                 <th>Issues</th>
                 <th>Review State</th>
                 <th style={{ width: 80 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {products.length === 0 ? (
+              {visibleProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
+                  <td colSpan={11} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
                     No products found matching active filter parameters.
                   </td>
                 </tr>
               ) : (
-                products.map((p) => (
+                visibleProducts.map((p) => (
                   <tr key={p.id} style={{ cursor: 'pointer' }} onClick={() => router.push(`/products/${p.id}`)}>
                     <td onClick={(e) => e.stopPropagation()}>
                       <input 
@@ -266,7 +315,9 @@ export default function ProductsPage() {
                     <td style={{ fontWeight: 600 }}>{p.brand_name}</td>
                     <td>{p.product_name}</td>
                     <td style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{p.gtin || "—"}</td>
-                    <td style={{ color: '#94a3b8' }}>{p.category_path || "-"}</td>
+                    <td>{p.product_category || "—"}</td>
+                    <td style={{ color: '#c4b5fd' }}>{p.subcategory || "—"}</td>
+                    <td style={{ color: '#94a3b8' }}>{p.product_type || "—"}</td>
                     <td>
                       {p.validation_issue_count > 0 ? (
                         <span className={`${styles.badge} ${p.highest_issue_severity === 'blocking' ? styles.badgeDanger : styles.badgeWarning}`}>
