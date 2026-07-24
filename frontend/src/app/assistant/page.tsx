@@ -38,9 +38,9 @@ interface ChatEntry {
 
 const suggestions = [
   "Show me skincare products",
-  "Find body oils without retinol",
-  "Which products target hydration?",
-  "Show vegan products for sensitive skin",
+  "Tell me more about Chromatic Dew Lip Oil",
+  "Compare two hydrating products",
+  "How many brands and categories are in the catalogue?",
 ];
 
 export default function CatalogueAssistantPage() {
@@ -71,7 +71,12 @@ export default function CatalogueAssistantPage() {
           message: cleanQuestion,
           history: priorChat.slice(-8).map(item => ({
             role: item.role,
-            content: item.content,
+            content: item.response?.products.length
+              ? `${item.content}\nProducts shown: ${item.response.products
+                  .slice(0, 8)
+                  .map(product => `${product.name} by ${product.brand} (${product.internal_code})`)
+                  .join("; ")}`
+              : item.content,
           })),
         }),
       });
@@ -168,7 +173,7 @@ export default function CatalogueAssistantPage() {
                     background: entry.role === "user" ? "#25304d" : "#111a30",
                     border: "1px solid #2e3c64",
                   }}>
-                    {entry.content}
+                    <div style={{ whiteSpace: "pre-wrap" }}>{entry.content}</div>
                   </div>
 
                   {entry.response && (
@@ -234,7 +239,7 @@ export default function CatalogueAssistantPage() {
                 }}>
                   <Bot size={17} />
                 </div>
-                <Sparkles size={15} color="#818cf8" /> Searching the live catalogue…
+                <Sparkles size={15} color="#818cf8" /> Analysing the live catalogue…
               </div>
             )}
           </div>
@@ -248,7 +253,7 @@ export default function CatalogueAssistantPage() {
               <input
                 value={message}
                 onChange={event => setMessage(event.target.value)}
-                placeholder="Ask: Show me skincare products for sensitive skin…"
+                placeholder="Ask about products, attributes, ingredients, comparisons or catalogue totals…"
                 disabled={loading}
                 className={styles.inputField}
                 style={{ width: "100%", paddingLeft: 40, height: 43 }}
@@ -275,9 +280,10 @@ export default function CatalogueAssistantPage() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>
               <div><strong style={{ color: "#e2e8f0" }}>Discover</strong><br />Categories, brands and product types</div>
-              <div><strong style={{ color: "#e2e8f0" }}>Qualify</strong><br />Ingredients, claims and concerns</div>
-              <div><strong style={{ color: "#e2e8f0" }}>Govern</strong><br />Review and publication status</div>
-              <div><strong style={{ color: "#e2e8f0" }}>Refine</strong><br />Ask follow-up questions naturally</div>
+              <div><strong style={{ color: "#e2e8f0" }}>Explain</strong><br />Product details, ingredients and every stored attribute</div>
+              <div><strong style={{ color: "#e2e8f0" }}>Compare</strong><br />Differences between catalogue products</div>
+              <div><strong style={{ color: "#e2e8f0" }}>Analyse</strong><br />Counts, brands, categories and review states</div>
+              <div><strong style={{ color: "#e2e8f0" }}>Follow up</strong><br />Continue naturally about products already shown</div>
             </div>
           </div>
           <div className={styles.panelCard} style={{ background: "rgba(16,185,129,0.05)", borderColor: "#10b98133" }}>
