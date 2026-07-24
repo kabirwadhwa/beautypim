@@ -399,6 +399,33 @@ def generate_deterministic_fallback(
                 "evidence": field["evidence"][0]["supporting_text"],
                 "confidence": field["confidence"]
             })
+    if not benefits:
+        benefit_by_type = {
+            "cleanser": "Helps cleanse the skin",
+            "serum": "Supports a targeted daily beauty routine",
+            "moisturizer": "Helps maintain skin comfort and moisture",
+            "cream": "Helps condition and soften the application area",
+            "lotion": "Helps condition and soften the application area",
+            "toner": "Helps prepare skin for the next routine step",
+            "shampoo": "Helps cleanse hair and scalp",
+            "conditioner": "Helps condition and soften hair",
+            "mascara": "Helps define the lashes",
+            "lipstick": "Adds colour and definition to the lips",
+            "foundation": "Helps create a more even-looking complexion",
+            "concealer": "Helps visually reduce the appearance of uneven tone",
+            "sunscreen": "Supports daily sun-care application",
+            "fragrance": "Provides a personal fragrance experience",
+            "deodorant": "Supports everyday freshness",
+            "body wash": "Helps cleanse the body",
+            "mask": "Supports a focused beauty-care step",
+            "beauty product": "Supports an everyday beauty and personal-care routine",
+        }
+        benefits.append({
+            "statement": benefit_by_type.get(inferred_type, "Supports an everyday beauty and personal-care routine"),
+            "source_type": "catalogue_inference",
+            "evidence": f"General benefit inferred from product type '{inferred_type}'.",
+            "confidence": 0.52,
+        })
 
     directions_by_type = {
         "cleanser": "Apply to damp skin, gently massage, then rinse.",
