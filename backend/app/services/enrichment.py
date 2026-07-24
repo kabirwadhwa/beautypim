@@ -15,19 +15,76 @@ from app.services.ingredient_knowledge import (
 )
 
 BALANCED_INFERENCE_GUIDANCE = (
-    "Aim for high field coverage. For classification fields such as subcategory, product type, "
+    "Return a useful answer for every catalogue field. For classification fields such as subcategory, product type, "
     "gender target, texture, application area and target audience, make a reasonable inference "
     "when the product title or description strongly implies one. For concern targeting, skin or "
     "hair fit, benefits, directions and fragrance intelligence, infer typical values when they "
     "are reasonably supported by the product type, wording or ingredient functions. Mark these "
     "as inferred and normally use confidence between 0.55 and 0.79; use 0.80 or higher for direct "
     "source statements or exact reference matches. Populate each schema field with the best "
-    "supported answer, using unknown only when there is genuinely no reasonable signal. A "
+    "supported answer. If the source is sparse, make a transparent best-fit catalogue inference "
+    "instead of returning unknown or not provided. A "
     "plausible inference must never be worded as a verified brand claim. Ethical claims, "
     "free-from claims, safety, medical conclusions and legal compliance still require explicit "
     "support. The presence of Parfum/Fragrance may support fragrance_present=yes, but ingredient "
-    "absence alone does not prove a free-from claim. "
+    "absence alone does not prove a free-from claim. For an unsupported ethical or free-from "
+    "claim return value=unverified and claim_status=unverified, never a guessed yes/no. "
 )
+
+UNKNOWN_VALUES = {"", "unknown", "none", "null", "nan", "not provided", "not_provided"}
+
+
+def _is_missing_field(payload: Any, key: str) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    value = payload.get(key)
+    return value is None or str(value).strip().lower() in UNKNOWN_VALUES
+
+
+def ensure_catalogue_coverage(
+    data: Dict[str, Any],
+    name: str,
+    brand: str,
+    description: str,
+    raw_ingredients: str,
+) -> Dict[str, Any]:
+    """Fill safe catalogue gaps while preserving supported model output.
+
+    Product classification and merchandising attributes can be transparently
+    inferred. Ethical/free-from claims remain explicitly unverified rather than
+    being fabricated.
+    """
+    fallback = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+    categorical_fields = (
+        "subcategory", "product_type", "gender_target", "texture",
+        "application_area", "target_audience",
+    )
+    for field in categorical_fields:
+        if _is_missing_field(data.get(field), "value"):
+            data[field] = fallback[field]
+
+    for field in (
+        "vegan", "cruelty_free", "paraben_free", "sulfate_free",
+        "silicone_free", "alcohol_free", "fragrance_present",
+    ):
+        payload = data.get(field) or {}
+        if _is_missing_field(payload, "value"):
+            data[field] = fallback[field]
+
+    for field in (
+        "hydration", "anti_ageing", "pigmentation", "acne", "redness",
+        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
+    ):
+        if _is_missing_field(data.get(field), "targeting_status"):
+            data[field] = fallback[field]
+
+    for field in ("benefits", "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence"):
+        payload = data.get(field)
+        if payload is None or payload == [] or (
+            field == "directions" and _is_missing_field(payload, "text")
+        ):
+            data[field] = fallback[field]
+    return data
 
 def normalize_and_validate_enrichment(data: Dict[str, Any], raw_ingredients: str) -> Dict[str, Any]:
     """Normalize provider vocabulary and reject ingredient observations not in source."""
@@ -151,11 +208,11 @@ def generate_deterministic_fallback(
                 "confidence": 0.95
             }
         return {
-            "value": "unknown",
-            "claim_status": "unknown",
+            "value": "unverified",
+            "claim_status": "unverified",
             "evidence": [],
-            "reasoning_summary": f"No keyword '{keyword}' found in title or description.",
-            "confidence": 0.0
+            "reasoning_summary": f"No explicit '{keyword}' claim was supplied; no yes/no claim is inferred.",
+            "confidence": 1.0
         }
 
     # Helper for simple categorizations
@@ -209,7 +266,11 @@ def generate_deterministic_fallback(
                     "reasoning_summary": f"Mapped {field_name} from the explicit source keyword '{keyword}'.",
                     "confidence": 0.9
                 }
-        return make_unknown_categorical()
+        return make_inferred_categorical(
+            "beauty product",
+            f"No precise {field_name} signal was supplied; assigned the broad catalogue fallback.",
+            0.51,
+        )
 
     def detect_concern(keywords: list[str]) -> Dict[str, Any]:
         for keyword in keywords:
@@ -226,7 +287,12 @@ def generate_deterministic_fallback(
                     "reasoning_summary": f"The source explicitly mentions '{keyword}'.",
                     "confidence": 0.9
                 }
-        return make_unknown_concern()
+        return {
+            "targeting_status": "not_targeted",
+            "evidence": [],
+            "reasoning_summary": "No source or product-type signal indicates this concern is targeted.",
+            "confidence": 0.55
+        }
 
     product_type = detect_categorical([
         ("cleanser", "cleanser"), ("face wash", "cleanser"), ("serum", "serum"),
@@ -248,7 +314,7 @@ def generate_deterministic_fallback(
     ], "application area")
 
     inferred_type = product_type.get("value")
-    if application_area["value_status"] == "unknown" and inferred_type:
+    if application_area.get("value") == "beauty product" and inferred_type:
         area_by_type = {
             "cleanser": "face", "serum": "face", "moisturizer": "face",
             "toner": "face", "foundation": "face", "concealer": "face",
@@ -266,7 +332,7 @@ def generate_deterministic_fallback(
         ("for men", "men"), ("men's", "men"), ("for women", "women"),
         ("women's", "women"), ("unisex", "unisex")
     ], "gender target")
-    if gender_target["value_status"] == "unknown":
+    if gender_target.get("value") == "beauty product":
         gender_target = make_inferred_categorical(
             "unisex",
             "No gender restriction is stated; the catalogue default is unisex.",
@@ -277,14 +343,14 @@ def generate_deterministic_fallback(
         ("baby", "babies"), ("kids", "children"), ("children", "children"),
         ("teen", "teenagers"), ("mature skin", "mature skin")
     ], "target audience")
-    if target_audience["value_status"] == "unknown":
+    if target_audience.get("value") == "beauty product":
         target_audience = make_inferred_categorical(
             "adults",
             "No age-specific audience is stated; the catalogue default is adults.",
             0.55
         )
 
-    if texture["value_status"] == "unknown" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
+    if texture.get("value") == "beauty product" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
         texture_defaults = {
             "serum": "serum/liquid", "toner": "liquid",
             "shampoo": "liquid/gel", "conditioner": "cream"
@@ -293,6 +359,19 @@ def generate_deterministic_fallback(
             texture_defaults[inferred_type],
             f"Typical texture inferred from product type '{inferred_type}'.",
             0.58
+        )
+    elif texture.get("value") == "beauty product":
+        texture = make_inferred_categorical(
+            "standard formulation",
+            f"Texture is not explicit; a neutral merchandising value was assigned for '{inferred_type}'.",
+            0.51,
+        )
+
+    if application_area.get("value") == "beauty product":
+        application_area = make_inferred_categorical(
+            "face and body",
+            "No narrower application area is stated; assigned a broad beauty-use area.",
+            0.51,
         )
 
     hydration = detect_concern(["hydrat", "moistur"])
@@ -330,7 +409,10 @@ def generate_deterministic_fallback(
         "conditioner": "Apply to hair lengths after shampooing, then rinse.",
         "sunscreen": "Apply evenly before sun exposure and reapply as needed.",
     }
-    inferred_directions = directions_by_type.get(inferred_type)
+    inferred_directions = directions_by_type.get(
+        inferred_type,
+        "Use as directed on the product packaging for this product type.",
+    )
 
     return {
         "subcategory": product_type,
@@ -362,15 +444,15 @@ def generate_deterministic_fallback(
         "benefits": benefits,
         "directions": {
             "text": inferred_directions,
-            "source_status": "inferred" if inferred_directions else "unknown",
+            "source_status": "inferred",
             "evidence": [{
                 "source_reference": None,
                 "source_field": "product_type",
                 "supporting_text": f"General usage inferred from product type '{inferred_type}'.",
                 "evidence_type": "catalogue_rule_inference",
                 "char_offsets": None
-            }] if inferred_directions else [],
-            "confidence": 0.55 if inferred_directions else None
+            }],
+            "confidence": 0.55
         },
         "skin_type_fit": {
             "applicable": False,
@@ -390,7 +472,7 @@ def generate_deterministic_fallback(
         },
         "fragrance_intelligence": {
             "applicable": False,
-            "fragrance_presence_status": "unknown",
+            "fragrance_presence_status": "not_detected_from_supplied_data",
             "fragrance_family": None,
             "top_notes": [],
             "middle_notes": [],
@@ -519,6 +601,9 @@ def run_ai_enrichment(
             parsed_data = json.loads(candidate_text)
             parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
             parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
+            parsed_data = ensure_catalogue_coverage(
+                parsed_data, name, brand, description, raw_ingredients
+            )
             
             run_record = EnrichmentRun(
                 id=run_id,
@@ -585,6 +670,9 @@ def run_ai_enrichment(
             fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
             fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
             fallback_data = normalize_and_validate_enrichment(fallback_data, raw_ingredients)
+            fallback_data = ensure_catalogue_coverage(
+                fallback_data, name, brand, description, raw_ingredients
+            )
             return fallback_data, run_id
 
     # 2. Fallback if Gemini key is missing
@@ -592,6 +680,9 @@ def run_ai_enrichment(
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
         fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
         fallback_data = normalize_and_validate_enrichment(fallback_data, raw_ingredients)
+        fallback_data = ensure_catalogue_coverage(
+            fallback_data, name, brand, description, raw_ingredients
+        )
         run_record = EnrichmentRun(
             id=run_id,
             import_job_id=import_job_id,
@@ -758,6 +849,9 @@ def run_ai_enrichment(
         # Ensure default array properties that model might omit
         parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
         parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
+        parsed_data = ensure_catalogue_coverage(
+            parsed_data, name, brand, description, raw_ingredients
+        )
         
         # Save Success Run
         run_record = EnrichmentRun(
@@ -829,4 +923,7 @@ def run_ai_enrichment(
         fallback_data = generate_deterministic_fallback(name, brand, description, raw_ingredients)
         fallback_data = ground_fallback_ingredients(fallback_data, ingredient_knowledge)
         fallback_data = normalize_and_validate_enrichment(fallback_data, raw_ingredients)
+        fallback_data = ensure_catalogue_coverage(
+            fallback_data, name, brand, description, raw_ingredients
+        )
         return fallback_data, run_id

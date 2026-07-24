@@ -28,6 +28,22 @@ def source_value(raw_data: Dict[str, Any], mapping: Dict[str, str], field_name: 
         return ""
     return str(value).strip()
 
+
+def inferred_category_name(product_type: str, application_area: str = "") -> str:
+    text = f"{product_type} {application_area}".lower()
+    category_rules = (
+        ("Hair Care", ("shampoo", "conditioner", "hair", "scalp")),
+        ("Makeup", ("lipstick", "mascara", "foundation", "concealer", "makeup")),
+        ("Fragrance", ("fragrance", "perfume", "eau de", "parfum")),
+        ("Body Care", ("body", "deodorant", "underarm")),
+        ("Sun Care", ("sunscreen", "sun care", "spf")),
+        ("Skin Care", ("cleanser", "serum", "moistur", "cream", "lotion", "toner", "mask", "face")),
+    )
+    for category, keywords in category_rules:
+        if any(keyword in text for keyword in keywords):
+            return category
+    return "Beauty & Personal Care"
+
 def record_audit(
     db: Session,
     entity_type: str,
@@ -298,16 +314,26 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             existing_benefits = []
         enrichment_result["benefits"] = source_claim_entries + existing_benefits
 
-    # Assign a stable materialized taxonomy path from explicit source hierarchy.
-    # AI classification is only used as a fallback when the source has no family.
-    if raw_category:
-        root_name = " ".join(raw_category.split()).title()
+    # Materialize a useful category even when the incoming feed has no taxonomy.
+    # Explicit source hierarchy wins; otherwise transparent AI classification is used.
+    inferred_product_type = str((enrichment_result.get("product_type") or {}).get("value") or "")
+    inferred_application_area = str((enrichment_result.get("application_area") or {}).get("value") or "")
+    root_name = (
+        " ".join(raw_category.split()).title()
+        if raw_category
+        else inferred_category_name(inferred_product_type, inferred_application_area)
+    )
+    if root_name:
         root = db.query(Category).filter(Category.path.ilike(root_name)).first()
         if not root:
             root = Category(id=uuid.uuid4(), name=root_name, level=0, path=root_name)
             db.add(root)
             db.flush()
-        family_value = raw_product_family or (enrichment_result.get("subcategory") or {}).get("value")
+        family_value = (
+            raw_product_family
+            or (enrichment_result.get("subcategory") or {}).get("value")
+            or inferred_product_type
+        )
         assigned = root
         if family_value:
             family_name = " ".join(str(family_value).replace("_", " ").split()).title()

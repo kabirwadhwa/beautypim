@@ -104,6 +104,16 @@ def list_products(
         if prod.category_id:
             cat = db.query(Category).filter(Category.id == prod.category_id).first()
             category_path = cat.path if cat else None
+        current_classifications = {
+            field.field_name: field.value
+            for field in db.query(FieldValue).filter(
+                FieldValue.canonical_product_id == prod.id,
+                FieldValue.product_variant_id.is_(None),
+                FieldValue.field_name.in_(["subcategory", "product_type"]),
+                FieldValue.is_current == True,
+            ).all()
+        }
+        category_parts = [part.strip() for part in (category_path or "").split(">") if part.strip()]
             
         variant = db.query(ProductVariant).filter(
             ProductVariant.canonical_product_id == prod.id,
@@ -133,6 +143,11 @@ def list_products(
             product_name=prod.product_name,
             brand_name=prod.brand.name,
             category_path=category_path,
+            product_category=category_parts[0] if category_parts else None,
+            subcategory=current_classifications.get("subcategory") or (
+                category_parts[-1] if len(category_parts) > 1 else None
+            ),
+            product_type=current_classifications.get("product_type"),
             gtin=variant.gtin if variant else None,
             image_url=prod.image_url,
             review_status=prod.review_status,
@@ -731,7 +746,7 @@ def reject_product(
     db.commit()
     return get_product_detail(product_id, db, current_user)
 
-@router.post("/bulk-action", status_code=status.HTTP_200_OK)
+@router.post("/bulk/actions", status_code=status.HTTP_200_OK)
 def bulk_product_action(
     req: BulkActionRequest,
     db: Session = Depends(get_db),
@@ -740,7 +755,7 @@ def bulk_product_action(
     product_ids = req.product_ids
     action = req.action
 
-    if action not in ["approve", "reject"]:
+    if action not in ["approve", "reject", "re_enrich"]:
         raise HTTPException(status_code=400, detail="Invalid action name")
 
     success_count = 0
@@ -752,6 +767,8 @@ def bulk_product_action(
                 approve_product(pid, db, current_user)
             elif action == "reject":
                 reject_product(pid, db, current_user)
+            elif action == "re_enrich":
+                re_enrich_product(pid, db, current_user)
             success_count += 1
         except HTTPException as e:
             errors.append({"product_id": str(pid), "error": e.detail})
