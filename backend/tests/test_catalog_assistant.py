@@ -290,3 +290,117 @@ def test_ai_interpretation_cannot_weaken_explicit_product_type_or_exclusion(monk
     assert "body oil" in filters["product_types"]
     assert "vegan" in filters["claims"]
     assert "retinol" in filters["ingredients_exclude"]
+
+
+def test_named_product_question_returns_a_grounded_explanation_not_the_whole_catalogue(
+    client, db, monkeypatch
+):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    lip_oil = seed_product(
+        db,
+        name="Chromatic Dew Lip Oil",
+        brand_name="Arc & Ember",
+        category_path="Makeup > Lip Oil",
+        product_type="lip oil",
+        description="A glossy tinted lip oil with jojoba and raspberry seed oils.",
+        ingredients="Jojoba Oil, Raspberry Seed Oil, Tocopherol",
+        vegan=True,
+    )
+    seed_product(
+        db,
+        name="Solar Fig Body Nectar",
+        brand_name="Golden Syntax",
+        category_path="Body Care > Body Oil",
+        product_type="body oil",
+        description="A shimmering dry-touch body oil.",
+        ingredients="Squalane, Sunflower Seed Oil",
+    )
+
+    response = client.post(
+        "/api/assistant/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "Tell me more about Chromatic Dew Lip Oil, what is it?",
+            "history": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interpreted_filters"]["intent"] == "product_detail"
+    assert payload["total_matches"] == 1
+    assert [item["id"] for item in payload["products"]] == [str(lip_oil.id)]
+    assert "glossy tinted lip oil" in payload["answer"].lower()
+    assert "jojoba oil" in payload["answer"].lower()
+    assert "i found 2" not in payload["answer"].lower()
+
+
+def test_follow_up_can_resolve_the_product_from_conversation_history(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    product = seed_product(
+        db,
+        name="Chromatic Dew Lip Oil",
+        brand_name="Arc & Ember",
+        category_path="Makeup > Lip Oil",
+        product_type="lip oil",
+        description="A glossy tinted lip oil.",
+        ingredients="Jojoba Oil, Tocopherol",
+    )
+
+    response = client.post(
+        "/api/assistant/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "What are its ingredients?",
+            "history": [
+                {
+                    "role": "assistant",
+                    "content": "Products shown: Chromatic Dew Lip Oil by Arc & Ember",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interpreted_filters"]["intent"] == "product_detail"
+    assert [item["id"] for item in payload["products"]] == [str(product.id)]
+    assert "jojoba oil" in payload["answer"].lower()
+
+
+def test_catalogue_summary_answers_counts_brands_and_categories(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    seed_product(
+        db,
+        name="Cloud Serum",
+        brand_name="Northlight Lab",
+        category_path="Skincare > Serum",
+        product_type="serum",
+        description="A hydrating serum.",
+        ingredients="Aqua, Glycerin",
+    )
+    seed_product(
+        db,
+        name="Meadow Oil",
+        brand_name="Aster Grove",
+        category_path="Body Care > Body Oil",
+        product_type="body oil",
+        description="A body oil.",
+        ingredients="Squalane",
+    )
+
+    response = client.post(
+        "/api/assistant/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "How many products, brands and categories are in the catalogue?",
+            "history": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interpreted_filters"]["intent"] == "catalogue_summary"
+    assert payload["total_matches"] == 2
+    assert "2 matching products" in payload["answer"]
+    assert "2 brands" in payload["answer"]
