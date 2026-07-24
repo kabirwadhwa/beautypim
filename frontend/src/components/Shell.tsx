@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { 
   LayoutDashboard, FileInput, TableProperties, Download, 
-  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle
+  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle, Globe2
 } from 'lucide-react';
 import styles from '../app/page.module.css';
 
@@ -51,6 +51,10 @@ export default function Shell({ children }: ShellProps) {
     { name: 'Export Center', path: '/exports', icon: Download },
     { name: 'Taxonomy Settings', path: '/settings/taxonomies', icon: Settings },
   ];
+
+  if (role === 'admin' || role === 'editor') {
+    navItems.push({ name: 'Knowledge Crawl', path: '/knowledge-crawl', icon: Globe2 });
+  }
 
   if (role === 'admin') {
     navItems.push({ name: 'Team & Access', path: '/settings/team', icon: Users });

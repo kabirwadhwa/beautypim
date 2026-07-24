@@ -130,3 +130,38 @@ cp backend/beauty_pim_backup.db backend/beauty_pim.db
 
 ### Exports Center:
 * `POST /api/exports/run`: Generate CSV, JSON, or Excel dataset. Optionally dispatch API payload to a webhook URL.
+
+---
+
+## Internal Knowledge Crawler
+
+BeautyPIM includes an internal, provenance-first crawler for approved beauty
+retailer and brand domains. It supports product URLs, URL batches, category and
+brand pages, sitemaps and sitemap indexes, and controlled same-domain discovery.
+It does not bypass logins, CAPTCHAs, robots rules, or anti-bot controls.
+
+The crawler is intentionally processed outside the API server. Docker Compose
+starts `crawler-worker` automatically. When deploying elsewhere, run a second
+service from the backend image with this command:
+
+```bash
+python -m app.scraping.worker
+```
+
+The API and worker must share `DATABASE_URL` and `SECRET_KEY`. Development raw
+page evidence is written beneath `CRAWL_RAW_STORAGE_PATH`; configure a persistent
+volume for production evidence storage. Browser rendering uses isolated Chromium
+and is opt-in per crawl.
+
+The internal UI is available at `/knowledge-crawl` for editors and
+administrators. Full-domain crawls require the administrator role.
+
+Key API operations:
+
+* `POST /api/crawl-jobs/validate`
+* `POST /api/crawl-jobs`
+* `GET /api/crawl-jobs/{id}`
+* `POST /api/crawl-jobs/{id}/pause|resume|cancel|recrawl`
+* `GET /api/crawl-jobs/{id}/urls|products|conflicts`
+* `POST /api/crawl-jobs/{id}/retry-failed`
+* `POST /api/crawl-jobs/conflicts/{conflict_id}/accept|reject`

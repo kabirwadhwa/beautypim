@@ -21,6 +21,8 @@ from app.models import (
     ProductVariant,
     SourcePrice,
     SourceListing,
+    ScrapedProductObservation,
+    CrawlConflict,
     User,
 )
 
@@ -91,6 +93,10 @@ FILTER_SCHEMA = {
             "concerns": {"type": "array", "items": {"type": "string"}},
             "claims": {"type": "array", "items": {"type": "string"}},
             "review_statuses": {"type": "array", "items": {"type": "string"}},
+            "source_domains": {"type": "array", "items": {"type": "string"}},
+            "availability_states": {"type": "array", "items": {"type": "string"}},
+            "has_conflicts": {"type": "boolean"},
+            "changed_formulation": {"type": "boolean"},
             "explanation": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         },
@@ -99,6 +105,8 @@ FILTER_SCHEMA = {
             "query_terms", "brand_names", "category_terms", "product_types",
             "ingredients_include", "ingredients_exclude", "concerns", "claims",
             "review_statuses", "explanation", "limit",
+            "source_domains", "availability_states", "has_conflicts",
+            "changed_formulation",
         ],
     },
 }
@@ -186,6 +194,10 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
         "fragrance": "fragrance",
         "skin type": "skin_type_fit",
         "hair type": "hair_type_fit",
+        "source": "knowledge_sources",
+        "last observed": "last_observed",
+        "availability": "availability",
+        "price": "prices",
     }
     attribute_names = list(dict.fromkeys(
         canonical
@@ -202,6 +214,10 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
     stopwords = {
         "show", "find", "give", "list", "me", "all", "the", "products",
         "product", "with", "without", "for", "that", "are", "is", "please",
+        "which", "what", "found", "on", "from", "source", "supports",
+        "currently", "unavailable", "available", "changed", "change",
+        "formulation", "conflict", "conflicting", "when", "was", "last",
+        "observed",
     }
     query_terms = [
         token for token in re.findall(r"[a-z0-9][a-z0-9_-]+", text)
@@ -209,6 +225,7 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
         and token not in categories
         and token not in concerns
         and token not in claims
+        and token not in {"retail_data", "retail_data", "retail_data", "retail_data", "retail_data"}
         and not any(token in product_type.split() or token.rstrip("s") in product_type.split() for product_type in product_types)
         and not any(token in item.split() for item in excluded)
     ]
@@ -227,6 +244,16 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
         "concerns": concerns,
         "claims": claims,
         "review_statuses": [],
+        "source_domains": [
+            token for token in ("retail_data", "retail_data", "retail_data", "retail_data", "retail_data")
+            if token in text
+        ],
+        "availability_states": (
+            ["outofstock", "unavailable"] if any(value in text for value in ("unavailable", "out of stock"))
+            else ["instock", "available"] if "in stock" in text else []
+        ),
+        "has_conflicts": "conflict" in text or "conflicting" in text,
+        "changed_formulation": "changed formulation" in text or "formulation change" in text,
         "explanation": "Interpreted with deterministic catalogue search.",
         "limit": 20,
     }
@@ -333,6 +360,7 @@ def interpret_question(
             "query_terms", "brand_names", "category_terms", "product_types",
             "ingredients_include", "ingredients_exclude", "concerns", "claims",
             "review_statuses",
+            "source_domains", "availability_states",
         ):
             filters[key] = _clean_terms(filters.get(key))
         if filters.get("intent") not in {
@@ -356,8 +384,11 @@ def interpret_question(
         for key in (
             "category_terms", "product_types", "ingredients_include",
             "ingredients_exclude", "concerns", "claims", "review_statuses",
+            "source_domains", "availability_states",
         ):
             filters[key] = list(dict.fromkeys(filters[key] + deterministic[key]))
+        filters["has_conflicts"] = bool(filters.get("has_conflicts") or deterministic["has_conflicts"])
+        filters["changed_formulation"] = bool(filters.get("changed_formulation") or deterministic["changed_formulation"])
         filters["limit"] = max(1, min(int(filters.get("limit", 20)), 50))
         if filters["intent"] == "product_detail":
             filters["limit"] = min(filters["limit"], 3)
@@ -419,13 +450,31 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
         ).all()
         ingredients = " ".join(item.raw_inci_text or "" for item in formulations).lower()
         source = _source_context(db, product.id)
+        crawl_observations = db.query(ScrapedProductObservation).filter(
+            ScrapedProductObservation.canonical_product_id == product.id
+        ).order_by(ScrapedProductObservation.scraped_at.desc()).all()
+        if crawl_observations and product.review_status in {
+            "imported", "queued", "enriching", "enrichment_failed",
+            "needs_review", "in_review", "rejected",
+        }:
+            has_import_source = db.query(SourceListing.id).filter(
+                SourceListing.canonical_product_id == product.id,
+                SourceListing.import_job_id.isnot(None),
+            ).first()
+            if not has_import_source:
+                continue
+        source_domains = sorted({row.source_domain for row in crawl_observations})
+        pending_conflicts = db.query(CrawlConflict).filter(
+            CrawlConflict.canonical_product_id == product.id,
+            CrawlConflict.status == "pending",
+        ).count()
         raw_text = json.dumps(source.get("raw", {}), ensure_ascii=False, default=str).lower()
         category_path = category.path if category else ""
         product_type = str((field_map.get("product_type") or field_map.get("subcategory")).value).lower() if (field_map.get("product_type") or field_map.get("subcategory")) else ""
         haystack = " ".join([
             product.product_name, product.brand.name if product.brand else "",
             category_path, product_type, source.get("description") or "", raw_text,
-            ingredients,
+            ingredients, " ".join(source_domains),
         ]).lower()
         reasons: List[str] = []
         matched: Dict[str, Any] = {}
@@ -453,6 +502,21 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
         if any(term in ingredients for term in filters.get("ingredients_exclude", [])):
             continue
         if filters.get("review_statuses") and product.review_status.lower() not in filters["review_statuses"]:
+            continue
+        if filters.get("source_domains") and not any(
+            needle in domain.lower()
+            for needle in filters["source_domains"] for domain in source_domains
+        ):
+            continue
+        availability_value = str(field_map.get("availability").value).lower() if field_map.get("availability") else ""
+        if filters.get("availability_states") and not any(
+            value.replace(" ", "") in availability_value.replace(" ", "")
+            for value in filters["availability_states"]
+        ):
+            continue
+        if filters.get("has_conflicts") and not pending_conflicts:
+            continue
+        if filters.get("changed_formulation") and len({item.content_hash for item in formulations}) < 2:
             continue
         if filters.get("query_terms") and not all(term in haystack for term in filters["query_terms"]):
             continue
@@ -538,6 +602,19 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             }
             for price in prices
         ]
+        matched["knowledge_sources"] = [
+            {
+                "domain": row.source_domain, "url": row.source_url,
+                "observed_at": row.scraped_at.isoformat(),
+                "match_status": row.match_status,
+            }
+            for row in crawl_observations[:10]
+        ]
+        matched["last_observed"] = (
+            crawl_observations[0].scraped_at.isoformat() if crawl_observations else None
+        )
+        matched["pending_crawl_conflicts"] = pending_conflicts
+        matched["formulation_observation_count"] = len(formulations)
         if filters.get("intent") in {"product_detail", "compare"}:
             matched["source_attributes"] = {
                 str(key): value

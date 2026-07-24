@@ -34,6 +34,21 @@ services:
       db:
         condition: service_healthy
 
+  crawler-worker:
+    build: ./backend
+    command: ["python", "-m", "app.scraping.worker"]
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=production
+      - CRAWL_RAW_STORAGE_PATH=/var/lib/beautypim-crawl-pages
+      - LOG_LEVEL=INFO
+    volumes:
+      - crawl_pages:/var/lib/beautypim-crawl-pages
+    depends_on:
+      db:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     container_name: beauty_pim_frontend
@@ -46,3 +61,4 @@ services:
 
 volumes:
   pgdata:
+  crawl_pages:

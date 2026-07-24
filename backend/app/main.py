@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db, engine, Base
-from app.routes import auth, feeds, products, exports, admin_users, taxonomies, catalog_assistant
+from app.routes import auth, feeds, products, exports, admin_users, taxonomies, catalog_assistant, crawls
 from app.worker import recover_unfinished_jobs
 
 # Structured logging configuration
@@ -112,6 +112,7 @@ app.include_router(products.router, prefix=settings.API_V1_STR)
 app.include_router(exports.router, prefix=settings.API_V1_STR)
 app.include_router(taxonomies.router, prefix=settings.API_V1_STR)
 app.include_router(catalog_assistant.router, prefix=settings.API_V1_STR)
+app.include_router(crawls.router, prefix=settings.API_V1_STR)
 
 @app.get("/health", tags=["System Controls"])
 def health_check():

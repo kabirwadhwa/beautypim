@@ -84,7 +84,8 @@ class ImportJob(Base):
 class SourceListing(Base):
     __tablename__ = 'source_listings'
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
-    import_job_id = Column(GUID, ForeignKey('import_jobs.id', ondelete='CASCADE'), nullable=False)
+    import_job_id = Column(GUID, ForeignKey('import_jobs.id', ondelete='CASCADE'), nullable=True)
+    crawl_job_id = Column(GUID, ForeignKey('crawl_jobs.id', ondelete='CASCADE'), nullable=True)
     canonical_product_id = Column(GUID, ForeignKey('canonical_products.id', ondelete='SET NULL'), nullable=True)
     product_variant_id = Column(GUID, ForeignKey('product_variants.id', ondelete='SET NULL'), nullable=True)
     raw_data = Column(PortableJSON(), nullable=False)
@@ -94,6 +95,14 @@ class SourceListing(Base):
     is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(import_job_id IS NOT NULL AND crawl_job_id IS NULL) OR "
+            "(import_job_id IS NULL AND crawl_job_id IS NOT NULL)",
+            name="check_source_listing_origin",
+        ),
+    )
 
 class ImportJobItem(Base):
     __tablename__ = 'import_job_items'
@@ -418,3 +427,170 @@ class CanonicalProductMerge(Base):
     merged_by_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class CrawlJob(Base):
+    __tablename__ = "crawl_jobs"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    domain = Column(String(255), nullable=False, index=True)
+    starting_urls = Column(PortableJSON(), nullable=False)
+    crawl_mode = Column(String(50), nullable=False)
+    status = Column(String(50), nullable=False, default="queued", index=True)
+    configuration = Column(PortableJSON(), nullable=False)
+    requested_by_id = Column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    pages_discovered = Column(Integer, nullable=False, default=0)
+    pages_fetched = Column(Integer, nullable=False, default=0)
+    product_pages_found = Column(Integer, nullable=False, default=0)
+    products_parsed = Column(Integer, nullable=False, default=0)
+    products_persisted = Column(Integer, nullable=False, default=0)
+    products_failed = Column(Integer, nullable=False, default=0)
+    pages_skipped = Column(Integer, nullable=False, default=0)
+    current_queue_size = Column(Integer, nullable=False, default=0)
+    retry_count = Column(Integer, nullable=False, default=0)
+    consecutive_blocks = Column(Integer, nullable=False, default=0)
+    error_summary = Column(Text, nullable=True)
+    robots_txt = Column(Text, nullable=True)
+    robots_fetched_at = Column(DateTime(timezone=True), nullable=True)
+    crawler_version = Column(String(50), nullable=False, default="1.0.0")
+
+    __table_args__ = (
+        CheckConstraint(crawl_mode.in_([
+            "single_url", "multiple_urls", "category", "brand_catalogue",
+            "sitemap", "sitemap_index", "full_domain",
+        ]), name="check_crawl_mode"),
+        CheckConstraint(status.in_([
+            "queued", "discovering", "crawling", "parsing",
+            "partially_completed", "completed", "paused", "cancelled",
+            "blocked", "failed",
+        ]), name="check_crawl_status"),
+    )
+
+
+class CrawlUrl(Base):
+    __tablename__ = "crawl_urls"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    crawl_job_id = Column(GUID, ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    url = Column(Text, nullable=False)
+    normalized_url = Column(Text, nullable=False)
+    canonical_url = Column(Text, nullable=True)
+    parent_url_id = Column(GUID, ForeignKey("crawl_urls.id", ondelete="SET NULL"), nullable=True)
+    depth = Column(Integer, nullable=False, default=0)
+    state = Column(String(50), nullable=False, default="queued", index=True)
+    page_type = Column(String(50), nullable=True)
+    classification_reasons = Column(PortableJSON(), nullable=True)
+    priority = Column(Integer, nullable=False, default=100)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    http_status = Column(Integer, nullable=True)
+    content_type = Column(String(255), nullable=True)
+    error_reason = Column(Text, nullable=True)
+    discovered_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    fetched_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(state.in_([
+            "queued", "fetching", "visited", "skipped", "failed", "completed",
+        ]), name="check_crawl_url_state"),
+        CheckConstraint(page_type.in_([
+            "product", "category", "pagination", "editorial", "irrelevant",
+            "blocked", "unknown", "sitemap",
+        ]), name="check_crawl_url_page_type"),
+        Index("uq_crawl_job_normalized_url", "crawl_job_id", "normalized_url", unique=True),
+        Index("idx_crawl_frontier_claim", "crawl_job_id", "state", "priority", "next_attempt_at"),
+    )
+
+
+class RawPageObservation(Base):
+    __tablename__ = "raw_page_observations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    crawl_job_id = Column(GUID, ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    crawl_url_id = Column(GUID, ForeignKey("crawl_urls.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_url = Column(Text, nullable=False)
+    final_url = Column(Text, nullable=False)
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    http_status = Column(Integer, nullable=False)
+    response_headers = Column(PortableJSON(), nullable=True)
+    content_hash = Column(String(64), nullable=False, index=True)
+    structured_data_hash = Column(String(64), nullable=True, index=True)
+    etag = Column(Text, nullable=True)
+    last_modified = Column(Text, nullable=True)
+    storage_reference = Column(Text, nullable=True)
+    response_size = Column(Integer, nullable=False, default=0)
+    parser_version = Column(String(50), nullable=False)
+    unchanged_from_id = Column(GUID, ForeignKey("raw_page_observations.id", ondelete="SET NULL"), nullable=True)
+
+
+class ScrapedProductObservation(Base):
+    __tablename__ = "scraped_product_observations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    crawl_job_id = Column(GUID, ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    raw_page_id = Column(GUID, ForeignKey("raw_page_observations.id", ondelete="CASCADE"), nullable=False)
+    source_listing_id = Column(GUID, ForeignKey("source_listings.id", ondelete="SET NULL"), nullable=True)
+    canonical_product_id = Column(GUID, ForeignKey("canonical_products.id", ondelete="SET NULL"), nullable=True, index=True)
+    possible_match_product_id = Column(GUID, ForeignKey("canonical_products.id", ondelete="SET NULL"), nullable=True)
+    product_variant_id = Column(GUID, ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    source_name = Column(String(255), nullable=False)
+    source_domain = Column(String(255), nullable=False, index=True)
+    source_url = Column(Text, nullable=False)
+    canonical_url = Column(Text, nullable=False)
+    locale = Column(String(20), nullable=True)
+    country = Column(String(10), nullable=True)
+    retailer_product_id = Column(String(255), nullable=True)
+    normalized_payload = Column(PortableJSON(), nullable=False)
+    identity_hash = Column(String(64), nullable=False, index=True)
+    structured_hash = Column(String(64), nullable=False, index=True)
+    match_status = Column(String(50), nullable=False)
+    changed_fields = Column(PortableJSON(), nullable=True)
+    adapter_name = Column(String(100), nullable=False)
+    adapter_version = Column(String(50), nullable=False)
+    parser_version = Column(String(50), nullable=False)
+    scraped_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(match_status.in_([
+            "matched", "unmatched", "possible_match", "conflict",
+        ]), name="check_scraped_match_status"),
+        Index("uq_crawl_product_observation", "crawl_job_id", "canonical_url", "structured_hash", unique=True),
+    )
+
+
+class ScrapedFieldObservation(Base):
+    __tablename__ = "scraped_field_observations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    scraped_product_id = Column(GUID, ForeignKey("scraped_product_observations.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_name = Column(String(100), nullable=False)
+    raw_value = Column(PortableJSON(), nullable=True)
+    normalized_value = Column(PortableJSON(), nullable=True)
+    extraction_path = Column(Text, nullable=True)
+    extraction_method = Column(String(100), nullable=False)
+    source_domain = Column(String(255), nullable=False)
+    source_url = Column(Text, nullable=False)
+    observed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    adapter_version = Column(String(50), nullable=False)
+    parser_version = Column(String(50), nullable=False)
+
+
+class CrawlConflict(Base):
+    __tablename__ = "crawl_conflicts"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    crawl_job_id = Column(GUID, ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    scraped_product_id = Column(GUID, ForeignKey("scraped_product_observations.id", ondelete="CASCADE"), nullable=False)
+    canonical_product_id = Column(GUID, ForeignKey("canonical_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_name = Column(String(100), nullable=False)
+    current_value = Column(PortableJSON(), nullable=True)
+    observed_value = Column(PortableJSON(), nullable=True)
+    status = Column(String(50), nullable=False, default="pending", index=True)
+    reviewed_by_id = Column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    review_note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(status.in_(["pending", "accepted", "rejected"]), name="check_crawl_conflict_status"),
+        Index("uq_pending_crawl_conflict", "scraped_product_id", "field_name", unique=True),
+    )

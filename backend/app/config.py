@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN: str = os.getenv("RATE_LIMIT_LOGIN", "20/minute")
     RATE_LIMIT_UPLOADS: str = os.getenv("RATE_LIMIT_UPLOADS", "10/minute")
     RATE_LIMIT_PROCESS: str = os.getenv("RATE_LIMIT_PROCESS", "5/minute")
+    RATE_LIMIT_CRAWL_CREATE: str = os.getenv("RATE_LIMIT_CRAWL_CREATE", "3/minute")
     
     # Webhook SSRF Options
     WEBHOOK_ALLOWED_DOMAINS: Optional[str] = os.getenv("WEBHOOK_ALLOWED_DOMAINS", None)
@@ -84,6 +85,11 @@ class Settings(BaseSettings):
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Internal knowledge crawler
+    CRAWL_RAW_STORAGE_PATH: str = os.getenv("CRAWL_RAW_STORAGE_PATH", "/tmp/beautypim-crawl-pages")
+    CRAWL_WORKER_POLL_SECONDS: float = float(os.getenv("CRAWL_WORKER_POLL_SECONDS", "2"))
+    CRAWL_WORKER_STALE_SECONDS: int = int(os.getenv("CRAWL_WORKER_STALE_SECONDS", "300"))
 
     # Email & SMTP Settings
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3009")
