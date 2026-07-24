@@ -705,7 +705,9 @@ def generate_grounded_answer(
         "advice. If a requested fact is missing, say it is not recorded. Do not discuss "
         "confidence scores, model metadata, or internal enrichment mechanics. For a "
         "named-product question, lead with a useful explanation instead of a result "
-        "count. Keep the answer concise, polished, and commercially useful."
+        "count. Write polished plain text only: do not use Markdown markers, embedded "
+        "images, or link syntax. Do not include external URLs unless the user explicitly "
+        "asks for one. Keep the answer concise, polished, and commercially useful."
     )
     try:
         response = requests.post(
