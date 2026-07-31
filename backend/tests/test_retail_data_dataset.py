@@ -97,3 +97,23 @@ def test_dataset_import_persists_products_provenance_and_is_idempotent(db, tmp_p
 
     repeated = import_retail_data_export(db, str(path))
     assert repeated.id == job.id
+
+
+def test_dataset_import_resumes_same_job_from_committed_progress(db, tmp_path):
+    path = tmp_path / "resume-products.json"
+    path.write_text(
+        json.dumps([record("3400000000101"), record("3400000000102")]),
+        encoding="utf-8",
+    )
+    job = import_retail_data_export(db, str(path), maximum_records=1, batch_size=1)
+    assert job.products_persisted == 1
+
+    job.status = "failed"
+    job.completed_at = None
+    db.commit()
+    resumed = import_retail_data_export(db, str(path), batch_size=1)
+    result = import_summary(db, resumed)
+
+    assert resumed.id == job.id
+    assert result["status"] == "completed"
+    assert result["products_persisted"] == 2

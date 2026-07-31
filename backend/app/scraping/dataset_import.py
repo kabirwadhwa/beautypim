@@ -92,11 +92,16 @@ def import_retail_data_export(
     digest, file_size = file_digest(path)
     existing = db.query(CrawlJob).filter(
         CrawlJob.domain == "retail-data.invalid",
-        CrawlJob.status.in_(["completed", "partially_completed"]),
-    ).all()
+    ).order_by(CrawlJob.created_at.desc()).all()
+    resumable_job = None
     for job in existing:
-        if (job.configuration or {}).get("dataset_sha256") == digest and not force:
+        if (job.configuration or {}).get("dataset_sha256") != digest or force:
+            continue
+        if job.status in {"completed", "partially_completed"}:
             return job
+        if job.status in {"queued", "parsing", "paused", "failed"}:
+            resumable_job = job
+            break
 
     imported_at = datetime.now(timezone.utc)
     config = {
@@ -111,61 +116,77 @@ def import_retail_data_export(
         "country": "FR",
         "locale": "fr-FR",
     }
-    job = CrawlJob(
-        id=uuid.uuid4(),
-        domain="retail-data.invalid",
-        starting_urls=config["starting_urls"],
-        crawl_mode="multiple_urls",
-        status="parsing",
-        configuration=config,
-        requested_by_id=requested_by_id,
-        started_at=imported_at,
-        heartbeat_at=imported_at,
-        crawler_version=CRAWLER_VERSION,
-    )
-    crawl_url = CrawlUrl(
-        id=uuid.uuid4(),
-        crawl_job_id=job.id,
-        url="https://retail-data.invalid/",
-        normalized_url="https://retail-data.invalid/",
-        depth=0,
-        state="completed",
-        page_type="unknown",
-        classification_reasons=["structured Retail Data product export"],
-        completed_at=imported_at,
-    )
-    db.add_all([job, crawl_url])
-    db.flush()
-    storage_reference = str(path)
-    if retain_raw_file:
-        from app.scraping.storage import LocalRawPageStorage
-        storage_reference, _, _ = LocalRawPageStorage().put_file(str(path))
-    raw_page = RawPageObservation(
-        id=uuid.uuid4(),
-        crawl_job_id=job.id,
-        crawl_url_id=crawl_url.id,
-        source_url="https://retail-data.invalid/",
-        final_url="https://retail-data.invalid/",
-        http_status=200,
-        response_headers={
-            "content-type": "application/json",
-            "x-beautypim-source-filename": path.name,
-        },
-        content_hash=digest,
-        storage_reference=storage_reference,
-        response_size=file_size,
-        parser_version=PARSER_VERSION,
-    )
-    db.add(raw_page)
-    db.commit()
+    if resumable_job:
+        job = resumable_job
+        raw_page = db.query(RawPageObservation).filter(
+            RawPageObservation.crawl_job_id == job.id,
+        ).order_by(RawPageObservation.fetched_at.asc()).first()
+        if not raw_page:
+            raise RuntimeError("Cannot resume dataset import without its raw-page evidence row")
+        storage_reference = raw_page.storage_reference or str(path)
+        job.status = "parsing"
+        job.completed_at = None
+        job.heartbeat_at = imported_at
+        db.commit()
+    else:
+        job = CrawlJob(
+            id=uuid.uuid4(),
+            domain="retail-data.invalid",
+            starting_urls=config["starting_urls"],
+            crawl_mode="multiple_urls",
+            status="parsing",
+            configuration=config,
+            requested_by_id=requested_by_id,
+            started_at=imported_at,
+            heartbeat_at=imported_at,
+            crawler_version=CRAWLER_VERSION,
+        )
+        crawl_url = CrawlUrl(
+            id=uuid.uuid4(),
+            crawl_job_id=job.id,
+            url="https://retail-data.invalid/",
+            normalized_url="https://retail-data.invalid/",
+            depth=0,
+            state="completed",
+            page_type="unknown",
+            classification_reasons=["structured Retail Data product export"],
+            completed_at=imported_at,
+        )
+        db.add_all([job, crawl_url])
+        db.flush()
+        storage_reference = str(path)
+        if retain_raw_file:
+            from app.scraping.storage import LocalRawPageStorage
+            storage_reference, _, _ = LocalRawPageStorage().put_file(str(path))
+        raw_page = RawPageObservation(
+            id=uuid.uuid4(),
+            crawl_job_id=job.id,
+            crawl_url_id=crawl_url.id,
+            source_url="https://retail-data.invalid/",
+            final_url="https://retail-data.invalid/",
+            http_status=200,
+            response_headers={
+                "content-type": "application/json",
+                "x-beautypim-source-filename": path.name,
+            },
+            content_hash=digest,
+            storage_reference=storage_reference,
+            response_size=file_size,
+            parser_version=PARSER_VERSION,
+        )
+        db.add(raw_page)
+        db.commit()
     job_id = job.id
     raw_page_id = raw_page.id
 
     adapter = Retail DataDatasetAdapter()
-    processed = 0
-    failed = 0
+    processed = int(job.products_persisted or 0)
+    failed = int(job.products_failed or 0)
+    resume_offset = processed + failed
     errors = []
-    for record in records(path):
+    for record_index, record in enumerate(records(path)):
+        if record_index < resume_offset:
+            continue
         if maximum_records is not None and processed + failed >= maximum_records:
             break
         try:
@@ -185,16 +206,29 @@ def import_retail_data_export(
             job.pages_discovered = processed
             job.pages_fetched = processed
             job.heartbeat_at = datetime.now(timezone.utc)
-            if processed % batch_size == 0:
-                db.commit()
-                if progress_callback:
-                    progress_callback(processed, failed)
         except Exception as exc:
             failed += 1
+            job.products_failed = failed
             if len(errors) < 20:
                 errors.append(
                     f"{record.get('_id', 'unknown')}: {type(exc).__name__}: {exc}"
                 )
+        if (processed + failed - resume_offset) % batch_size == 0:
+            try:
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                saved_job = db.query(CrawlJob).filter(CrawlJob.id == job_id).one()
+                saved_job.status = "failed"
+                saved_job.error_summary = (
+                    f"Import connection/commit failed after "
+                    f"{saved_job.products_persisted or 0} persisted products: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                db.commit()
+                raise RuntimeError(saved_job.error_summary) from exc
+            if progress_callback:
+                progress_callback(processed, failed)
     job = db.query(CrawlJob).filter(CrawlJob.id == job_id).one()
     job.products_failed = failed
     job.completed_at = datetime.now(timezone.utc)
