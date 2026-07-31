@@ -30,6 +30,23 @@ router = APIRouter(prefix="/products", tags=["Product PIM Center"])
 def product_internal_code(product_id: uuid.UUID) -> str:
     return f"ICN-{product_id.hex.upper()}"
 
+
+@router.get("/metrics")
+def product_metrics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_viewer_or_above),
+):
+    total_products = db.query(func.count(CanonicalProduct.id)).filter(
+        CanonicalProduct.is_deleted == False,
+    ).scalar() or 0
+    unresolved_issues = db.query(func.count(ValidationIssue.id)).filter(
+        ValidationIssue.resolved == False,
+    ).scalar() or 0
+    return {
+        "total_products": total_products,
+        "unresolved_issues": unresolved_issues,
+    }
+
 @router.get("", response_model=List[ProductOut])
 def list_products(
     page: int = Query(1, ge=1),

@@ -27,24 +27,18 @@ export default function DashboardPage() {
         const token = localStorage.getItem("token");
         const headers = { "Authorization": `Bearer ${token}` };
 
-        // Fetch Jobs
-        const jobsResp = await fetch(`${API_URL}/feeds/jobs`, { headers });
-        const jobsData = await jobsResp.json();
-        setJobs(jobsData || []);
-
-        // Fetch Products
-        const prodResp = await fetch(`${API_URL}/products`, { headers });
-        const prodData = await prodResp.json();
-        setProductsCount(prodData.length || 0);
-
-        // Compute unresolved validation issues count
-        let issuesCountTemp = 0;
-        for (const p of prodData) {
-          const detailResp = await fetch(`${API_URL}/products/${p.id}`, { headers });
-          const detailData = await detailResp.json();
-          issuesCountTemp += (detailData.validation_issues || []).filter((i: any) => !i.resolved).length;
+        const [jobsResp, metricsResp] = await Promise.all([
+          fetch(`${API_URL}/feeds/jobs`, { headers }),
+          fetch(`${API_URL}/products/metrics`, { headers }),
+        ]);
+        if (!jobsResp.ok || !metricsResp.ok) {
+          throw new Error("Unable to load dashboard metrics.");
         }
-        setIssuesCount(issuesCountTemp);
+        const jobsData = await jobsResp.json();
+        const metrics = await metricsResp.json();
+        setJobs(Array.isArray(jobsData) ? jobsData : []);
+        setProductsCount(Number(metrics.total_products) || 0);
+        setIssuesCount(Number(metrics.unresolved_issues) || 0);
       } catch (e) {
         console.error(e);
       } finally {

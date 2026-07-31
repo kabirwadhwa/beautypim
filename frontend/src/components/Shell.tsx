@@ -8,6 +8,7 @@ import {
   Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle, Globe2
 } from 'lucide-react';
 import styles from '../app/page.module.css';
+import { API_URL } from '../config';
 
 interface ShellProps {
   children: React.ReactNode;
@@ -21,17 +22,38 @@ export default function Shell({ children }: ShellProps) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let active = true;
     const token = localStorage.getItem("token");
-    const storedRole = localStorage.getItem("role");
-    const storedEmail = localStorage.getItem("email");
-
     if (!token) {
-      router.push("/login");
-    } else {
-      setRole(storedRole);
-      setEmail(storedEmail);
-      setLoading(false);
+      router.replace("/login");
+      return;
     }
+
+    fetch(`${API_URL}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(async response => {
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          localStorage.clear();
+          router.replace("/login");
+          return;
+        }
+        throw new Error("Unable to verify your session.");
+      }
+      const user = await response.json();
+      if (!active) return;
+      localStorage.setItem("role", user.role);
+      localStorage.setItem("email", user.email);
+      setRole(user.role);
+      setEmail(user.email);
+      setLoading(false);
+    }).catch(() => {
+      if (!active) return;
+      localStorage.clear();
+      router.replace("/login");
+    });
+
+    return () => { active = false; };
   }, [router]);
 
   const handleLogout = () => {

@@ -53,6 +53,14 @@ def test_list_products_api(client: TestClient, db):
     assert data[0]["product_name"] == "Lala Retro"
     assert data[0]["internal_code"].startswith("ICN-")
 
+    metrics = client.get(
+        "/api/products/metrics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert metrics.status_code == 200
+    assert metrics.json()["total_products"] >= 1
+    assert metrics.json()["unresolved_issues"] >= 0
+
 
 def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(client: TestClient, db):
     token = get_admin_token(client)
