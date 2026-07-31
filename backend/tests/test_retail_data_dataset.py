@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.scraping.adapters.retail_data_dataset import Retail DataDatasetAdapter
-from app.scraping.dataset_import import analyze_retail_data_export
+from app.scraping.dataset_import import (
+    analyze_retail_data_export,
+    import_retail_data_export,
+    import_summary,
+)
 
 
 def record(record_id="3400000000001"):
@@ -68,3 +72,28 @@ def test_dataset_analysis_streams_and_reports_coverage(tmp_path):
     assert result["invalid_brand_or_name"] == 0
     assert result["unique_gtins"] == 2
     assert result["coverage"]["ingredient_text_raw"]["percentage"] == 100.0
+
+
+def test_dataset_import_persists_products_provenance_and_is_idempotent(db, tmp_path):
+    path = tmp_path / "products.json"
+    path.write_text(
+        json.dumps([record(), record("3400000000002"), {"_id": "invalid"}]),
+        encoding="utf-8",
+    )
+
+    job = import_retail_data_export(
+        db,
+        str(path),
+        batch_size=1,
+        retain_raw_file=True,
+    )
+    result = import_summary(db, job)
+    assert result["status"] == "partially_completed"
+    assert result["products_persisted"] == 2
+    assert result["products_failed"] == 1
+    assert result["drafts"] == 1
+    assert result["matched"] == 1
+    assert "missing its product name or brand" in result["error_summary"]
+
+    repeated = import_retail_data_export(db, str(path))
+    assert repeated.id == job.id
