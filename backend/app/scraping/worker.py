@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 from app.database import SessionLocal
@@ -54,7 +54,7 @@ def claim_job(db):
 
 
 def schedule_due_recrawls(db):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     jobs = db.query(CrawlJob).filter(
         CrawlJob.status.in_(["completed", "partially_completed"]),
         CrawlJob.completed_at.isnot(None),
@@ -64,7 +64,10 @@ def schedule_due_recrawls(db):
         strategy = (job.configuration or {}).get("recrawl_strategy", "crawl_once")
         if not interval or strategy == "crawl_once":
             continue
-        if job.completed_at > now - timedelta(hours=int(interval)):
+        completed_at = job.completed_at
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        if completed_at > now - timedelta(hours=int(interval)):
             continue
         prepare_recrawl(db, job, strategy)
     db.commit()
