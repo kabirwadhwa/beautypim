@@ -165,3 +165,30 @@ Key API operations:
 * `GET /api/crawl-jobs/{id}/urls|products|conflicts`
 * `POST /api/crawl-jobs/{id}/retry-failed`
 * `POST /api/crawl-jobs/conflicts/{conflict_id}/accept|reject`
+
+### Importing a structured Retail Data catalogue export
+
+Large Retail Data active-product JSON exports can be streamed directly into the
+same provenance, matching, history, and review system without loading the whole
+file into memory:
+
+```bash
+cd backend
+PYTHONPATH=. python scripts/import_retail_data_dataset.py \
+  /path/to/products.active_products_export.json --dry-run
+
+PYTHONPATH=. python scripts/import_retail_data_dataset.py \
+  /path/to/products.active_products_export.json --retain-raw-file
+```
+
+The importer is content-hash idempotent by default. Exact identifiers and exact
+product matches attach observations to existing products; unmatched items become
+reviewable drafts; possible matches and differing values enter review instead of
+being silently merged. The exact raw INCI order, field extraction paths, source
+URL, source timestamps, normalized values, and file evidence reference are
+retained. Use `--force` only when intentionally importing the same file again.
+
+During later enrichment, only catalogue evidence already matched to that exact
+canonical product is supplied to the AI. Accepted human and direct-source values
+cannot be replaced by an AI inference; disagreements remain non-current
+candidates with a review warning.

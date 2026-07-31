@@ -60,6 +60,54 @@ def test_override_preservation_locked(db: Session):
     assert issue is not None
     assert issue.issue_type == "conflicting_information"
 
+
+def test_confirmed_source_value_is_not_replaced_by_ai(db: Session):
+    brand = Brand(id=uuid.uuid4(), name="Source Brand", normalized_name="sourcebrand")
+    db.add(brand)
+    db.flush()
+    product = CanonicalProduct(
+        id=uuid.uuid4(),
+        brand_id=brand.id,
+        product_name="Observed Cream",
+        normalized_name="observedcream",
+    )
+    db.add(product)
+    db.flush()
+    observed = FieldValue(
+        id=uuid.uuid4(),
+        canonical_product_id=product.id,
+        field_name="skin_types",
+        value=["dry skin"],
+        source_type="source_data",
+        source_reference="https://retail-data.invalid/p/123",
+        confidence_score=1,
+        review_status="confirmed",
+        is_current=True,
+    )
+    db.add(observed)
+    db.commit()
+
+    create_field_value_version(
+        db=db,
+        canonical_product_id=product.id,
+        product_variant_id=None,
+        field_name="skin_types",
+        value=["oily skin"],
+        source_type="ai_inference",
+        source_ref="test_run",
+        confidence=0.9,
+        status="inferred",
+    )
+    db.commit()
+    db.refresh(observed)
+
+    assert observed.is_current is True
+    candidate = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.source_type == "ai_inference",
+    ).one()
+    assert candidate.is_current is False
+
 def test_blocking_issue_prevents_approval(db: Session):
     brand = Brand(id=uuid.uuid4(), name="La Roche-Posay", normalized_name="larocheposay")
     db.add(brand)
@@ -200,4 +248,3 @@ def test_recover_unfinished_jobs(db: Session):
     
     db.refresh(job)
     assert job.status == "processing"
-

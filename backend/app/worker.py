@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.enrichment import run_ai_enrichment
+from app.services.catalogue_knowledge import build_catalogue_knowledge_context
 from app.config import settings
 
 logger = logging.getLogger("worker")
@@ -140,34 +141,41 @@ def create_field_value_version(
     semantic_status: Optional[str] = None,
     semantic_status_type: Optional[str] = None
 ):
-    """Saves a candidate field value.
-    Ensures that we do NOT overwrite or deactivate any existing human-approved edits.
-    """
+    """Save a candidate without allowing AI to replace accepted direct evidence."""
     db_status = map_ai_status_to_db(status)
-    # Check for existing human edit
-    existing_human = None
+    protected_current = None
+    protected_sources = ["human_edit"]
+    if source_type == "ai_inference":
+        protected_sources.append("source_data")
     if canonical_product_id:
-        existing_human = db.query(FieldValue).filter(
+        protected_current = db.query(FieldValue).filter(
             FieldValue.canonical_product_id == canonical_product_id,
             FieldValue.field_name == field_name,
-            FieldValue.source_type == "human_edit",
+            FieldValue.source_type.in_(protected_sources),
+            FieldValue.review_status == "confirmed",
             FieldValue.is_current == True
         ).first()
     elif product_variant_id:
-        existing_human = db.query(FieldValue).filter(
+        protected_current = db.query(FieldValue).filter(
             FieldValue.product_variant_id == product_variant_id,
             FieldValue.field_name == field_name,
-            FieldValue.source_type == "human_edit",
+            FieldValue.source_type.in_(protected_sources),
+            FieldValue.review_status == "confirmed",
             FieldValue.is_current == True
         ).first()
 
-    # If active human edit exists, write new AI result as non-current candidate
+    # Keep accepted human/direct-source evidence active; retain AI as a reviewable
+    # candidate when it disagrees.
     is_current = True
-    if existing_human:
+    if protected_current:
         is_current = False
-        # Create a conflicting validation issue
-        if existing_human.value != value:
-            msg = f"Enrichment produced conflicting candidate value '{value}' for field '{field_name}' (Current human approved: '{existing_human.value}')."
+        if protected_current.value != value:
+            msg = (
+                f"Enrichment produced conflicting candidate value '{value}' for "
+                f"field '{field_name}' (accepted value: "
+                f"'{protected_current.value}', source: "
+                f"{protected_current.source_type})."
+            )
             issue = ValidationIssue(
                 id=uuid.uuid4(),
                 canonical_product_id=canonical_product_id,
@@ -249,6 +257,15 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     item.started_at = datetime.utcnow()
     db.commit()
 
+    # Ground enrichment with attributable observations already matched to this
+    # exact canonical product. Similar-but-unmatched products are never included.
+    enrichment_source_context = dict(raw_data)
+    catalogue_context = build_catalogue_knowledge_context(
+        db, item.canonical_product_id
+    )
+    if catalogue_context:
+        enrichment_source_context["_beautypim_catalogue_knowledge"] = catalogue_context
+
     # Trigger LLM/Rule Engine
     enrichment_result, run_id = run_ai_enrichment(
         db=db,
@@ -261,7 +278,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         source_listing_id=listing.id,
         canonical_product_id=item.canonical_product_id,
         product_variant_id=item.product_variant_id,
-        source_context=raw_data,
+        source_context=enrichment_source_context,
     )
 
     source_ref = f"source_listing_id:{listing.id}"

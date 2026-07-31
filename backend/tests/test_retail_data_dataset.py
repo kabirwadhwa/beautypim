@@ -1,0 +1,70 @@
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from app.scraping.adapters.retail_data_dataset import Retail DataDatasetAdapter
+from app.scraping.dataset_import import analyze_retail_data_export
+
+
+def record(record_id="3400000000001"):
+    return {
+        "_id": record_id,
+        "source": "ALKEMICS",
+        "retail_dataBrandCode": {"label": "Maison Test"},
+        "naming": {"longName": "Radiance Serum", "shortName": "Vitamin C"},
+        "description": "<p>Brightening serum.</p><script>bad()</script>",
+        "barcodeScanText": record_id,
+        "composition": ["Aqua", "Niacinamide", "Glycerin"],
+        "isClassifiedIn": {
+            "path": [{"label": "Skincare"}, {"label": "Face"}],
+            "name": {"label": "Serum"},
+        },
+        "netSizing": {"content": {"value": 30, "unityLabel": "ml"}},
+        "retailPriceIncludingVAT": {
+            "organisation1337": {"value": "24.90", "currency": "EUR"}
+        },
+        "retekEnrichment": {
+            "masterData": {
+                "productId": "P-123",
+                "baseProductId": "P-123",
+                "erp": {"status": "AVAILABLE"},
+            }
+        },
+        "productBenefits": [{"label": "Radiance"}],
+        "advices": ["<p>Apply morning and evening.</p>"],
+        "skinTypeList": [{"label": "All skin types"}],
+        "assets": {
+            "pictures": [{
+                "exportables": [{
+                    "width": 1200,
+                    "uniformResourceIdentifier": "https://images.example/product.jpg",
+                }]
+            }]
+        },
+    }
+
+
+def test_retail_data_dataset_adapter_preserves_source_data_and_sanitizes_html():
+    product = Retail DataDatasetAdapter().parse_record(
+        record(), datetime.now(timezone.utc)
+    )
+    assert product.brand == "Maison Test"
+    assert product.product_name == "Radiance Serum"
+    assert product.description == "Brightening serum."
+    assert "bad()" not in product.description
+    assert product.gtin == "3400000000001"
+    assert product.category_path == ["Skincare", "Face", "Serum"]
+    assert product.ingredient_text_raw == "Aqua, Niacinamide, Glycerin"
+    assert product.price == Decimal("24.90")
+    assert product.image_urls == ["https://images.example/product.jpg"]
+    assert product.fields["ingredient_text_raw"].path == "composition[]"
+
+
+def test_dataset_analysis_streams_and_reports_coverage(tmp_path):
+    path = tmp_path / "products.json"
+    path.write_text(json.dumps([record(), record("3400000000002")]), encoding="utf-8")
+    result = analyze_retail_data_export(path)
+    assert result["records_analyzed"] == 2
+    assert result["invalid_brand_or_name"] == 0
+    assert result["unique_gtins"] == 2
+    assert result["coverage"]["ingredient_text_raw"]["percentage"] == 100.0

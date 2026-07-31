@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import shutil
 from typing import Optional
 
 from app.config import settings
@@ -24,3 +25,18 @@ class LocalRawPageStorage:
         if self.root.resolve() not in path.resolve().parents:
             raise ValueError("Raw page reference is outside the configured storage root")
         return path.read_bytes()
+
+    def put_file(self, source: str, suffix: str = ".json") -> tuple[str, str, int]:
+        source_path = Path(source)
+        digest = hashlib.sha256()
+        size = 0
+        with source_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        value = digest.hexdigest()
+        target = self.root / value[:2] / f"{value}{suffix}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            shutil.copyfile(source_path, target)
+        return str(target), value, size

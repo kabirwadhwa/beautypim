@@ -595,6 +595,10 @@ def run_ai_enrichment(
             "The supplied ingredient reference context contains exact glossary matches. Use it only "
             "to normalize INCI names and report declared cosmetic functions. It is informative and "
             "does not establish safety, legal compliance, product benefits, or brand claims. "
+            "When _beautypim_catalogue_knowledge is supplied, it contains observations matched to "
+            "this exact product. Use its direct values as source-backed evidence, retain its source "
+            "URLs in evidence or reasoning, and surface contradictions instead of resolving them "
+            "by invention. Never transfer attributes from a different product. "
             "Only report a pregnancy ingredient observation when a named retinoid is explicitly present as an INCI item. Never infer retinol from product type, benefits, marketing language, or unrelated oils. Keep any observation factual and make no medical safety conclusion."
             f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
         )
