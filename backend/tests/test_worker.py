@@ -79,7 +79,7 @@ def test_confirmed_source_value_is_not_replaced_by_ai(db: Session):
         field_name="skin_types",
         value=["dry skin"],
         source_type="source_data",
-        source_reference="https://retail-data.invalid/p/123",
+        source_reference="https://retail-data.invalid/products/123",
         confidence_score=1,
         review_status="confirmed",
         is_current=True,

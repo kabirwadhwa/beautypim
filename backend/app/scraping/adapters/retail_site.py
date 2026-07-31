@@ -8,8 +8,8 @@ from app.scraping.schemas import ExtractedField
 from app.scraping.ingredients import split_inci
 
 
-class Retail DataAdapter(GenericJsonLdAdapter):
-    name = "retail_data"
+class RetailSiteAdapter(GenericJsonLdAdapter):
+    name = "retail_site"
     version = "1.0.0"
 
     def parse(self, html: str, url: str, *, country=None, locale=None):
@@ -35,7 +35,7 @@ class Retail DataAdapter(GenericJsonLdAdapter):
                         setattr(product, field, value)
                         product.fields[field] = ExtractedField(
                             value=value, raw_value=value, path=selector,
-                            method="retail_data_selector",
+                            method="retail_site_selector",
                         )
                         break
         for script in soup.select("script"):

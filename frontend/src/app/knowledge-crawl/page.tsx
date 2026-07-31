@@ -108,7 +108,7 @@ export default function KnowledgeCrawlPage() {
     <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) 2fr", gap: 20 }}>
       <form onSubmit={submit} className={styles.mappingCard}>
         <h3>New crawl</h3>
-        <label>Approved domain<input style={field} value={domain} onChange={e => setDomain(e.target.value)} placeholder="retail-data.invalid" required /></label>
+        <label>Approved domain<input style={field} value={domain} onChange={e => setDomain(e.target.value)} placeholder="catalogue.example" required /></label>
         <label>Starting URLs<textarea style={field} rows={3} value={startUrls} onChange={e => setStartUrls(e.target.value)} placeholder="One URL per line" /></label>
         <label>Sitemap URL<input style={field} value={sitemapUrl} onChange={e => setSitemapUrl(e.target.value)} /></label>
         <label>Mode<select style={field} value={mode} onChange={e => setMode(e.target.value)}>

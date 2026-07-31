@@ -9,7 +9,7 @@ import uuid
 
 import ijson
 from app.scraping import CRAWLER_VERSION, PARSER_VERSION
-from app.scraping.adapters.retail_data_dataset import Retail DataDatasetAdapter
+from app.scraping.adapters.retail_dataset import RetailDatasetAdapter
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -31,9 +31,9 @@ def records(path: Path):
         yield from ijson.items(stream, "item")
 
 
-def analyze_retail_data_export(path: Path, sample_limit: int | None = None) -> dict:
+def analyze_retail_export(path: Path, sample_limit: int | None = None) -> dict:
     path = Path(path).expanduser().resolve()
-    adapter = Retail DataDatasetAdapter()
+    adapter = RetailDatasetAdapter()
     imported_at = datetime.now(timezone.utc)
     total = 0
     invalid = 0
@@ -74,7 +74,7 @@ def analyze_retail_data_export(path: Path, sample_limit: int | None = None) -> d
     }
 
 
-def import_retail_data_export(
+def import_retail_export(
     db: "Session",
     file_path: str,
     requested_by_id=None,
@@ -112,7 +112,7 @@ def import_retail_data_export(
         "dataset_filename": path.name,
         "dataset_sha256": digest,
         "dataset_size_bytes": file_size,
-        "adapter": "retail_data_active_products_export",
+        "adapter": "retail_data_export",
         "country": "FR",
         "locale": "fr-FR",
     }
@@ -149,7 +149,7 @@ def import_retail_data_export(
             depth=0,
             state="completed",
             page_type="unknown",
-            classification_reasons=["structured Retail Data product export"],
+            classification_reasons=["structured retail data product export"],
             completed_at=imported_at,
         )
         db.add_all([job, crawl_url])
@@ -179,7 +179,7 @@ def import_retail_data_export(
     job_id = job.id
     raw_page_id = raw_page.id
 
-    adapter = Retail DataDatasetAdapter()
+    adapter = RetailDatasetAdapter()
     processed = int(job.products_persisted or 0)
     failed = int(job.products_failed or 0)
     resume_offset = processed + failed

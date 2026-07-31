@@ -2,13 +2,13 @@ import argparse
 import json
 
 from app.scraping.dataset_import import (
-    analyze_retail_data_export, import_retail_data_export, import_summary,
+    analyze_retail_export, import_retail_export, import_summary,
 )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze or import a Retail Data structured product export."
+        description="Analyze or import a structured Retail Data product export."
     )
     parser.add_argument("file")
     parser.add_argument("--dry-run", action="store_true")
@@ -21,7 +21,7 @@ def main():
 
     if args.dry_run:
         print(json.dumps(
-            analyze_retail_data_export(args.file, sample_limit=args.sample),
+            analyze_retail_export(args.file, sample_limit=args.sample),
             indent=2, ensure_ascii=False,
         ))
         return
@@ -29,7 +29,7 @@ def main():
     from app.database import SessionLocal
     db = SessionLocal()
     try:
-        job = import_retail_data_export(
+        job = import_retail_export(
             db,
             args.file,
             batch_size=args.batch_size,

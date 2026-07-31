@@ -178,7 +178,7 @@ export default function ExportsPage() {
                 <Info size={24} color="#6366f1" style={{ flexShrink: 0 }} />
                 <div>
                   <div style={{ fontWeight: 600, color: '#f8fafc', marginBottom: 4 }}>Business Profile</div>
-                  <span>Filters catalog to approved products only. Resolves conflicts, normalizes nested arrays to flat strings, and formats records for downstream retailers like Retail Data or Retail Data.</span>
+                  <span>Filters catalog to approved products only. Resolves conflicts, normalizes nested arrays to flat strings, and formats records for downstream Retail Data systems.</span>
                 </div>
               </div>
 

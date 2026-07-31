@@ -21,7 +21,7 @@ def test_catalogue_context_contains_current_source_evidence(db):
         field_name="benefits",
         value=["hydrating"],
         source_type="source_data",
-        source_reference="https://retail-data.invalid/p/123",
+        source_reference="https://retail-data.invalid/products/123",
         confidence_score=1,
         review_status="confirmed",
         is_current=True,

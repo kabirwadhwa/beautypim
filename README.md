@@ -174,10 +174,10 @@ file into memory:
 
 ```bash
 cd backend
-PYTHONPATH=. python scripts/import_retail_data_dataset.py \
+PYTHONPATH=. python scripts/import_retail_dataset.py \
   /path/to/products.active_products_export.json --dry-run
 
-PYTHONPATH=. python scripts/import_retail_data_dataset.py \
+PYTHONPATH=. python scripts/import_retail_dataset.py \
   /path/to/products.active_products_export.json --retain-raw-file
 ```
 

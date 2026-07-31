@@ -71,6 +71,14 @@ def normalized_gtin(value: Any) -> Optional[str]:
     return digits if len(digits) in {8, 12, 13, 14} else None
 
 
+def source_brand_value(record: dict) -> Any:
+    """Read a retailer-specific brand-code field without retaining its identity."""
+    for key, value in record.items():
+        if str(key).lower().endswith("brandcode"):
+            return value
+    return record.get("brand")
+
+
 def image_urls(record: dict) -> list[str]:
     found = []
     pictures = nested(record, "assets", "pictures") or []
@@ -90,12 +98,12 @@ def image_urls(record: dict) -> list[str]:
     return found
 
 
-class Retail DataDatasetAdapter(ProductAdapter):
-    name = "retail_data_active_products_export"
+class RetailDatasetAdapter(ProductAdapter):
+    name = "retail_data_export"
     version = "1.0.0"
 
     def parse(self, html: str, url: str, *, country=None, locale=None):
-        raise NotImplementedError("Use parse_record for structured Retail Data exports")
+        raise NotImplementedError("Use parse_record for structured retail data exports")
 
     def parse_record(self, record: dict, imported_at: datetime) -> ScrapedProduct:
         retek = nested(record, "retekEnrichment", "masterData") or {}
@@ -104,8 +112,8 @@ class Retail DataDatasetAdapter(ProductAdapter):
             retek.get("productId") or record.get("id") or record_id
         ).strip()
         base_product_id = str(retek.get("baseProductId") or retailer_product_id).strip()
-        source_url = f"https://retail-data.invalid/p/{base_product_id}"
-        brand = label(record.get("retail_dataBrandCode")) or label(record.get("brand"))
+        source_url = f"https://retail-data.invalid/products/{base_product_id}"
+        brand = label(source_brand_value(record))
         product_name = label(nested(record, "naming", "longName"))
         composition = record.get("composition") or []
         if not isinstance(composition, list):
@@ -140,7 +148,7 @@ class Retail DataDatasetAdapter(ProductAdapter):
             ) if value
         ) or None
         product = ScrapedProduct(
-            source_name="Retail Data active products export",
+            source_name="Retail Data",
             source_domain="retail-data.invalid",
             source_url=source_url,
             canonical_url=source_url,
@@ -180,7 +188,7 @@ class Retail DataDatasetAdapter(ProductAdapter):
             parser_version=PARSER_VERSION,
         )
         field_paths = {
-            "brand": "retail_dataBrandCode.label",
+            "brand": "sourceBrandCode.label|brand",
             "product_name": "naming.longName",
             "subtitle": "naming.shortName",
             "description": "description (HTML sanitized)",
@@ -205,7 +213,7 @@ class Retail DataDatasetAdapter(ProductAdapter):
             "skin_types": "skinTypeList[]",
         }
         raw_values = {
-            "brand": record.get("retail_dataBrandCode"),
+            "brand": source_brand_value(record),
             "product_name": nested(record, "naming", "longName"),
             "subtitle": nested(record, "naming", "shortName"),
             "description": record.get("description"),

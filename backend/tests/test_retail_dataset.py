@@ -2,10 +2,10 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.scraping.adapters.retail_data_dataset import Retail DataDatasetAdapter
+from app.scraping.adapters.retail_dataset import RetailDatasetAdapter
 from app.scraping.dataset_import import (
-    analyze_retail_data_export,
-    import_retail_data_export,
+    analyze_retail_export,
+    import_retail_export,
     import_summary,
 )
 
@@ -14,7 +14,7 @@ def record(record_id="3400000000001"):
     return {
         "_id": record_id,
         "source": "ALKEMICS",
-        "retail_dataBrandCode": {"label": "Maison Test"},
+        "retailBrandCode": {"label": "Maison Test"},
         "naming": {"longName": "Radiance Serum", "shortName": "Vitamin C"},
         "description": "<p>Brightening serum.</p><script>bad()</script>",
         "barcodeScanText": record_id,
@@ -48,8 +48,8 @@ def record(record_id="3400000000001"):
     }
 
 
-def test_retail_data_dataset_adapter_preserves_source_data_and_sanitizes_html():
-    product = Retail DataDatasetAdapter().parse_record(
+def test_retail_dataset_adapter_preserves_source_data_and_sanitizes_html():
+    product = RetailDatasetAdapter().parse_record(
         record(), datetime.now(timezone.utc)
     )
     assert product.brand == "Maison Test"
@@ -67,7 +67,7 @@ def test_retail_data_dataset_adapter_preserves_source_data_and_sanitizes_html():
 def test_dataset_analysis_streams_and_reports_coverage(tmp_path):
     path = tmp_path / "products.json"
     path.write_text(json.dumps([record(), record("3400000000002")]), encoding="utf-8")
-    result = analyze_retail_data_export(path)
+    result = analyze_retail_export(path)
     assert result["records_analyzed"] == 2
     assert result["invalid_brand_or_name"] == 0
     assert result["unique_gtins"] == 2
@@ -81,7 +81,7 @@ def test_dataset_import_persists_products_provenance_and_is_idempotent(db, tmp_p
         encoding="utf-8",
     )
 
-    job = import_retail_data_export(
+    job = import_retail_export(
         db,
         str(path),
         batch_size=1,
@@ -95,7 +95,7 @@ def test_dataset_import_persists_products_provenance_and_is_idempotent(db, tmp_p
     assert result["matched"] == 1
     assert "missing its product name or brand" in result["error_summary"]
 
-    repeated = import_retail_data_export(db, str(path))
+    repeated = import_retail_export(db, str(path))
     assert repeated.id == job.id
 
 
@@ -105,13 +105,13 @@ def test_dataset_import_resumes_same_job_from_committed_progress(db, tmp_path):
         json.dumps([record("3400000000101"), record("3400000000102")]),
         encoding="utf-8",
     )
-    job = import_retail_data_export(db, str(path), maximum_records=1, batch_size=1)
+    job = import_retail_export(db, str(path), maximum_records=1, batch_size=1)
     assert job.products_persisted == 1
 
     job.status = "failed"
     job.completed_at = None
     db.commit()
-    resumed = import_retail_data_export(db, str(path), batch_size=1)
+    resumed = import_retail_export(db, str(path), batch_size=1)
     result = import_summary(db, resumed)
 
     assert resumed.id == job.id

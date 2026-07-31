@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from app.scraping.adapters.generic import GenericJsonLdAdapter
-from app.scraping.adapters.retail_data import Retail DataAdapter
+from app.scraping.adapters.retail_site import RetailSiteAdapter
 from app.scraping.classification import classify_page
 from app.scraping.discovery import discover_links, parse_sitemap
 from app.scraping.ingredients import normalize_ingredient, split_inci
@@ -73,10 +73,10 @@ def test_generic_jsonld_product_parsing():
     assert product.fields["product_name"].method == "json_ld"
 
 
-def test_retail_data_adapter_and_inci_order():
-    product = Retail DataAdapter().parse(
-        (FIXTURES / "retail_data-product.html").read_text(),
-        "https://retail-data.invalid/p/velours-cream",
+def test_retail_site_adapter_and_inci_order():
+    product = RetailSiteAdapter().parse(
+        (FIXTURES / "retail-product.html").read_text(),
+        "https://retail-data.invalid/products/velours-cream",
     )
     assert product.product_name == "Crème Velours Nuit"
     assert product.country == "FR"

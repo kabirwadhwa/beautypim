@@ -225,7 +225,7 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
         and token not in categories
         and token not in concerns
         and token not in claims
-        and token not in {"retail_data", "retail_data", "retail_data", "retail_data", "retail_data"}
+        and token not in {"retail", "data"}
         and not any(token in product_type.split() or token.rstrip("s") in product_type.split() for product_type in product_types)
         and not any(token in item.split() for item in excluded)
     ]
@@ -244,10 +244,7 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
         "concerns": concerns,
         "claims": claims,
         "review_statuses": [],
-        "source_domains": [
-            token for token in ("retail_data", "retail_data", "retail_data", "retail_data", "retail_data")
-            if token in text
-        ],
+        "source_domains": ["retail-data"] if "retail data" in text else [],
         "availability_states": (
             ["outofstock", "unavailable"] if any(value in text for value in ("unavailable", "out of stock"))
             else ["instock", "available"] if "in stock" in text else []
