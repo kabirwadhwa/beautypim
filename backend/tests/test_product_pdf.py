@@ -106,6 +106,7 @@ def test_viewer_can_download_grounded_product_pdf(client, db):
     assert "Cloudberry-Barrier-Serum-product-sheet.pdf" in response.headers["content-disposition"]
     assert response.content.startswith(b"%PDF")
     assert len(response.content) > 3000
+    assert response.content.count(b"/Type /Page\n") == 1
 
 
 def test_pdf_requires_authentication(client, db):
