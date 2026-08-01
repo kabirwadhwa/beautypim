@@ -10,6 +10,8 @@ import json
 import re
 from typing import Any
 
+from sqlalchemy import text
+
 from app.database import SessionLocal
 from app.models import Base
 
@@ -38,11 +40,58 @@ def decode_mappings(encoded: str) -> list[tuple[str, str]]:
     return sorted(mappings, key=lambda item: len(item[0]), reverse=True)
 
 
+def anonymize_postgres(db, mappings: list[tuple[str, str]]) -> dict[str, int]:
+    """Use bounded set-based updates for large production provenance tables."""
+    quote = db.bind.dialect.identifier_preparer.quote
+    changed_operations: dict[str, int] = {}
+    for table in Base.metadata.sorted_tables:
+        table_name = quote(table.name)
+        table_operations = 0
+        for column in table.columns:
+            try:
+                python_type = column.type.python_type
+            except (AttributeError, NotImplementedError):
+                continue
+            if python_type not in {str, dict, list}:
+                continue
+            column_name = quote(column.name)
+            for original, replacement in mappings:
+                pattern = re.escape(original)
+                if python_type is str:
+                    statement = text(
+                        f"UPDATE {table_name} SET {column_name} = "
+                        f"regexp_replace({column_name}, :pattern, :replacement, 'gi') "
+                        f"WHERE {column_name} ~* :pattern"
+                    )
+                else:
+                    statement = text(
+                        f"UPDATE {table_name} SET {column_name} = CAST("
+                        f"regexp_replace(CAST({column_name} AS TEXT), :pattern, "
+                        f":replacement, 'gi') AS JSONB) "
+                        f"WHERE CAST({column_name} AS TEXT) ~* :pattern"
+                    )
+                result = db.execute(
+                    statement,
+                    {"pattern": pattern, "replacement": replacement},
+                )
+                table_operations += result.rowcount or 0
+        if table_operations:
+            changed_operations[table.name] = table_operations
+    return dict(sorted(changed_operations.items()))
+
+
 def anonymize(encoded_mappings: str, *, commit: bool = False) -> dict[str, int]:
     mappings = decode_mappings(encoded_mappings)
     db = SessionLocal()
     changed_rows: dict[str, int] = {}
     try:
+        if db.bind.dialect.name == "postgresql":
+            changed_rows = anonymize_postgres(db, mappings)
+            if commit:
+                db.commit()
+            else:
+                db.rollback()
+            return changed_rows
         for mapper in Base.registry.mappers:
             model = mapper.class_
             mutable_columns = [column.key for column in mapper.columns]
