@@ -50,6 +50,89 @@ def normalize_null_confidences(payload: Any) -> Any:
     return payload
 
 
+def _evidence_list(value: Any) -> list[dict[str, Any]]:
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        return [{
+            "source_reference": None,
+            "source_field": "provider_reasoning",
+            "supporting_text": value,
+            "evidence_type": "provider_summary",
+            "char_offsets": None,
+        }]
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    normalized = []
+    for item in value:
+        if isinstance(item, str):
+            normalized.extend(_evidence_list(item))
+        elif isinstance(item, dict):
+            normalized.append({
+                "source_reference": item.get("source_reference"),
+                "source_field": str(item.get("source_field") or "provider_reasoning"),
+                "supporting_text": str(item.get("supporting_text") or item.get("text") or item),
+                "evidence_type": str(item.get("evidence_type") or "provider_summary"),
+                "char_offsets": item.get("char_offsets"),
+            })
+    return normalized
+
+
+def normalize_provider_shapes(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce recurring LLM JSON shape drift into the declared PIM schema."""
+    categorical_fields = (
+        "subcategory", "product_type", "gender_target", "texture",
+        "application_area", "target_audience",
+    )
+    claim_fields = (
+        "vegan", "cruelty_free", "paraben_free", "sulfate_free",
+        "silicone_free", "alcohol_free", "fragrance_present",
+    )
+    concern_fields = (
+        "hydration", "anti_ageing", "pigmentation", "acne", "redness",
+        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
+    )
+    evidence_fields = categorical_fields + claim_fields + concern_fields + (
+        "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence",
+        "pregnancy_warning_observation", "allergen_warning_observation",
+        "sensitivity_warning_observation",
+    )
+    for field in evidence_fields:
+        item = payload.get(field)
+        if isinstance(item, dict):
+            item["evidence"] = _evidence_list(item.get("evidence"))
+    for field in categorical_fields:
+        item = payload.get(field)
+        if not isinstance(item, dict):
+            continue
+        item.setdefault("value_status", "inferred" if item.get("value") else "unknown")
+        item.setdefault("reasoning_summary", "Provider inference normalized to the catalogue schema.")
+        item.setdefault("confidence", 0.65 if item.get("value") else 0.5)
+    for benefit in payload.get("benefits") or []:
+        if not isinstance(benefit, dict):
+            continue
+        evidence = benefit.get("evidence")
+        if isinstance(evidence, list):
+            benefit["evidence"] = "; ".join(
+                str(item.get("supporting_text") or item) if isinstance(item, dict) else str(item)
+                for item in evidence
+            )
+        elif evidence is None:
+            benefit["evidence"] = ""
+    for ingredient in payload.get("ingredients_intelligence") or []:
+        if not isinstance(ingredient, dict):
+            continue
+        ingredient["evidence"] = _evidence_list(ingredient.get("evidence"))
+        concerns = ingredient.get("possible_concerns") or []
+        ingredient["possible_concerns"] = [
+            item if isinstance(item, dict) else {"statement": str(item)}
+            for item in concerns
+        ]
+    return payload
+
+
 def _is_missing_field(payload: Any, key: str) -> bool:
     if not isinstance(payload, dict):
         return True
@@ -666,7 +749,9 @@ def run_ai_enrichment(
             complete_t = response_json.get("usage", {}).get("completion_tokens", calculate_token_count_rough(candidate_text))
             cost = (prompt_t * 0.00015 / 1000) + (complete_t * 0.0006 / 1000)
             
-            parsed_data = normalize_null_confidences(json.loads(candidate_text))
+            parsed_data = normalize_provider_shapes(
+                normalize_null_confidences(json.loads(candidate_text))
+            )
             parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
             parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
             parsed_data = ensure_catalogue_coverage(
@@ -917,7 +1002,9 @@ def run_ai_enrichment(
         cost = (prompt_t * 0.000075 / 1000) + (complete_t * 0.0003 / 1000)
 
         # Validate with Pydantic
-        parsed_data = normalize_null_confidences(json.loads(candidate_text))
+        parsed_data = normalize_provider_shapes(
+            normalize_null_confidences(json.loads(candidate_text))
+        )
         
         # Ensure default array properties that model might omit
         parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()

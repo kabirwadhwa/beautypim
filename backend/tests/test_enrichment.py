@@ -6,6 +6,7 @@ from app.services.enrichment import (
     ensure_catalogue_coverage,
     generate_deterministic_fallback,
     normalize_null_confidences,
+    normalize_provider_shapes,
     normalize_and_validate_enrichment,
 )
 
@@ -21,6 +22,29 @@ def test_null_provider_confidences_are_repaired_before_schema_validation():
     assert normalized["vegan"]["confidence"] == 0.5
     assert normalized["benefits"][0]["confidence"] == 0.5
     assert normalized["subcategory"]["confidence"] == 0.8
+
+
+def test_provider_shape_drift_is_repaired_before_schema_validation():
+    payload = {
+        "gender_target": {"value": "unisex", "evidence": "Typical category fit."},
+        "directions": {"evidence": "Usage instructions provided."},
+        "benefits": [{
+            "statement": "Hydration",
+            "evidence": [{"supporting_text": "Comparable products support hydration."}],
+        }],
+        "ingredients_intelligence": [{
+            "evidence": "Ingredient appears in the supplied list.",
+            "possible_concerns": ["skin sensitization potential"],
+        }],
+    }
+
+    normalized = normalize_provider_shapes(payload)
+    assert normalized["gender_target"]["value_status"] == "inferred"
+    assert normalized["directions"]["evidence"][0]["evidence_type"] == "provider_summary"
+    assert normalized["benefits"][0]["evidence"] == "Comparable products support hydration."
+    assert normalized["ingredients_intelligence"][0]["possible_concerns"] == [
+        {"statement": "skin sensitization potential"}
+    ]
 from app.services.ingredient_knowledge import (
     build_ingredient_grounding_context,
     ground_fallback_ingredients,
