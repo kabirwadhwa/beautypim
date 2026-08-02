@@ -26,6 +26,12 @@ MAX_OBSERVATIONS = 3
 MAX_RETAIL_EXAMPLES = 8
 MAX_FIELD_VALUES = 80
 MAX_TEXT_LENGTH = 12_000
+RETAIL_KNOWLEDGE_FIELDS = (
+    "brand", "product_name", "subtitle", "description", "category_path",
+    "product_type", "variant_name", "size", "unit", "shade",
+    "ingredient_text_raw", "ingredients", "claims", "benefits",
+    "usage_instructions", "warnings", "skin_types", "hair_types", "concerns",
+)
 
 STOP_WORDS = {
     "a", "an", "and", "for", "from", "in", "of", "on", "the", "to", "with",
@@ -177,6 +183,24 @@ def _trim(value: Any) -> Any:
     return value
 
 
+def _retail_knowledge_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project a retail observation into a compact enrichment knowledge packet."""
+    selected = {
+        field: payload[field]
+        for field in RETAIL_KNOWLEDGE_FIELDS
+        if payload.get(field) not in (None, "", [], {})
+    }
+    # INCI and descriptions are useful but can dominate the model context.
+    for field, limit in (("description", 2_500), ("ingredient_text_raw", 4_000)):
+        value = selected.get(field)
+        if isinstance(value, str) and len(value) > limit:
+            selected[field] = value[:limit] + "…"
+    for field, value in list(selected.items()):
+        if isinstance(value, list):
+            selected[field] = value[:30]
+    return _trim(selected)
+
+
 def build_catalogue_knowledge_context(
     db: Session,
     canonical_product_id: Optional[uuid.UUID],
@@ -323,7 +347,7 @@ def build_catalogue_knowledge_context(
                 "source_name": "Retail Data",
                 "source_url": item.source_url,
                 "observed_at": item.scraped_at.isoformat() if item.scraped_at else None,
-                "data": _trim(item.normalized_payload),
+                "data": _retail_knowledge_payload(item.normalized_payload or {}),
             }
             for item in exact_retail
         ],
@@ -332,7 +356,7 @@ def build_catalogue_knowledge_context(
                 "knowledge_role": "Comparable industry example; supports inference, not direct claims.",
                 "similarity_score": score,
                 "similarity_basis": reasons,
-                "data": _trim(item.normalized_payload),
+                "data": _retail_knowledge_payload(item.normalized_payload or {}),
             }
             for score, reasons, item in comparable_retail
         ],

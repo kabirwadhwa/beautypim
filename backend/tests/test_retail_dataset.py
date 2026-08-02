@@ -11,7 +11,7 @@ from app.scraping.dataset_import import (
 )
 from app.models import CanonicalProduct, ScrapedProductObservation
 from app.services.catalogue_knowledge import build_catalogue_knowledge_context
-from app.services.catalogue_knowledge import _retail_similarity
+from app.services.catalogue_knowledge import _retail_knowledge_payload, _retail_similarity
 
 
 def record(record_id="3400000000001"):
@@ -237,3 +237,22 @@ def test_retail_similarity_keeps_serums_in_the_correct_beauty_domain():
     )
 
     assert face_score >= hair_score + 15
+
+
+def test_retail_knowledge_packet_keeps_enrichment_fields_and_drops_noise():
+    payload = _retail_knowledge_payload({
+        "product_name": "Radiance Serum",
+        "description": "Brightening serum.",
+        "ingredients": ["Aqua", "Niacinamide"],
+        "benefits": ["Radiance"],
+        "price": "24.90",
+        "currency": "EUR",
+        "image_urls": ["https://images.example/product.jpg"],
+        "raw_payload_reference": "internal-object-reference",
+    })
+
+    assert payload["ingredients"] == ["Aqua", "Niacinamide"]
+    assert payload["benefits"] == ["Radiance"]
+    assert "price" not in payload
+    assert "image_urls" not in payload
+    assert "raw_payload_reference" not in payload
