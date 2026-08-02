@@ -177,3 +177,34 @@ def test_retail_similarity_prefers_beauty_product_concepts_over_generic_words():
     )
 
     assert moisturizer_score >= foundation_score + 10
+
+
+def test_free_from_word_does_not_change_the_product_type_concept():
+    serum_score, _ = _retail_similarity(
+        {
+            "product_name": "Niacinamide Serum",
+            "product_type": "SERUM",
+            "category_path": ["SOIN VISAGE", "SERUM"],
+            "description": "Face treatment.",
+        },
+        name="Niacinamide Treatment",
+        brand="Example",
+        category="Skincare",
+        product_family="Serum",
+        description="A vegan and fragrance-free face formula.",
+    )
+    perfume_score, _ = _retail_similarity(
+        {
+            "product_name": "Eau de Parfum",
+            "product_type": "EAU DE PARFUM",
+            "category_path": ["PARFUM"],
+            "description": "Vegan fragrance.",
+        },
+        name="Niacinamide Treatment",
+        brand="Example",
+        category="Skincare",
+        product_family="Serum",
+        description="A vegan and fragrance-free face formula.",
+    )
+
+    assert serum_score >= perfume_score + 10

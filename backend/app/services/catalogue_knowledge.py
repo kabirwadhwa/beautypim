@@ -91,9 +91,7 @@ def _payload_concepts(payload: dict[str, Any]) -> set[str]:
     concepts = _concepts(taxonomy)
     if concepts:
         return concepts
-    return _concepts(
-        f"{payload.get('product_name') or ''} {payload.get('description') or ''}"
-    )
+    return _concepts(payload.get("product_name"))
 
 
 def _retail_similarity(
@@ -106,9 +104,9 @@ def _retail_similarity(
     brand_terms = _tokens(brand)
     taxonomy_terms = _tokens(category) | _tokens(product_family)
     description_terms = _tokens(description)
-    target_concepts = _concepts(
-        f"{name} {category} {product_family} {description}"
-    )
+    # Product-type concepts come from identity/taxonomy fields, never marketing
+    # prose: e.g. "fragrance-free serum" must not become a fragrance product.
+    target_concepts = _concepts(f"{name} {category} {product_family}")
     concept_overlap = target_concepts & _payload_concepts(payload)
     score = 0.0
     reasons: list[str] = []
@@ -188,6 +186,22 @@ def build_catalogue_knowledge_context(
         .all()
     )
 
+    retrieval_fields = (
+        db.query(FieldValue)
+        .filter(
+            FieldValue.canonical_product_id == canonical_product_id,
+            FieldValue.is_current == True,
+            FieldValue.field_name.in_(["subcategory", "product_type"]),
+        )
+        .all()
+    )
+    current_field_map = {item.field_name: item.value for item in retrieval_fields}
+    retrieval_family = (
+        product_family
+        or str(current_field_map.get("subcategory") or "")
+        or str(current_field_map.get("product_type") or "")
+    )
+
     retail_rows = (
         db.query(ScrapedProductObservation)
         .filter(ScrapedProductObservation.source_domain == "retail-data.invalid")
@@ -216,7 +230,7 @@ def build_catalogue_knowledge_context(
             name=product_name,
             brand=brand,
             category=category,
-            product_family=product_family,
+            product_family=retrieval_family,
             description=description,
         )
         if similarity >= 4.0:
