@@ -208,3 +208,32 @@ def test_free_from_word_does_not_change_the_product_type_concept():
     )
 
     assert serum_score >= perfume_score + 10
+
+
+def test_retail_similarity_keeps_serums_in_the_correct_beauty_domain():
+    face_score, _ = _retail_similarity(
+        {
+            "product_name": "Niacinamide Serum",
+            "product_type": "ANTI-AGE",
+            "category_path": ["SOIN VISAGE", "ANTI-AGE"],
+        },
+        name="Niacinamide Treatment",
+        brand="Example",
+        category="Skincare > Serum",
+        product_family="Serum",
+        description="Daily treatment.",
+    )
+    hair_score, _ = _retail_similarity(
+        {
+            "product_name": "Thicker Hair Serum",
+            "product_type": "TRAIT. CAPILLAIRE",
+            "category_path": ["CHEVEUX", "TRAIT. CAPILLAIRE"],
+        },
+        name="Niacinamide Treatment",
+        brand="Example",
+        category="Skincare > Serum",
+        product_family="Serum",
+        description="Daily treatment.",
+    )
+
+    assert face_score >= hair_score + 15

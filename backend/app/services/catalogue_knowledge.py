@@ -13,6 +13,8 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models import (
+    CanonicalProduct,
+    Category,
     FieldValue,
     Formulation,
     ScrapedProductObservation,
@@ -48,6 +50,14 @@ CONCEPT_ALIASES = {
     "mascara": {"mascara"},
 }
 
+DOMAIN_ALIASES = {
+    "skin": {"skincare", "skin care", "face", "facial", "visage", "soin visage", "anti age"},
+    "hair": {"hair", "scalp", "capillaire", "cheveux", "cuir chevelu"},
+    "body": {"body", "corps", "hand", "hands", "main", "mains"},
+    "lips": {"lip", "lips", "levre", "levres", "lèvre", "lèvres"},
+    "makeup": {"makeup", "make up", "maquillage", "teint", "mascara"},
+}
+
 
 def _tokens(value: Any) -> set[str]:
     """Return useful normalized retrieval terms, including joined compounds."""
@@ -66,6 +76,15 @@ def _concepts(value: Any) -> set[str]:
     return {
         concept
         for concept, aliases in CONCEPT_ALIASES.items()
+        if any(normalize_text(alias) in normalized for alias in aliases)
+    }
+
+
+def _domains(value: Any) -> set[str]:
+    normalized = normalize_text(str(value or ""))
+    return {
+        domain
+        for domain, aliases in DOMAIN_ALIASES.items()
         if any(normalize_text(alias) in normalized for alias in aliases)
     }
 
@@ -94,6 +113,13 @@ def _payload_concepts(payload: dict[str, Any]) -> set[str]:
     return _concepts(payload.get("product_name"))
 
 
+def _payload_domains(payload: dict[str, Any]) -> set[str]:
+    taxonomy = " ".join(str(item) for item in (payload.get("category_path") or []))
+    return _domains(
+        f"{taxonomy} {payload.get('product_type') or ''} {payload.get('product_name') or ''}"
+    )
+
+
 def _retail_similarity(
     payload: dict[str, Any], *, name: str, brand: str, category: str,
     product_family: str, description: str,
@@ -107,6 +133,9 @@ def _retail_similarity(
     # Product-type concepts come from identity/taxonomy fields, never marketing
     # prose: e.g. "fragrance-free serum" must not become a fragrance product.
     target_concepts = _concepts(f"{name} {category} {product_family}")
+    target_domains = _domains(f"{name} {category} {product_family}")
+    row_domains = _payload_domains(payload)
+    domain_overlap = target_domains & row_domains
     concept_overlap = target_concepts & _payload_concepts(payload)
     score = 0.0
     reasons: list[str] = []
@@ -118,6 +147,11 @@ def _retail_similarity(
     if concept_overlap:
         score += min(24.0, len(concept_overlap) * 12.0)
         reasons.append("beauty product concepts: " + ", ".join(sorted(concept_overlap)))
+    if domain_overlap:
+        score += min(12.0, len(domain_overlap) * 8.0)
+        reasons.append("beauty domain: " + ", ".join(sorted(domain_overlap)))
+    elif target_domains and row_domains:
+        score -= 10.0
     if name_overlap:
         score += min(12.0, len(name_overlap) * 4.0)
         reasons.append("name/product-type terms: " + ", ".join(sorted(name_overlap)[:5]))
@@ -196,6 +230,13 @@ def build_catalogue_knowledge_context(
         .all()
     )
     current_field_map = {item.field_name: item.value for item in retrieval_fields}
+    canonical_category = (
+        db.query(Category.path)
+        .join(CanonicalProduct, CanonicalProduct.category_id == Category.id)
+        .filter(CanonicalProduct.id == canonical_product_id)
+        .scalar()
+    )
+    retrieval_category = category or str(canonical_category or "")
     retrieval_family = (
         product_family
         or str(current_field_map.get("subcategory") or "")
@@ -229,7 +270,7 @@ def build_catalogue_knowledge_context(
             payload,
             name=product_name,
             brand=brand,
-            category=category,
+            category=retrieval_category,
             product_family=retrieval_family,
             description=description,
         )
