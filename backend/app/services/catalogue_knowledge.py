@@ -30,6 +30,24 @@ STOP_WORDS = {
     "beauty", "product", "new", "care", "ml", "g", "oz",
 }
 
+CONCEPT_ALIASES = {
+    "cleanser": {"cleanser", "cleansing", "face wash", "nettoyant", "demaquillant", "démaquillant"},
+    "moisturizer": {"moisturizer", "moisturiser", "facial cream", "face cream", "day cream", "night cream", "hydratant visage"},
+    "serum": {"serum", "sérum"},
+    "lip_oil": {"lip oil", "huile a levres", "huile à lèvres"},
+    "body_oil": {"body oil", "huile corps", "huile pour le corps"},
+    "body_moisturizer": {"body cream", "body lotion", "body balm", "hydratant corps", "lait corps"},
+    "sunscreen": {"sunscreen", "sun cream", "spf", "solaire", "protection solaire"},
+    "fragrance": {"fragrance", "perfume", "parfum", "eau de parfum", "eau de toilette"},
+    "shampoo": {"shampoo", "shampoing"},
+    "conditioner": {"conditioner", "apres shampoing", "après-shampoing"},
+    "mask": {"mask", "masque"},
+    "balm": {"balm", "baume"},
+    "toner": {"toner", "tonique", "lotion tonique"},
+    "foundation": {"foundation", "fond de teint"},
+    "mascara": {"mascara"},
+}
+
 
 def _tokens(value: Any) -> set[str]:
     """Return useful normalized retrieval terms, including joined compounds."""
@@ -41,6 +59,15 @@ def _tokens(value: Any) -> set[str]:
     if normalized:
         parts.add(normalized)
     return parts
+
+
+def _concepts(value: Any) -> set[str]:
+    normalized = normalize_text(str(value or ""))
+    return {
+        concept
+        for concept, aliases in CONCEPT_ALIASES.items()
+        if any(normalize_text(alias) in normalized for alias in aliases)
+    }
 
 
 def _payload_tokens(payload: dict[str, Any]) -> dict[str, set[str]]:
@@ -56,6 +83,19 @@ def _payload_tokens(payload: dict[str, Any]) -> dict[str, set[str]]:
     }
 
 
+def _payload_concepts(payload: dict[str, Any]) -> set[str]:
+    taxonomy = " ".join(str(item) for item in (payload.get("category_path") or []))
+    taxonomy = f"{taxonomy} {payload.get('product_type') or ''}"
+    # Retail taxonomy is the strongest signal. Only fall back to the title and
+    # description when the source taxonomy has no recognized beauty concept.
+    concepts = _concepts(taxonomy)
+    if concepts:
+        return concepts
+    return _concepts(
+        f"{payload.get('product_name') or ''} {payload.get('description') or ''}"
+    )
+
+
 def _retail_similarity(
     payload: dict[str, Any], *, name: str, brand: str, category: str,
     product_family: str, description: str,
@@ -66,6 +106,10 @@ def _retail_similarity(
     brand_terms = _tokens(brand)
     taxonomy_terms = _tokens(category) | _tokens(product_family)
     description_terms = _tokens(description)
+    target_concepts = _concepts(
+        f"{name} {category} {product_family} {description}"
+    )
+    concept_overlap = target_concepts & _payload_concepts(payload)
     score = 0.0
     reasons: list[str] = []
 
@@ -73,6 +117,9 @@ def _retail_similarity(
     taxonomy_overlap = taxonomy_terms & row["taxonomy"]
     description_overlap = description_terms & (row["name"] | row["taxonomy"] | row["content"])
     brand_overlap = brand_terms & row["brand"]
+    if concept_overlap:
+        score += min(24.0, len(concept_overlap) * 12.0)
+        reasons.append("beauty product concepts: " + ", ".join(sorted(concept_overlap)))
     if name_overlap:
         score += min(12.0, len(name_overlap) * 4.0)
         reasons.append("name/product-type terms: " + ", ".join(sorted(name_overlap)[:5]))
@@ -172,11 +219,26 @@ def build_catalogue_knowledge_context(
             product_family=product_family,
             description=description,
         )
-        if similarity > 0:
+        if similarity >= 4.0:
             comparable_retail.append((similarity, reasons, row))
     exact_retail = exact_retail[:MAX_OBSERVATIONS]
     comparable_retail.sort(key=lambda item: (item[0], item[2].scraped_at), reverse=True)
-    comparable_retail = comparable_retail[:MAX_RETAIL_EXAMPLES]
+    deduplicated_retail = []
+    seen_retail_identities = set()
+    for candidate in comparable_retail:
+        payload = candidate[2].normalized_payload or {}
+        identity = (
+            normalize_text(str(payload.get("brand") or "")),
+            normalize_text(str(payload.get("product_name") or "")),
+            normalize_text(str(payload.get("product_type") or "")),
+        )
+        if identity in seen_retail_identities:
+            continue
+        seen_retail_identities.add(identity)
+        deduplicated_retail.append(candidate)
+        if len(deduplicated_retail) == MAX_RETAIL_EXAMPLES:
+            break
+    comparable_retail = deduplicated_retail
 
     if not observations and not field_values and not formulations and not exact_retail and not comparable_retail:
         return {}

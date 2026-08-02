@@ -11,6 +11,7 @@ from app.scraping.dataset_import import (
 )
 from app.models import CanonicalProduct, ScrapedProductObservation
 from app.services.catalogue_knowledge import build_catalogue_knowledge_context
+from app.services.catalogue_knowledge import _retail_similarity
 
 
 def record(record_id="3400000000001"):
@@ -145,3 +146,34 @@ def test_retail_corpus_retrieves_comparable_products_for_enrichment(db, tmp_path
     assert examples[0]["similarity_score"] > 0
     assert examples[0]["data"]["product_name"] == "Radiance Serum"
     assert "supports inference, not direct claims" in examples[0]["knowledge_role"]
+
+
+def test_retail_similarity_prefers_beauty_product_concepts_over_generic_words():
+    moisturizer_score, _ = _retail_similarity(
+        {
+            "product_name": "Antioxidant Day Cream",
+            "product_type": "HYDRATANT VISAGE",
+            "category_path": ["SOIN VISAGE", "HYDRATANT VISAGE"],
+            "description": "Daily face hydration.",
+        },
+        name="Ultra Facial Cream",
+        brand="Example",
+        category="Skincare",
+        product_family="Moisturizer",
+        description="24-hour facial moisturizer",
+    )
+    foundation_score, _ = _retail_similarity(
+        {
+            "product_name": "Longwear Cream",
+            "product_type": "FOND DE TEINT",
+            "category_path": ["TEINT", "FOND DE TEINT"],
+            "description": "Cream makeup formula.",
+        },
+        name="Ultra Facial Cream",
+        brand="Example",
+        category="Skincare",
+        product_family="Moisturizer",
+        description="24-hour facial moisturizer",
+    )
+
+    assert moisturizer_score >= foundation_score + 10
