@@ -55,6 +55,8 @@ interface ProductDetail {
   brand_name: string | null;
   category_id: string | null;
   category_path: string | null;
+  product_category: string | null;
+  subcategory: string | null;
   review_status: string;
   reviewer_id: string | null;
   is_deleted: boolean;
@@ -130,6 +132,9 @@ export default function ProductDetailPage() {
   const [imageSaving, setImageSaving] = useState(false);
   const [imageUrlDraft, setImageUrlDraft] = useState('');
   const [imageLoadFailed, setImageLoadFailed] = useState(false);
+  const [categoryDraft, setCategoryDraft] = useState('');
+  const [subcategoryDraft, setSubcategoryDraft] = useState('');
+  const [classificationSaving, setClassificationSaving] = useState(false);
 
   const fetchDetail = async () => {
     try {
@@ -140,6 +145,8 @@ export default function ProductDetailPage() {
       const data = await resp.json();
       setProduct(data);
       setImageUrlDraft(data.image_url || '');
+      setCategoryDraft(data.product_category || '');
+      setSubcategoryDraft(data.subcategory || '');
       setImageLoadFailed(false);
     } catch (e: any) {
       setError(e.message || "Failed to load.");
@@ -247,9 +254,31 @@ export default function ProductDetailPage() {
     }
   };
 
+  const handleSaveClassification = async () => {
+    setClassificationSaving(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem("token");
+      const resp = await fetch(`${API_URL}/products/${productId}/classification`, {
+        method: "PUT",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ category: categoryDraft, subcategory: subcategoryDraft })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "Classification could not be saved.");
+      setProduct(data);
+      setCategoryDraft(data.product_category || '');
+      setSubcategoryDraft(data.subcategory || '');
+    } catch (e: any) {
+      setError(e.message || "Classification could not be saved.");
+    } finally {
+      setClassificationSaving(false);
+    }
+  };
+
   const openOverrideModal = (fieldName: string, currentValue: any) => {
     setOverrideField(fieldName);
-    setOverrideValue(currentValue !== null && currentValue !== undefined ? String(currentValue) : '');
+    setOverrideValue(Array.isArray(currentValue) ? currentValue.join('\n') : (currentValue !== null && currentValue !== undefined ? String(currentValue) : ''));
     setOverrideReason('');
     setShowOverride(true);
   };
@@ -263,6 +292,10 @@ export default function ProductDetailPage() {
       
       // Determine typed value based on registry matching
       let parsedValue: any = overrideValue;
+      if (overrideField === 'target_audience') {
+        parsedValue = overrideValue.split('\n').map(value => value.trim()).filter(Boolean);
+        if (parsedValue.length !== 3) throw new Error("Enter exactly three customer profiles, one per line.");
+      }
       if (overrideValue.toLowerCase() === 'true') parsedValue = true;
       else if (overrideValue.toLowerCase() === 'false') parsedValue = false;
       
@@ -314,8 +347,8 @@ export default function ProductDetailPage() {
 
   // Editable fields registry listing
   const coreFields = [
-    "subcategory", "product_type", "gender_target", "texture", "application_area",
-    "target_audience", "vegan", "cruelty_free", "paraben_free", "sulfate_free",
+    "product_type", "gender_target", "texture", "application_area",
+    "vegan", "cruelty_free", "paraben_free", "sulfate_free",
     "silicone_free", "alcohol_free", "fragrance_present"
   ];
   const richFields = [
@@ -364,7 +397,7 @@ export default function ProductDetailPage() {
           </button>
           <div className={styles.titleGroup}>
             <h1>{product?.product_name}</h1>
-            <p>Brand: <span style={{ fontWeight: 600, color: '#f8fafc' }}>{product?.brand_name || "Unbranded / source unavailable"}</span> | Category: <span style={{ color: '#94a3b8' }}>{product?.category_path || "Beauty & Personal Care"}</span></p>
+            <p>Brand: <span style={{ fontWeight: 600, color: '#f8fafc' }}>{product?.brand_name || "Unbranded / source unavailable"}</span> | Category: <span style={{ color: '#94a3b8' }}>{product?.product_category || "Unclassified"}</span> | Subcategory: <span style={{ color: '#c4b5fd' }}>{product?.subcategory || "Unclassified"}</span></p>
           </div>
         </div>
 
@@ -427,6 +460,22 @@ export default function ProductDetailPage() {
           <span>Product cannot be approved until all blocking validation issues are resolved.</span>
         </div>
       )}
+
+      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+        <div className={styles.panelTitle}><Settings size={18} color="#a78bfa" /><span>Product Classification</span></div>
+        <p style={{ color: '#94a3b8', fontSize: 13, margin: '8px 0 12px' }}>Edit the customer-facing category and subcategory. The full internal taxonomy path is intentionally hidden.</p>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
+          <label style={{ flex: 1, minWidth: 220, fontSize: 12, color: '#94a3b8' }}>Category
+            <input className={styles.inputField} value={categoryDraft} onChange={e => setCategoryDraft(e.target.value)} placeholder="e.g. Skincare" style={{ marginTop: 6 }} />
+          </label>
+          <label style={{ flex: 1, minWidth: 220, fontSize: 12, color: '#94a3b8' }}>Subcategory
+            <input className={styles.inputField} value={subcategoryDraft} onChange={e => setSubcategoryDraft(e.target.value)} placeholder="e.g. Face Serum" style={{ marginTop: 6 }} />
+          </label>
+          <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSaveClassification} disabled={classificationSaving || !categoryDraft.trim() || !subcategoryDraft.trim()}>
+            {classificationSaving ? 'Saving...' : 'Save classification'}
+          </button>
+        </div>
+      </div>
 
       <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 20, alignItems: 'center' }}>
@@ -542,6 +591,17 @@ export default function ProductDetailPage() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 12 }}>
+              <div style={{ padding: 14, backgroundColor: 'rgba(99,102,241,.06)', borderRadius: 6, border: '1px solid #4f46e555' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#a5b4fc', fontWeight: 700, marginBottom: 8 }}>TARGET CUSTOMER PROFILES</div>
+                    <ul style={{ margin: 0, paddingLeft: 20, color: '#f1f5f9', lineHeight: 1.7 }}>
+                      {prettyStructuredValue(currentValDict.target_audience?.value).slice(0, 3).map((profile, index) => <li key={index}>{profile}</li>)}
+                    </ul>
+                  </div>
+                  <button onClick={() => openOverrideModal('target_audience', currentValDict.target_audience?.value)} className={`${styles.btn} ${styles.btnSecondary}`} style={{ alignSelf: 'start' }}>Override</button>
+                </div>
+              </div>
               {coreFields.map(field => {
                 const fv = currentValDict[field];
                 const isExpanded = !!expandedFields[field];
@@ -925,6 +985,15 @@ export default function ProductDetailPage() {
                     <option value="false">False (Absent)</option>
                     <option value="unknown">Unknown</option>
                   </select>
+                ) : overrideField === 'target_audience' ? (
+                  <textarea
+                    className={styles.inputField}
+                    value={overrideValue}
+                    onChange={(e) => setOverrideValue(e.target.value)}
+                    placeholder="One customer profile per line (exactly 3)"
+                    rows={4}
+                    style={{ backgroundColor: '#0f172a', color: '#f1f5f9', border: '1px solid #334155' }}
+                  />
                 ) : (
                   <input 
                     type="text"

@@ -16,7 +16,7 @@ from app.services.ingredient_knowledge import (
 
 BALANCED_INFERENCE_GUIDANCE = (
     "Return a useful answer for every catalogue field. For classification fields such as subcategory, product type, "
-    "gender target, texture, application area and target audience, make a reasonable inference "
+    "gender target, texture and application area, make a reasonable inference "
     "when the product title or description strongly implies one. For concern targeting, skin or "
     "hair fit, benefits, directions and fragrance intelligence, infer typical values when they "
     "are reasonably supported by the product type, wording or ingredient functions. Mark these "
@@ -29,6 +29,10 @@ BALANCED_INFERENCE_GUIDANCE = (
     "support. The presence of Parfum/Fragrance may support fragrance_present=yes, but ingredient "
     "absence alone does not prove a free-from claim. For an unsupported ethical or free-from "
     "claim return value=unverified and claim_status=unverified, never a guessed yes/no. "
+    "For target_audience return exactly three distinct customer-profile sentences. Each must combine "
+    "a concrete need, routine, preference or usage occasion with the relevant product characteristic, "
+    "so it can guide advertising or in-store recommendations. Never use generic labels such as adults, "
+    "beauty lovers or everyone, and never infer sensitive personal traits. "
 )
 
 UNKNOWN_VALUES = {"", "unknown", "none", "null", "nan", "not provided", "not_provided"}
@@ -57,11 +61,15 @@ def ensure_catalogue_coverage(
     fallback = generate_deterministic_fallback(name, brand, description, raw_ingredients)
     categorical_fields = (
         "subcategory", "product_type", "gender_target", "texture",
-        "application_area", "target_audience",
+        "application_area",
     )
     for field in categorical_fields:
         if _is_missing_field(data.get(field), "value"):
             data[field] = fallback[field]
+
+    audience = (data.get("target_audience") or {}).get("value")
+    if not isinstance(audience, list) or len([item for item in audience if str(item).strip()]) != 3:
+        data["target_audience"] = fallback["target_audience"]
 
     for field in (
         "vegan", "cruelty_free", "paraben_free", "sulfate_free",
@@ -342,16 +350,24 @@ def generate_deterministic_fallback(
             0.55
         )
 
-    target_audience = detect_categorical([
-        ("baby", "babies"), ("kids", "children"), ("children", "children"),
-        ("teen", "teenagers"), ("mature skin", "mature skin")
-    ], "target audience")
-    if target_audience.get("value") == "beauty product":
-        target_audience = make_inferred_categorical(
-            "adults",
-            "No age-specific audience is stated; the catalogue default is adults.",
-            0.55
-        )
+    audience_type = inferred_type or "beauty product"
+    audience_area = application_area.get("value") or "beauty routine"
+    need = next((label.lower() for label, field in [
+        ("hydration", detect_concern(["hydrat", "moistur"])),
+        ("visible signs of ageing", detect_concern(["anti-age", "wrinkle"])),
+        ("uneven tone", detect_concern(["pigmentation", "dark spot", "brightening"])),
+        ("blemishes", detect_concern(["acne", "blemish", "breakout"])),
+        ("sensitivity and comfort", detect_concern(["sensitive", "soothing"])),
+    ] if field["targeting_status"] == "explicit"), "everyday care")
+    target_audience = make_inferred_categorical(
+        [
+            f"Customers seeking {need} support in their {audience_area} routine.",
+            f"Shoppers who prefer a {texture.get('value') or 'practical'} {audience_type} for regular use.",
+            f"Customers comparing {audience_type} options and wanting a clear, easy-to-integrate routine step.",
+        ],
+        "Three merchandising profiles inferred from product type, application area, texture and stated needs.",
+        0.62,
+    )
 
     if texture.get("value") == "beauty product" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
         texture_defaults = {
@@ -796,7 +812,7 @@ def run_ai_enrichment(
                     "gender_target": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
                     "texture": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
                     "application_area": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    "target_audience": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
+                    "target_audience": {"type": "OBJECT", "properties": {"value": {"type": "ARRAY", "items": {"type": "STRING"}, "minItems": 3, "maxItems": 3}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
                     
                     "vegan": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
                     "cruelty_free": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},

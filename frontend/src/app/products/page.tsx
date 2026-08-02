@@ -34,6 +34,8 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
+  const [bulkCategory, setBulkCategory] = useState('');
+  const [bulkSubcategory, setBulkSubcategory] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const fetchProducts = async (signal?: AbortSignal) => {
@@ -97,7 +99,7 @@ export default function ProductsPage() {
     }
   };
 
-  const handleBulkAction = async (action: 'approve' | 'reject' | 're_enrich') => {
+  const handleBulkAction = async (action: 'approve' | 'reject' | 're_enrich' | 'set_classification') => {
     if (selectedIds.length === 0) return;
     setActionLoading(true);
     try {
@@ -112,7 +114,11 @@ export default function ProductsPage() {
             "Authorization": `Bearer ${token}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ product_ids: selectedIds.slice(offset, offset + chunkSize), action })
+          body: JSON.stringify({
+            product_ids: selectedIds.slice(offset, offset + chunkSize), action,
+            category: action === 'set_classification' ? bulkCategory : undefined,
+            subcategory: action === 'set_classification' ? bulkSubcategory : undefined
+          })
         });
         const data = await resp.json().catch(() => null);
         if (!resp.ok) throw new Error(data?.detail || `Bulk ${action} failed.`);
@@ -147,7 +153,16 @@ export default function ProductsPage() {
         </div>
 
         {selectedIds.length > 0 && (
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <input className={styles.inputField} value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} placeholder="Category" style={{ width: 145 }} />
+            <input className={styles.inputField} value={bulkSubcategory} onChange={e => setBulkSubcategory(e.target.value)} placeholder="Subcategory" style={{ width: 155 }} />
+            <button
+              onClick={() => handleBulkAction('set_classification')}
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              disabled={actionLoading || !bulkCategory.trim() || !bulkSubcategory.trim()}
+            >
+              Bulk edit category ({selectedIds.length})
+            </button>
             <button 
               onClick={() => handleBulkAction('approve')} 
               className={`${styles.btn} ${styles.btnPrimary}`}

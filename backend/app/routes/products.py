@@ -13,7 +13,7 @@ from app.models import (
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
     FieldValueOut, EnrichmentMetadataSchema, KeyIngredientOut, DynamicConcernOut,
-    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate, ProductImageUpdate
+    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate, ProductClassificationUpdate, ProductImageUpdate
 )
 from app.worker import record_audit, process_item_enrichment, create_field_value_version
 from pydantic import BaseModel
@@ -24,11 +24,61 @@ from app.config import settings
 class BulkActionRequest(BaseModel):
     product_ids: List[uuid.UUID]
     action: str
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
 
 router = APIRouter(prefix="/products", tags=["Product PIM Center"])
 
 def product_internal_code(product_id: uuid.UUID) -> str:
     return f"ICN-{product_id.hex.upper()}"
+
+
+def _clean_classification(value: str, label: str) -> str:
+    cleaned = " ".join(value.split()).strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail=f"{label} is required.")
+    return cleaned.title()
+
+
+def _set_product_classification(db: Session, product: CanonicalProduct, category: str, subcategory: str, user: User):
+    category_name = _clean_classification(category, "Category")
+    subcategory_name = _clean_classification(subcategory, "Subcategory")
+    root = db.query(Category).filter(func.lower(Category.path) == category_name.lower()).first()
+    if not root:
+        root = Category(id=uuid.uuid4(), name=category_name, level=0, path=category_name)
+        db.add(root)
+        db.flush()
+    child_path = f"{root.path} > {subcategory_name}"
+    child = db.query(Category).filter(func.lower(Category.path) == child_path.lower()).first()
+    if not child:
+        child = Category(id=uuid.uuid4(), name=subcategory_name, parent_id=root.id, level=1, path=child_path)
+        db.add(child)
+        db.flush()
+    before_category = str(product.category_id) if product.category_id else None
+    product.category_id = child.id
+    previous = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.product_variant_id.is_(None),
+        FieldValue.field_name == "subcategory",
+        FieldValue.is_current == True,
+    ).first()
+    before_subcategory = previous.value if previous else None
+    if previous and previous.value != subcategory_name:
+        previous.is_current = False
+    if not previous or previous.value != subcategory_name:
+        create_field_value_version(
+            db, product.id, None, "subcategory", subcategory_name, "human_edit",
+            f"user:{user.id}", None, "confirmed", None, [],
+            "Category and subcategory manually assigned.", "confirmed", "value_status",
+        )
+    record_audit(
+        db, entity_type="canonical_product", entity_id=product.id,
+        display_label=product.product_name, action="classification_updated",
+        before={"category_id": before_category, "subcategory": before_subcategory},
+        after={"category_id": str(child.id), "category": category_name, "subcategory": subcategory_name},
+        changed={"category": [before_category, category_name], "subcategory": [before_subcategory, subcategory_name]},
+        user_id=user.id, actor_type="user",
+    )
 
 
 @router.get("/metrics")
@@ -245,6 +295,7 @@ def get_product_detail(
     if prod.category_id:
         cat = db.query(Category).filter(Category.id == prod.category_id).first()
         category_path = cat.path if cat else None
+    category_parts = [part.strip() for part in (category_path or "").split(">") if part.strip()]
 
     # Fetch Variants
     variants = db.query(ProductVariant).filter(
@@ -458,6 +509,9 @@ def get_product_detail(
         brand_name=brand_name,
         category_id=prod.category_id,
         category_path=category_path,
+        product_category=category_parts[0] if category_parts else None,
+        subcategory=next((fv.value for fv in fields if fv.is_current and fv.field_name == "subcategory"), None) or (category_parts[-1] if len(category_parts) > 1 else None),
+        product_type=next((fv.value for fv in fields if fv.is_current and fv.field_name == "product_type"), None),
         gtin=variants[0].gtin if variants else None,
         image_url=source_image_url,
         description=source_description,
@@ -563,6 +617,22 @@ def update_product_category(
         user_id=current_user.id,
         actor_type="user",
     )
+    db.commit()
+    return get_product_detail(product_id, db, current_user)
+
+@router.put("/{product_id}/classification", response_model=ProductDetailOut)
+def update_product_classification(
+    product_id: uuid.UUID,
+    payload: ProductClassificationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    _set_product_classification(db, product, payload.category, payload.subcategory, current_user)
     db.commit()
     return get_product_detail(product_id, db, current_user)
 
@@ -772,8 +842,10 @@ def bulk_product_action(
     product_ids = req.product_ids
     action = req.action
 
-    if action not in ["approve", "reject", "re_enrich"]:
+    if action not in ["approve", "reject", "re_enrich", "set_classification"]:
         raise HTTPException(status_code=400, detail="Invalid action name")
+    if action == "set_classification" and (not req.category or not req.subcategory):
+        raise HTTPException(status_code=400, detail="Category and subcategory are required.")
 
     success_count = 0
     errors = []
@@ -786,6 +858,12 @@ def bulk_product_action(
                 reject_product(pid, db, current_user)
             elif action == "re_enrich":
                 re_enrich_product(pid, db, current_user)
+            elif action == "set_classification":
+                product = db.query(CanonicalProduct).filter(CanonicalProduct.id == pid, CanonicalProduct.is_deleted == False).first()
+                if not product:
+                    raise HTTPException(status_code=404, detail="Product not found")
+                _set_product_classification(db, product, req.category or "", req.subcategory or "", current_user)
+                db.commit()
             success_count += 1
         except HTTPException as e:
             errors.append({"product_id": str(pid), "error": e.detail})

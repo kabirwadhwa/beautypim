@@ -145,6 +145,13 @@ class CategoricalFieldSchema(BaseModel):
     reasoning_summary: str
     confidence: float
 
+class AudienceProfilesFieldSchema(BaseModel):
+    value: List[str] = Field(min_length=3, max_length=3)
+    value_status: str
+    evidence: List[EvidenceItemSchema] = []
+    reasoning_summary: str
+    confidence: float
+
 class ClaimFieldSchema(BaseModel):
     value: str
     claim_status: str
@@ -222,7 +229,7 @@ class BeautyProductEnrichmentSchema(BaseModel):
     gender_target: CategoricalFieldSchema
     texture: CategoricalFieldSchema
     application_area: CategoricalFieldSchema
-    target_audience: CategoricalFieldSchema
+    target_audience: AudienceProfilesFieldSchema
     
     vegan: ClaimFieldSchema
     cruelty_free: ClaimFieldSchema
@@ -418,7 +425,7 @@ EDITABLE_FIELDS_REGISTRY = {
     "gender_target": str,
     "texture": str,
     "application_area": str,
-    "target_audience": str,
+    "target_audience": list,
     "vegan": str,
     "cruelty_free": str,
     "paraben_free": str,
@@ -482,3 +489,7 @@ class CategoryOut(BaseModel):
 
 class ProductCategoryUpdate(BaseModel):
     category_id: Optional[uuid.UUID] = None
+
+class ProductClassificationUpdate(BaseModel):
+    category: str = Field(min_length=1, max_length=255)
+    subcategory: str = Field(min_length=1, max_length=255)

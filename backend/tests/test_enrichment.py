@@ -43,7 +43,8 @@ def test_deterministic_fallback_no_fabrications():
     assert fallback["gender_target"]["value"] == "unisex"
     assert fallback["gender_target"]["value_status"] == "inferred"
     assert fallback["gender_target"]["confidence"] < 0.8
-    assert fallback["target_audience"]["value"] == "adults"
+    assert len(fallback["target_audience"]["value"]) == 3
+    assert all(len(profile.split()) >= 6 for profile in fallback["target_audience"]["value"])
     assert fallback["target_audience"]["value_status"] == "inferred"
     assert fallback["directions"]["source_status"] == "inferred"
     assert fallback["directions"]["text"]
@@ -61,7 +62,8 @@ def test_balanced_fallback_infers_catalogue_fields_without_inventing_sensitive_c
     assert fallback["product_type"]["value"] == "shampoo"
     assert fallback["application_area"]["value"] == "hair"
     assert fallback["gender_target"]["value"] == "unisex"
-    assert fallback["target_audience"]["value"] == "adults"
+    assert len(fallback["target_audience"]["value"]) == 3
+    assert all("adult" not in profile.lower() for profile in fallback["target_audience"]["value"])
     assert fallback["texture"]["value_status"] == "inferred"
     assert fallback["directions"]["source_status"] == "inferred"
 
