@@ -32,7 +32,10 @@ def _clean(value: Any, fallback: str = "") -> str:
     if isinstance(value, bool):
         return "Yes" if value else "No"
     if isinstance(value, dict):
-        return _clean(value.get("text") or value.get("statement") or value.get("value"), fallback)
+        return _clean(
+            value.get("text") or value.get("statement") or value.get("value")
+            or value.get("review_message") or value.get("values"), fallback
+        )
     if isinstance(value, list):
         return ", ".join(filter(None, (_clean(item) for item in value))) or fallback
     result = str(value).strip()
@@ -100,7 +103,7 @@ def _box(pdf: canvas.Canvas, x: float, y: float, width: float, height: float,
 def _bullets(values: list[str], width: float, limit: int = 6) -> Table:
     rows = [[_p("✓", "center_bold"), _p(value)] for value in values[:limit]]
     if not rows:
-        rows = [[_p("✓", "center_bold"), _p("Suitable for the intended beauty routine.")]]
+        rows = [[_p("—", "center_bold"), _p("Not enriched")]]
     return Table(rows, colWidths=[6 * mm, width - 10 * mm], style=TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 1), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
@@ -109,11 +112,11 @@ def _bullets(values: list[str], width: float, limit: int = 6) -> Table:
 
 
 def _name(item: dict[str, Any]) -> str:
-    return _clean(item.get("normalized_inci_name")) or _clean(item.get("name"), "Key Ingredient")
+    return _clean(item.get("normalized_inci_name")) or _clean(item.get("ingredient_name")) or _clean(item.get("name"), "Key Ingredient")
 
 
 def _utility(item: dict[str, Any]) -> str:
-    return _clean(item.get("benefits")) or _clean(item.get("functions"), "Formula support")
+    return _clean(item.get("benefits")) or _clean(item.get("functions"), "Not enriched")
 
 
 def _yes(value: Any) -> bool:
@@ -142,23 +145,26 @@ def build_product_pdf(product: Any) -> bytes:
 
     product_name = _clean(data.get("product_name"), "Beauty Product")
     brand = _clean(data.get("brand_name"), "Beauty PIM")
-    category = _clean(data.get("product_category")) or _clean(data.get("category_path"), "Beauty & Personal Care")
-    subcategory = _clean(data.get("subcategory")) or _clean(field("subcategory"), "Beauty Care")
+    category = _clean(data.get("product_category")) or _clean(data.get("category_path"), "Not enriched")
+    subcategory = _clean(data.get("subcategory")) or _clean(field("subcategory"), "Not enriched")
     product_type = _clean(data.get("product_type")) or _clean(field("product_type"), subcategory)
     benefits = _items(field("benefits")) or _items(field("source_claims"))
     description = _clean(data.get("description")) or _clean(field("marketing_description"))
     if not description:
-        description = benefits[0] if benefits else f"A considered {product_type.lower()} for a modern beauty routine."
+        description = "Not enriched"
     variants = data.get("variants") or []
     variant = variants[0] if variants else {}
-    size = " ".join(filter(None, (_clean(variant.get("size")), _clean(variant.get("unit"))))) or "Standard"
+    size = " ".join(filter(None, (_clean(variant.get("size")), _clean(variant.get("unit"))))) or "Not supplied"
     gtin = _clean(data.get("gtin")) or _clean(variant.get("gtin"), "Not supplied")
-    country = _clean(field("brand_origin")) or _clean(field("country_of_origin"), "International")
-    texture = _clean(field("texture"), "Refined cosmetic texture")
-    fragrance = _clean(field("fragrance_intelligence")) or _clean(field("fragrance_present"), "See packaging")
-    directions = _clean(field("directions"), "Apply as directed on the product packaging.")
+    country = _clean(field("brand_origin"), "Not enriched")
+    texture = _clean(field("texture"), "Not enriched")
+    fragrance_data = field("fragrance_intelligence") or {}
+    fragrance = (
+        _clean(fragrance_data.get("fragrance_family")) if isinstance(fragrance_data, dict) else ""
+    ) or _clean(field("fragrance_present"), "Not enriched")
+    directions = _clean(field("directions"), "Not enriched")
 
-    concerns = []
+    concerns = _items((field("targeted_concerns") or {}).get("values") if isinstance(field("targeted_concerns"), dict) else field("targeted_concerns"))
     for concern in data.get("dynamic_concerns", []):
         status = _clean(concern.get("targeting_status")).lower()
         if status not in {"unknown", "not_targeted", "false", "none", "not provided"}:
@@ -169,21 +175,19 @@ def build_product_pdf(product: Any) -> bytes:
                            ("redness", "Redness"), ("sensitivity", "Sensitivity")):
             if _yes(field(key)):
                 concerns.append(label)
-    concerns = concerns or [f"Supports {product_type.lower()} needs", "Everyday beauty maintenance"]
+    concerns = concerns or ["Not enriched"]
 
     formulation = (data.get("formulations") or [{}])[0]
     inci = _clean(formulation.get("raw_inci_text"), "Full ingredient list not supplied.")
     inci_items = [item.strip() for item in inci.replace(";", ",").split(",") if item.strip()]
-    key_ingredients = data.get("key_ingredients") or [
-        {"name": item, "functions": ["Formula component"], "benefits": ["Supports the complete formula"]}
-        for item in inci_items[:5]
-    ]
+    key_ingredients = field("ingredients_intelligence") or data.get("key_ingredients") or []
     signals = [label for label, key in (("PARABEN FREE", "paraben_free"), ("SULFATE FREE", "sulfate_free"),
+               ("PHTHALATE FREE", "phthalate_free"),
                ("SILICONE FREE", "silicone_free"), ("VEGAN", "vegan"),
                ("CRUELTY FREE", "cruelty_free"), ("ALCOHOL FREE", "alcohol_free")) if _yes(field(key))]
     if _clean(field("fragrance_present")).lower() in {"no", "false"}:
         signals.append("FRAGRANCE FREE")
-    signals = (signals or ["CATALOGUE VERIFIED", "FORMULA PROFILED", "PIM REVIEWED"])[:3]
+    signals = (signals or ["NO VERIFIED FORMULATION SIGNALS"])[:3]
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4, pageCompression=1)
@@ -230,7 +234,7 @@ def build_product_pdf(product: Any) -> bytes:
         [_p("Product Type:", "label"), _p(product_type)], [_p("Category:", "label"), _p(category)],
         [_p("Consistency:", "label"), _p(texture)], [_p("Size:", "label"), _p(size)],
         [_p("Article Number:", "label"), _p(data.get("internal_code"))],
-        [_p("Brand Origin:", "label"), _p(country)], [_p("Launch Year:", "label"), _p(field("launch_year"), fallback="Current range")],
+        [_p("Brand Origin:", "label"), _p(country)], [_p("Launch Year:", "label"), _p(field("launch_year"), fallback="Not enriched")],
     ], colWidths=[28 * mm, center_w - 28 * mm], style=TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 1), ("TOPPADDING", (0, 0), (-1, -1), .25 * mm),
@@ -240,7 +244,10 @@ def build_product_pdf(product: Any) -> bytes:
 
     icon_h = 17 * mm
     _box(pdf, signal_x, top_y + top_h - icon_h, signal_w, icon_h)
-    icon_labels = [product_type, country, "CATALOGUE TESTED"]
+    credentials = _items((field("product_credentials") or {}).get("values") if isinstance(field("product_credentials"), dict) else field("product_credentials"))
+    tested = [label for label, key in (("DERMATOLOGICALLY TESTED", "dermatologically_tested"),
+              ("CLINICALLY TESTED", "clinically_tested"), ("OPHTHALMOLOGICALLY TESTED", "ophthalmologically_tested")) if _yes(field(key))]
+    icon_labels = (credentials + tested + [product_type, country, "Not enriched"])[:3]
     for index, label in enumerate(icon_labels):
         iw = signal_w / 3
         cx, cy = signal_x + iw * (index + .5), top_y + top_h - 6 * mm
@@ -263,8 +270,11 @@ def build_product_pdf(product: Any) -> bytes:
     _box(pdf, xs[0], y, col_w, row_h, "Key Benefits")
     _draw(pdf, _bullets(benefits, col_w), xs[0], y, col_w, row_h - 4.7 * mm)
     _box(pdf, xs[1], y, col_w, row_h, "Hero Ingredients & Technology")
-    ingredients = key_ingredients[:3]
-    hero_rows = [[_p(_name(item)[:1].upper(), "initial"), [_p(_name(item).upper(), "ingredient"), _p(_utility(item), "small")]] for item in ingredients]
+    technologies = (field("proprietary_technologies") or {}).get("items", []) if isinstance(field("proprietary_technologies"), dict) else []
+    ingredients = technologies[:3] or key_ingredients[:3]
+    hero_rows = [[_p(_name(item)[:1].upper(), "initial"), [_p(_name(item).upper(), "ingredient"), _p(_clean(item.get("description")) or _utility(item), "small")]] for item in ingredients]
+    if not hero_rows:
+        hero_rows = [[_p("—", "initial"), [_p("NOT ENRICHED", "ingredient"), _p("No hero ingredient or technology is recorded.", "small")]]]
     hero_table = Table(hero_rows, colWidths=[16 * mm, col_w - 20 * mm], rowHeights=[13.2 * mm] * len(hero_rows), style=TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), NAVY), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 1.2 * mm), ("RIGHTPADDING", (0, 0), (-1, -1), 1.2 * mm),
@@ -278,10 +288,12 @@ def build_product_pdf(product: Any) -> bytes:
     # Skin-fit, directions and sensory.
     y, row_h = y - gap - 34 * mm, 34 * mm
     _box(pdf, xs[0], y, col_w, row_h, "Skin Type Fit")
-    fit_text = _clean(field("skin_type_fit")).lower()
+    fit_data = field("skin_type_scores") or {}
+    fit_scores = fit_data.get("scores", {}) if isinstance(fit_data, dict) else {}
     fit_rows = []
-    for index, label in enumerate(["Normal", "Dry", "Very Dry", "Combination", "Oily", "Sensitive"]):
-        score = 5 if label.lower() in fit_text else max(2, 5 - index // 2)
+    for label in ["Normal", "Dry", "Very Dry", "Combination", "Oily", "Sensitive"]:
+        key = label.lower().replace(" ", "_")
+        score = max(0, min(5, int(fit_scores.get(key, 0) or 0)))
         fit_rows.append([_p(label), _p(("● " * score + "o " * (5 - score)).strip(), "center_bold")])
     fit_table = Table(fit_rows, colWidths=[25 * mm, col_w - 29 * mm], style=TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
@@ -289,14 +301,18 @@ def build_product_pdf(product: Any) -> bytes:
     ]))
     _draw(pdf, fit_table, xs[0], y, col_w, row_h - 4.7 * mm)
     _box(pdf, xs[1], y, col_w, row_h, "How to Use")
-    use_copy = f"<b>Application:</b> {escape(directions)}<br/><br/><b>Area:</b> {escape(_clean(field('application_area'), 'Target application area'))}"
+    use_copy = (
+        f"<b>Time:</b> {escape(_clean(field('routine_time'), 'Not enriched'))}<br/>"
+        f"<b>Step:</b> {escape(_clean(field('routine_step'), 'Not enriched'))}<br/>"
+        f"<b>Application:</b> {escape(_clean(field('application_sequence')) or directions)}"
+    )
     _draw(pdf, Paragraph(use_copy, STYLES["body"]), xs[1], y, col_w, row_h - 4.7 * mm, pad=3 * mm)
     _box(pdf, xs[2], y, col_w, row_h, "Texture & Sensory")
     sensory_rows = [
-        [_p("Texture:", "label"), _p(texture)], [_p("Color:", "label"), _p(field("color"), fallback="Product dependent")],
-        [_p("Finish:", "label"), _p(field("finish"), fallback="Natural finish")],
+        [_p("Texture:", "label"), _p(texture)], [_p("Color:", "label"), _p(field("colour"), fallback="Not enriched")],
+        [_p("Finish:", "label"), _p(field("finish"), fallback="Not enriched")],
         [_p("Fragrance:", "label"), _p(fragrance)],
-        [_p("Absorption:", "label"), _p(field("absorption"), fallback="Comfortable application")],
+        [_p("Absorption:", "label"), _p(field("absorption_profile"), fallback="Not enriched")],
     ]
     sensory = Table(sensory_rows, colWidths=[18 * mm, col_w - 22 * mm], style=TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -327,10 +343,17 @@ def build_product_pdf(product: Any) -> bytes:
     detail_rows = [[_p(header, "micro") for header in headers]]
     for index, item in enumerate(key_ingredients[:5], start=1):
         name, utility = _name(item), _utility(item)
-        functions = _clean(item.get("functions"), "Formula support")
-        detail_rows.append([_p(name, "micro"), _p(name.upper(), "micro"), _p(name, "micro"),
-                            _p(functions, "micro"), _p(str(index), "micro"), _p(utility, "micro"),
-                            _p(functions, "micro"), _p(utility, "micro")])
+        functions = _clean(item.get("functions"), "Not enriched")
+        detail_rows.append([
+            _p(_clean(item.get("ingredient_name"), name), "micro"),
+            _p(_clean(item.get("normalized_inci_name"), name.upper()), "micro"),
+            _p(_clean(item.get("common_name"), name), "micro"),
+            _p(functions, "micro"),
+            _p(str(item.get("inci_position") or index), "micro"),
+            _p(_clean(item.get("short_description"), utility), "micro"),
+            _p(_clean(item.get("ingredient_group"), functions), "micro"),
+            _p(_clean(item.get("other_utility"), utility), "micro"),
+        ])
     _draw(pdf, _grid_table(detail_rows, [width * mm * scale for width in raw_widths], pale_first=True),
           margin, y, content_w, row_h - 4.7 * mm, pad=0)
 
@@ -343,10 +366,10 @@ def build_product_pdf(product: Any) -> bytes:
         bx.append(bx[-1] + width + gap)
 
     warnings = [
-        ("Pregnancy Caution", _clean(field("pregnancy_warning"), "Consult a physician if concerned.")),
-        ("Allergen Caution", _clean(field("allergen_warning"), "Review ingredients before use.")),
-        ("Sensitivity Status", _clean(field("sensitivity_warning"), "Patch test before first use.")),
-        ("Regulatory Notes", _clean(field("warnings"), "For external use. Follow packaging directions.")),
+        ("Pregnancy Caution", _clean(field("pregnancy_warning_observation"), "Not enriched")),
+        ("Allergen Caution", _clean(field("allergen_warning_observation"), "Not enriched")),
+        ("Sensitivity Status", _clean(field("sensitivity_warning_observation"), "Not enriched")),
+        ("Regulatory Notes", _clean(field("regulatory_notes"), "Not enriched")),
     ]
     _box(pdf, bx[0], bottom_y, widths[0], bottom_h, "Caution Flags")
     warning_rows = [[_p(label, "micro"), _p(text, "micro")] for label, text in warnings]
@@ -355,8 +378,18 @@ def build_product_pdf(product: Any) -> bytes:
     _draw(pdf, warning_table, bx[0], bottom_y, widths[0], bottom_h - 4.7 * mm, pad=0)
 
     _box(pdf, bx[1], bottom_y, widths[1], bottom_h, "INCI Stats")
-    stats = [("Total Ingredients", len(inci_items)), ("Ingredient Drivers", len(key_ingredients)),
-             ("Claims / Benefits", len(benefits)), ("Concerns", len(concerns)), ("Formula Signals", len(signals))]
+    stats_data = field("inci_stats") if isinstance(field("inci_stats"), dict) else {}
+    stats = [
+        ("Total Ingredients", stats_data.get("total_ingredients", len(inci_items))),
+        ("Allergens", stats_data.get("allergen_count", 0)),
+        ("Fragrance", stats_data.get("fragrance_count", 0)),
+        ("Plant Extracts", stats_data.get("plant_extracts", 0)),
+        ("Peptides", stats_data.get("peptides", 0)),
+        ("Antioxidants", stats_data.get("antioxidants", 0)),
+        ("Humectants", stats_data.get("humectants", 0)),
+        ("Emollients / Oils", stats_data.get("emollients_oils", 0)),
+        ("Preservatives", stats_data.get("preservatives", 0)),
+    ]
     stats_rows = [[_p(label, "micro"), _p(str(value), "micro")] for label, value in stats]
     stats_table = _grid_table(stats_rows, [widths[1] * .72, widths[1] * .28])
     stats_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), PALE)]))
@@ -375,9 +408,7 @@ def build_product_pdf(product: Any) -> bytes:
     _draw(pdf, identifier, bx[3], bottom_y, widths[3], bottom_h - 4.7 * mm, pad=0)
 
     _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Schema.org Structured Data")
-    schema = {"@context": "https://schema.org", "@type": "Product", "name": product_name,
-              "brand": {"@type": "Brand", "name": brand}, "description": description,
-              "sku": _clean(data.get("internal_code")), "gtin": gtin, "category": category, "size": size}
+    schema = field("schema_org") or {"status": "Not enriched"}
     _draw(pdf, _p(json.dumps(schema, ensure_ascii=True, separators=(", ", ": ")), "micro"),
           bx[4], bottom_y, widths[4], bottom_h - 4.7 * mm, pad=1.3 * mm)
 

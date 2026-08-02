@@ -57,7 +57,12 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
         # 4. unknown
         enrichment_keys = [
             "subcategory", "product_type", "gender_target", "texture", "application_area", "target_audience",
+            "brand_origin", "country_of_manufacture", "launch_year", "product_positioning", "colour",
+            "finish", "absorption_profile", "sensory_description", "routine_time", "routine_step",
+            "application_sequence", "regulatory_notes", "product_credentials", "targeted_concerns",
+            "proprietary_technologies", "skin_type_scores", "inci_stats", "ingredients_intelligence", "schema_org",
             "vegan", "cruelty_free", "paraben_free", "sulfate_free", "silicone_free", "alcohol_free", "fragrance_present",
+            "phthalate_free", "dermatologically_tested", "clinically_tested", "ophthalmologically_tested",
             "hydration", "anti_ageing", "pigmentation", "acne", "redness", "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness"
         ]
 

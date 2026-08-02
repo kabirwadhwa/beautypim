@@ -215,6 +215,12 @@ class ReviewObservationSchema(BaseModel):
 class IngredientIntelligenceSchema(BaseModel):
     ingredient_name: str
     normalized_inci_name: Optional[str] = None
+    common_name: Optional[str] = None
+    source_origin: Optional[str] = None
+    inci_position: Optional[int] = None
+    ingredient_group: Optional[str] = None
+    short_description: Optional[str] = None
+    other_utility: Optional[str] = None
     functions: List[str] = []
     benefits: List[str] = []
     possible_concerns: List[Dict[str, Any]] = []
@@ -223,6 +229,44 @@ class IngredientIntelligenceSchema(BaseModel):
     evidence: List[EvidenceItemSchema] = []
     confidence: float
 
+class StringListFieldSchema(BaseModel):
+    values: List[str] = []
+    value_status: str = "inferred"
+    evidence: List[EvidenceItemSchema] = []
+    reasoning_summary: str = ""
+    confidence: float = 0.5
+
+class TechnologyItemSchema(BaseModel):
+    name: str
+    description: str
+    related_ingredients: List[str] = []
+    image_url: Optional[str] = None
+    source_status: str = "inferred"
+
+class TechnologyProfileSchema(BaseModel):
+    items: List[TechnologyItemSchema] = []
+    evidence: List[EvidenceItemSchema] = []
+    confidence: float = 0.5
+
+class SkinTypeScoresSchema(BaseModel):
+    scores: Dict[str, int] = {}
+    evidence: List[EvidenceItemSchema] = []
+    reasoning_summary: str = ""
+    confidence: float = 0.5
+
+class InciStatsSchema(BaseModel):
+    total_ingredients: int = 0
+    allergen_count: int = 0
+    fragrance_count: int = 0
+    plant_extracts: int = 0
+    peptides: int = 0
+    antioxidants: int = 0
+    humectants: int = 0
+    emollients_oils: int = 0
+    preservatives: int = 0
+    evidence: List[EvidenceItemSchema] = []
+    confidence: float = 0.5
+
 class BeautyProductEnrichmentSchema(BaseModel):
     subcategory: CategoricalFieldSchema
     product_type: CategoricalFieldSchema
@@ -230,6 +274,24 @@ class BeautyProductEnrichmentSchema(BaseModel):
     texture: CategoricalFieldSchema
     application_area: CategoricalFieldSchema
     target_audience: AudienceProfilesFieldSchema
+
+    brand_origin: Optional[CategoricalFieldSchema] = None
+    country_of_manufacture: Optional[CategoricalFieldSchema] = None
+    launch_year: Optional[CategoricalFieldSchema] = None
+    product_positioning: Optional[CategoricalFieldSchema] = None
+    colour: Optional[CategoricalFieldSchema] = None
+    finish: Optional[CategoricalFieldSchema] = None
+    absorption_profile: Optional[CategoricalFieldSchema] = None
+    sensory_description: Optional[CategoricalFieldSchema] = None
+    routine_time: Optional[CategoricalFieldSchema] = None
+    routine_step: Optional[CategoricalFieldSchema] = None
+    application_sequence: Optional[CategoricalFieldSchema] = None
+    regulatory_notes: Optional[CategoricalFieldSchema] = None
+    product_credentials: Optional[StringListFieldSchema] = None
+    targeted_concerns: Optional[StringListFieldSchema] = None
+    proprietary_technologies: Optional[TechnologyProfileSchema] = None
+    skin_type_scores: Optional[SkinTypeScoresSchema] = None
+    inci_stats: Optional[InciStatsSchema] = None
     
     vegan: ClaimFieldSchema
     cruelty_free: ClaimFieldSchema
@@ -238,6 +300,10 @@ class BeautyProductEnrichmentSchema(BaseModel):
     silicone_free: ClaimFieldSchema
     alcohol_free: ClaimFieldSchema
     fragrance_present: ClaimFieldSchema
+    phthalate_free: Optional[ClaimFieldSchema] = None
+    dermatologically_tested: Optional[ClaimFieldSchema] = None
+    clinically_tested: Optional[ClaimFieldSchema] = None
+    ophthalmologically_tested: Optional[ClaimFieldSchema] = None
     
     hydration: ConcernFieldSchema
     anti_ageing: ConcernFieldSchema
@@ -426,6 +492,25 @@ EDITABLE_FIELDS_REGISTRY = {
     "texture": str,
     "application_area": str,
     "target_audience": list,
+    "brand_origin": str,
+    "country_of_manufacture": str,
+    "launch_year": str,
+    "product_positioning": str,
+    "colour": str,
+    "finish": str,
+    "absorption_profile": str,
+    "sensory_description": str,
+    "routine_time": str,
+    "routine_step": str,
+    "application_sequence": str,
+    "regulatory_notes": str,
+    "product_credentials": dict,
+    "targeted_concerns": dict,
+    "proprietary_technologies": dict,
+    "skin_type_scores": dict,
+    "inci_stats": dict,
+    "schema_org": dict,
+    "ingredients_intelligence": list,
     "vegan": str,
     "cruelty_free": str,
     "paraben_free": str,
@@ -433,6 +518,10 @@ EDITABLE_FIELDS_REGISTRY = {
     "silicone_free": str,
     "alcohol_free": str,
     "fragrance_present": str,
+    "phthalate_free": str,
+    "dermatologically_tested": str,
+    "clinically_tested": str,
+    "ophthalmologically_tested": str,
     "hydration": bool,
     "anti_ageing": bool,
     "pigmentation": bool,

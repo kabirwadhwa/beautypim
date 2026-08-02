@@ -2,6 +2,7 @@ import pytest
 import uuid
 
 from app.models import IngredientDefinition
+from app.schemas import BeautyProductEnrichmentSchema
 from app.services.enrichment import (
     ensure_catalogue_coverage,
     generate_deterministic_fallback,
@@ -87,6 +88,28 @@ def test_deterministic_fallback_no_fabrications():
     assert fallback["directions"]["source_status"] == "inferred"
     assert fallback["directions"]["text"]
     assert fallback["benefits"][0]["statement"] == "Hydration support"
+
+
+def test_dossier_fields_are_catalogue_backed_and_schema_valid():
+    fallback = generate_deterministic_fallback(
+        name="Velvet Recovery Face Cream",
+        brand="Example",
+        description="A rich hydrating cream with a natural finish. Dermatologically tested.",
+        raw_ingredients="Aqua, Glycerin, Squalane, Tocopherol, Limonene",
+    )
+
+    validated = BeautyProductEnrichmentSchema.model_validate(fallback)
+    assert validated.product_positioning.value
+    assert validated.finish.value
+    assert validated.absorption_profile.value
+    assert validated.routine_step.value
+    assert validated.dermatologically_tested.value == "yes"
+    assert validated.phthalate_free.value == "unverified"
+    assert validated.skin_type_scores.scores["normal"] == 3
+    assert validated.inci_stats.total_ingredients == 5
+    assert validated.inci_stats.humectants == 1
+    assert validated.inci_stats.emollients_oils == 1
+    assert validated.ingredients_intelligence[0].inci_position == 1
 
 
 def test_balanced_fallback_infers_catalogue_fields_without_inventing_sensitive_claims():

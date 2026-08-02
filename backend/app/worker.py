@@ -376,7 +376,10 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     # Write core enriched fields
     core_categorical_fields = [
         "subcategory", "product_type", "gender_target", "texture", 
-        "application_area", "target_audience"
+        "application_area", "target_audience", "brand_origin", "country_of_manufacture",
+        "launch_year", "product_positioning", "colour", "finish", "absorption_profile",
+        "sensory_description", "routine_time", "routine_step", "application_sequence",
+        "regulatory_notes"
     ]
     for field in core_categorical_fields:
         field_data = enrichment_result.get(field, {})
@@ -400,7 +403,8 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
 
     core_claims_fields = [
         "vegan", "cruelty_free", "paraben_free", "sulfate_free", 
-        "silicone_free", "alcohol_free", "fragrance_present"
+        "silicone_free", "alcohol_free", "fragrance_present", "phthalate_free",
+        "dermatologically_tested", "clinically_tested", "ophthalmologically_tested"
     ]
     for field in core_claims_fields:
         field_data = enrichment_result.get(field, {})
@@ -447,7 +451,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         )
 
     # Persist rich enrichment blocks that were previously discarded.
-    for field in ["source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence"]:
+    for field in [
+        "source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit",
+        "fragrance_intelligence", "product_credentials", "targeted_concerns",
+        "proprietary_technologies", "skin_type_scores", "inci_stats",
+        "ingredients_intelligence",
+    ]:
         field_data = enrichment_result.get(field)
         if field_data is None:
             continue
@@ -472,6 +481,24 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
             semantic_status="inferred",
             semantic_status_type="structured_enrichment",
         )
+
+    schema_org_value = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": raw_name,
+        "brand": {"@type": "Brand", "name": raw_brand},
+        "description": raw_desc,
+        "gtin": raw_ean,
+        "category": (enrichment_result.get("subcategory") or {}).get("value"),
+        "size": raw_size,
+    }
+    create_field_value_version(
+        db=db, canonical_product_id=item.canonical_product_id, product_variant_id=None,
+        field_name="schema_org", value=schema_org_value, source_type="deterministic_rule",
+        source_ref=source_ref, confidence=1.0, status="confirmed", run_id=run_id,
+        evidence=[], reasoning_summary="Generated deterministically from current catalogue values.",
+        semantic_status="confirmed", semantic_status_type="structured_data",
+    )
 
     # Write warning observations
     for field in ["pregnancy_warning_observation", "allergen_warning_observation", "sensitivity_warning_observation"]:

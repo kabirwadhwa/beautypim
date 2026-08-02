@@ -561,6 +561,12 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
                 "product_type", "subcategory", "gender_target", "target_audience",
                 "texture", "application_area", "benefits", "directions",
                 "skin_type_fit", "hair_type_fit", "fragrance_intelligence",
+                "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
+                "colour", "finish", "absorption_profile", "sensory_description",
+                "routine_time", "routine_step", "application_sequence", "regulatory_notes",
+                "product_credentials", "targeted_concerns", "proprietary_technologies",
+                "skin_type_scores", "inci_stats", "ingredients_intelligence", "schema_org",
+                "phthalate_free", "dermatologically_tested", "clinically_tested", "ophthalmologically_tested",
                 *sorted(CLAIM_FIELDS), *sorted(CONCERN_FIELDS),
             )
             if key in field_map
@@ -716,7 +722,11 @@ def _deterministic_answer(
         if product.category:
             lines.append(f"Category: {product.category}.")
         highlights = []
-        for key in ("product_type", "texture", "application_area", "gender_target", "target_audience"):
+        for key in (
+            "product_type", "product_positioning", "texture", "colour", "finish",
+            "absorption_profile", "application_area", "routine_time", "routine_step",
+            "gender_target", "target_audience",
+        ):
             value = _display_value(attrs.get(key))
             if value:
                 highlights.append(f"{key.replace('_', ' ')}: {value}")

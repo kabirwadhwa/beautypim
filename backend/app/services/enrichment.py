@@ -33,6 +33,26 @@ BALANCED_INFERENCE_GUIDANCE = (
     "a concrete need, routine, preference or usage occasion with the relevant product characteristic, "
     "so it can guide advertising or in-store recommendations. Never use generic labels such as adults, "
     "beauty lovers or everyone, and never infer sensitive personal traits. "
+    "The product dossier is catalogue-backed: enrich brand origin, manufacturing country, launch year, "
+    "positioning, colour, finish, absorption, sensory profile, routine timing and sequence, credentials, "
+    "testing claims, targeted concerns, technology, scored skin fit and ingredient statistics as structured "
+    "fields. Infer merchandising and sensory values at moderate confidence where comparable retail knowledge "
+    "supports them. Testing, origin, launch year, regulatory and free-from claims require explicit evidence; "
+    "return unverified rather than inventing them. Never invent technology image URLs. "
+)
+
+DOSSIER_CATEGORICAL_FIELDS = (
+    "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
+    "colour", "finish", "absorption_profile", "sensory_description", "routine_time",
+    "routine_step", "application_sequence", "regulatory_notes",
+)
+DOSSIER_CLAIM_FIELDS = (
+    "phthalate_free", "dermatologically_tested", "clinically_tested",
+    "ophthalmologically_tested",
+)
+DOSSIER_STRUCTURED_FIELDS = (
+    "product_credentials", "targeted_concerns", "proprietary_technologies",
+    "skin_type_scores", "inci_stats",
 )
 
 UNKNOWN_VALUES = {"", "unknown", "none", "null", "nan", "not provided", "not_provided"}
@@ -85,11 +105,11 @@ def normalize_provider_shapes(payload: Dict[str, Any]) -> Dict[str, Any]:
     categorical_fields = (
         "subcategory", "product_type", "gender_target", "texture",
         "application_area", "target_audience",
-    )
+    ) + DOSSIER_CATEGORICAL_FIELDS
     claim_fields = (
         "vegan", "cruelty_free", "paraben_free", "sulfate_free",
         "silicone_free", "alcohol_free", "fragrance_present",
-    )
+    ) + DOSSIER_CLAIM_FIELDS
     concern_fields = (
         "hydration", "anti_ageing", "pigmentation", "acne", "redness",
         "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
@@ -130,6 +150,27 @@ def normalize_provider_shapes(payload: Dict[str, Any]) -> Dict[str, Any]:
             item if isinstance(item, dict) else {"statement": str(item)}
             for item in concerns
         ]
+    for field in DOSSIER_STRUCTURED_FIELDS:
+        item = payload.get(field)
+        if isinstance(item, dict):
+            item["evidence"] = _evidence_list(item.get("evidence"))
+    technology = payload.get("proprietary_technologies") or {}
+    for item in technology.get("items") or []:
+        if isinstance(item, dict):
+            item.setdefault("name", "Product technology")
+            item.setdefault("description", "Technology referenced by the enrichment provider.")
+            item.setdefault("related_ingredients", [])
+            item.setdefault("image_url", None)
+            item.setdefault("source_status", "inferred")
+    scores = (payload.get("skin_type_scores") or {}).get("scores")
+    if isinstance(scores, dict):
+        normalized_scores = {}
+        for key, value in scores.items():
+            try:
+                normalized_scores[str(key)] = max(0, min(5, int(value or 0)))
+            except (TypeError, ValueError):
+                normalized_scores[str(key)] = 0
+        payload["skin_type_scores"]["scores"] = normalized_scores
     return payload
 
 
@@ -157,7 +198,7 @@ def ensure_catalogue_coverage(
     categorical_fields = (
         "subcategory", "product_type", "gender_target", "texture",
         "application_area",
-    )
+    ) + DOSSIER_CATEGORICAL_FIELDS
     for field in categorical_fields:
         if _is_missing_field(data.get(field), "value"):
             data[field] = fallback[field]
@@ -169,7 +210,7 @@ def ensure_catalogue_coverage(
     for field in (
         "vegan", "cruelty_free", "paraben_free", "sulfate_free",
         "silicone_free", "alcohol_free", "fragrance_present",
-    ):
+    ) + DOSSIER_CLAIM_FIELDS:
         payload = data.get(field) or {}
         if _is_missing_field(payload, "value"):
             data[field] = fallback[field]
@@ -189,6 +230,17 @@ def ensure_catalogue_coverage(
             field == "fragrance_intelligence"
             and _is_missing_field(payload, "fragrance_presence_status")
         ):
+            data[field] = fallback[field]
+    for field in DOSSIER_STRUCTURED_FIELDS:
+        payload = data.get(field)
+        incomplete = not payload
+        if field in {"product_credentials", "targeted_concerns"} and isinstance(payload, dict):
+            incomplete = not payload.get("values")
+        elif field == "skin_type_scores" and isinstance(payload, dict):
+            incomplete = not payload.get("scores")
+        elif field == "inci_stats" and isinstance(payload, dict):
+            incomplete = bool(raw_ingredients) and not payload.get("total_ingredients")
+        if incomplete:
             data[field] = fallback[field]
     return data
 
@@ -284,6 +336,12 @@ def generate_deterministic_fallback(
                 ingredients_list.append({
                     "ingredient_name": clean_part,
                     "normalized_inci_name": None,
+                    "common_name": None,
+                    "source_origin": None,
+                    "inci_position": idx + 1,
+                    "ingredient_group": None,
+                    "short_description": "Ingredient retained from the supplied INCI list.",
+                    "other_utility": None,
                     "functions": [],
                     "benefits": [],
                     "possible_concerns": [],
@@ -555,6 +613,52 @@ def generate_deterministic_fallback(
         "Use as directed on the product packaging for this product type.",
     )
 
+    finish_by_type = {
+        "foundation": "natural cosmetic finish", "concealer": "natural cosmetic finish",
+        "lipstick": "colour finish", "serum": "lightweight finish",
+        "moisturizer": "comfortable moisturised finish", "cream": "comfortable moisturised finish",
+        "sunscreen": "protective skincare finish", "fragrance": "fragranced finish",
+    }
+    absorption_by_type = {
+        "serum": "designed to layer within a skincare routine",
+        "moisturizer": "designed to absorb with gentle massage",
+        "cream": "designed to absorb with gentle massage",
+        "lotion": "spreadable and designed for routine absorption",
+        "oil": "emollient application with a conditioning after-feel",
+    }
+    routine_step_by_type = {
+        "cleanser": "cleanse", "toner": "tone and prepare", "serum": "targeted treatment",
+        "moisturizer": "moisturise", "cream": "moisturise", "sunscreen": "daytime protection",
+        "shampoo": "cleanse hair", "conditioner": "condition after shampooing",
+    }
+    routine_step = routine_step_by_type.get(inferred_type, "product-specific routine step")
+    targeted_labels = [label for label, concern in (
+        ("Dryness and dehydration", hydration), ("Fine lines and visible ageing", anti_ageing),
+        ("Uneven tone and pigmentation", pigmentation), ("Blemishes and congestion", acne),
+        ("Redness", redness), ("Sensitivity and comfort", sensitivity),
+        ("Scalp care", scalp_care), ("Hair density concerns", hair_growth),
+        ("Freshness", freshness),
+    ) if concern["targeting_status"] in {"explicit", "inferred"}]
+    if not targeted_labels:
+        targeted_labels = [f"Everyday {audience_type} maintenance"]
+
+    ingredient_names_lower = [str(item["ingredient_name"]).lower() for item in ingredients_list]
+    def count_terms(*terms: str) -> int:
+        return sum(any(term in ingredient for term in terms) for ingredient in ingredient_names_lower)
+    inci_stats = {
+        "total_ingredients": len(ingredients_list),
+        "allergen_count": count_terms("limonene", "linalool", "citral", "geraniol", "eugenol", "coumarin"),
+        "fragrance_count": count_terms("parfum", "fragrance", "aroma"),
+        "plant_extracts": count_terms("extract", "leaf", "root", "flower", "seed"),
+        "peptides": count_terms("peptide"),
+        "antioxidants": count_terms("tocopher", "ascorb", "vitamin e", "ferulic"),
+        "humectants": count_terms("glycerin", "hyaluron", "propanediol", "butylene glycol"),
+        "emollients_oils": count_terms("oil", "butter", "squalane", "triglyceride"),
+        "preservatives": count_terms("phenoxyethanol", "benzoate", "sorbate", "paraben"),
+        "evidence": [],
+        "confidence": 0.8 if ingredients_list else 0.5,
+    }
+
     return {
         "subcategory": product_type,
         "product_type": product_type,
@@ -562,6 +666,51 @@ def generate_deterministic_fallback(
         "texture": texture,
         "application_area": application_area,
         "target_audience": target_audience,
+        "brand_origin": make_inferred_categorical("Unverified", "Brand origin requires an explicit source.", 0.5),
+        "country_of_manufacture": make_inferred_categorical("Unverified", "Manufacturing country requires an explicit source.", 0.5),
+        "launch_year": make_inferred_categorical("Unverified", "Launch year requires an explicit source.", 0.5),
+        "product_positioning": make_inferred_categorical(
+            f"{audience_type.title()} for {need}", "Merchandising positioning inferred from product type and stated need.", 0.6
+        ),
+        "colour": make_inferred_categorical("Product dependent", "Colour is not explicit in the supplied source.", 0.5),
+        "finish": make_inferred_categorical(
+            finish_by_type.get(inferred_type, "product-appropriate finish"),
+            "Finish inferred conservatively from product type.", 0.56,
+        ),
+        "absorption_profile": make_inferred_categorical(
+            absorption_by_type.get(inferred_type, "application profile appropriate to product format"),
+            "Absorption and after-feel inferred from product format.", 0.55,
+        ),
+        "sensory_description": make_inferred_categorical(
+            f"{(texture.get('value') or 'cosmetic').title()} format with a {finish_by_type.get(inferred_type, 'product-appropriate finish')}.",
+            "Sensory summary inferred from texture and product type.", 0.57,
+        ),
+        "routine_time": make_inferred_categorical(
+            "morning and/or evening as appropriate", "Routine timing inferred from product type; packaging directions take precedence.", 0.55
+        ),
+        "routine_step": make_inferred_categorical(routine_step, "Routine step inferred from product type.", 0.62),
+        "application_sequence": make_inferred_categorical(
+            inferred_directions, "Sequence inferred from standard use of this product type.", 0.55
+        ),
+        "regulatory_notes": make_inferred_categorical(
+            "Follow market-specific packaging directions and warnings.",
+            "No product-specific regulatory statement was supplied.", 0.5,
+        ),
+        "product_credentials": {
+            "values": [f"{audience_type.title()} category", f"{need.title()} positioning"],
+            "value_status": "inferred", "evidence": [],
+            "reasoning_summary": "Merchandising credentials inferred from the product profile.", "confidence": 0.58,
+        },
+        "targeted_concerns": {
+            "values": targeted_labels, "value_status": "inferred", "evidence": [],
+            "reasoning_summary": "Concern list consolidated from the structured concern fields.", "confidence": 0.62,
+        },
+        "proprietary_technologies": {"items": [], "evidence": [], "confidence": 0.5},
+        "skin_type_scores": {
+            "scores": {name: 3 for name in ("normal", "dry", "very_dry", "combination", "oily", "sensitive")},
+            "evidence": [], "reasoning_summary": "Neutral fit scores pending product-specific evidence.", "confidence": 0.5,
+        },
+        "inci_stats": inci_stats,
         
         "vegan": detect_simple_claim("vegan", "vegan"),
         "cruelty_free": detect_simple_claim("cruelty-free", "cruelty_free"),
@@ -570,6 +719,10 @@ def generate_deterministic_fallback(
         "silicone_free": detect_simple_claim("silicone-free", "silicone_free"),
         "alcohol_free": detect_simple_claim("alcohol-free", "alcohol_free"),
         "fragrance_present": detect_simple_claim("fragrance", "fragrance_present"),
+        "phthalate_free": detect_simple_claim("phthalate-free", "phthalate_free"),
+        "dermatologically_tested": detect_simple_claim("dermatologically tested", "dermatologically_tested"),
+        "clinically_tested": detect_simple_claim("clinically tested", "clinically_tested"),
+        "ophthalmologically_tested": detect_simple_claim("ophthalmologically tested", "ophthalmologically_tested"),
         
         "hydration": hydration,
         "anti_ageing": anti_ageing,

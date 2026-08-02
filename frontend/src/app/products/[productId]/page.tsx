@@ -278,7 +278,13 @@ export default function ProductDetailPage() {
 
   const openOverrideModal = (fieldName: string, currentValue: any) => {
     setOverrideField(fieldName);
-    setOverrideValue(Array.isArray(currentValue) ? currentValue.join('\n') : (currentValue !== null && currentValue !== undefined ? String(currentValue) : ''));
+    setOverrideValue(
+      fieldName === 'target_audience' && Array.isArray(currentValue)
+        ? currentValue.join('\n')
+        : structuredOverrideFields.includes(fieldName) && currentValue !== null && currentValue !== undefined
+          ? JSON.stringify(currentValue, null, 2)
+          : (currentValue !== null && currentValue !== undefined ? String(currentValue) : '')
+    );
     setOverrideReason('');
     setShowOverride(true);
   };
@@ -295,6 +301,13 @@ export default function ProductDetailPage() {
       if (overrideField === 'target_audience') {
         parsedValue = overrideValue.split('\n').map(value => value.trim()).filter(Boolean);
         if (parsedValue.length !== 3) throw new Error("Enter exactly three customer profiles, one per line.");
+      }
+      if (structuredOverrideFields.includes(overrideField)) {
+        try {
+          parsedValue = JSON.parse(overrideValue);
+        } catch {
+          throw new Error("Structured fields must contain valid JSON.");
+        }
       }
       if (overrideValue.toLowerCase() === 'true') parsedValue = true;
       else if (overrideValue.toLowerCase() === 'false') parsedValue = false;
@@ -348,14 +361,26 @@ export default function ProductDetailPage() {
   // Editable fields registry listing
   const coreFields = [
     "subcategory", "product_type", "gender_target", "texture", "application_area",
+    "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
+    "colour", "finish", "absorption_profile", "sensory_description", "routine_time",
+    "routine_step", "application_sequence", "regulatory_notes",
     "vegan", "cruelty_free", "paraben_free", "sulfate_free",
-    "silicone_free", "alcohol_free", "fragrance_present"
+    "silicone_free", "alcohol_free", "fragrance_present", "phthalate_free",
+    "dermatologically_tested", "clinically_tested", "ophthalmologically_tested"
   ];
   const richFields = [
     "source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit",
     "fragrance_intelligence", "pregnancy_warning_observation",
-    "allergen_warning_observation", "sensitivity_warning_observation"
+    "allergen_warning_observation", "sensitivity_warning_observation",
+    "product_credentials", "targeted_concerns", "proprietary_technologies",
+    "skin_type_scores", "inci_stats", "ingredients_intelligence", "schema_org"
   ];
+  const claimOverrideFields = [
+    'vegan', 'cruelty_free', 'paraben_free', 'sulfate_free', 'silicone_free',
+    'alcohol_free', 'fragrance_present', 'phthalate_free', 'dermatologically_tested',
+    'clinically_tested', 'ophthalmologically_tested'
+  ];
+  const structuredOverrideFields = richFields.filter(field => field !== 'source_claims');
 
   const prettyStructuredValue = (value: any): string[] => {
     if (value === null || value === undefined || value === "") return ["No explicit source claim"];
@@ -370,6 +395,12 @@ export default function ProductDetailPage() {
     }
     if (typeof value === "object") {
       if (typeof value.value === "string") return [value.value];
+      if (Array.isArray(value.values)) return value.values.map((item: any) => String(item));
+      if (Array.isArray(value.items)) return value.items.map((item: any) =>
+        typeof item === 'object' ? `${item.name || 'Item'}: ${item.description || ''}` : String(item)
+      );
+      if (value.scores && typeof value.scores === 'object') return Object.entries(value.scores)
+        .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}/5`);
       return Object.entries(value)
         .filter(([, val]) => val !== null && val !== "" && !Array.isArray(val) && typeof val !== "object")
         .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}`);
@@ -973,7 +1004,7 @@ export default function ProductDetailPage() {
                   New Attribute Value
                 </label>
                 {/* Switch inputs dynamically for claims versus text fields */}
-                {overrideField === 'vegan' || overrideField === 'cruelty_free' || overrideField === 'fragrance_present' ? (
+                {overrideField && claimOverrideFields.includes(overrideField) ? (
                   <select 
                     className={styles.inputField}
                     value={overrideValue}
@@ -993,6 +1024,15 @@ export default function ProductDetailPage() {
                     placeholder="One customer profile per line (exactly 3)"
                     rows={4}
                     style={{ backgroundColor: '#0f172a', color: '#f1f5f9', border: '1px solid #334155' }}
+                  />
+                ) : overrideField && structuredOverrideFields.includes(overrideField) ? (
+                  <textarea
+                    className={styles.inputField}
+                    value={overrideValue}
+                    onChange={(e) => setOverrideValue(e.target.value)}
+                    placeholder="Enter valid JSON"
+                    rows={10}
+                    style={{ backgroundColor: '#0f172a', color: '#f1f5f9', border: '1px solid #334155', fontFamily: 'monospace' }}
                   />
                 ) : (
                   <input 

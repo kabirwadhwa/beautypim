@@ -115,6 +115,21 @@ def test_pdf_requires_authentication(client, db):
     assert response.status_code == 401
 
 
+def test_dossier_catalogue_fields_are_editable(client, db):
+    product = make_product(db)
+    for field_name, value in (
+        ("finish", "Velvety satin"),
+        ("skin_type_scores", {"scores": {"normal": 5, "dry": 4}}),
+        ("ingredients_intelligence", [{"ingredient_name": "Glycerin", "inci_position": 2}]),
+    ):
+        response = client.put(
+            f"/api/products/{product.id}",
+            headers=auth_headers(),
+            json={"field_name": field_name, "value": value, "reason": "Verified dossier correction."},
+        )
+        assert response.status_code == 200, response.text
+
+
 def test_detail_uses_description_and_image_from_existing_source_record(client, db):
     product = make_product(db)
     job = ImportJob(

@@ -71,7 +71,7 @@ class Settings(BaseSettings):
         ),
     )
     
-    PROMPT_VERSION: str = "2.5-retail-rag"
+    PROMPT_VERSION: str = "3.0-catalogue-dossier"
     SCHEMA_VERSION: str = "1.1"
     
     # AI Cost and Job Processing Controls
