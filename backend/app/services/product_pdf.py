@@ -13,7 +13,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Image, Paragraph, Table, TableStyle
+from reportlab.platypus import Flowable, Image, Paragraph, Table, TableStyle
 
 from app.services.image_urls import fetch_public_image
 
@@ -24,6 +24,34 @@ MUTED = colors.HexColor("#5D6470")
 LINE = colors.HexColor("#B8BEC8")
 PALE = colors.HexColor("#F5F7FA")
 WHITE = colors.white
+
+
+class LineIcon(Flowable):
+    """Small deterministic vector icon that renders reliably in server PDFs."""
+
+    def __init__(self, kind: str, size: float = 8 * mm):
+        super().__init__()
+        self.kind, self.width, self.height = kind, size, size
+
+    def draw(self):
+        c, w, h = self.canv, self.width, self.height
+        c.saveState(); c.setStrokeColor(NAVY); c.setFillColor(NAVY); c.setLineWidth(.7)
+        c.circle(w / 2, h / 2, min(w, h) * .42, fill=0, stroke=1)
+        if self.kind == "cross":
+            c.setLineWidth(1.4); c.line(w*.32, h*.5, w*.68, h*.5); c.line(w*.5, h*.32, w*.5, h*.68)
+        elif self.kind == "drop":
+            path = c.beginPath(); path.moveTo(w*.5, h*.75); path.curveTo(w*.68,h*.55,w*.68,h*.3,w*.5,h*.27); path.curveTo(w*.32,h*.3,w*.32,h*.55,w*.5,h*.75); c.drawPath(path)
+        elif self.kind == "flask":
+            c.line(w*.44,h*.7,w*.44,h*.55); c.line(w*.56,h*.7,w*.56,h*.55); c.line(w*.4,h*.7,w*.6,h*.7)
+            path=c.beginPath(); path.moveTo(w*.44,h*.55); path.lineTo(w*.3,h*.3); path.lineTo(w*.7,h*.3); path.lineTo(w*.56,h*.55); c.drawPath(path)
+        elif self.kind == "sun":
+            c.circle(w*.5,h*.5,w*.13,fill=0,stroke=1)
+            for x1,y1,x2,y2 in ((.5,.72,.5,.86),(.5,.14,.5,.28),(.14,.5,.28,.5),(.72,.5,.86,.5),(.25,.25,.35,.35),(.65,.65,.75,.75),(.25,.75,.35,.65),(.65,.35,.75,.25)): c.line(w*x1,h*y1,w*x2,h*y2)
+        elif self.kind == "moon":
+            path=c.beginPath(); path.moveTo(w*.62,h*.72); path.curveTo(w*.3,h*.65,w*.3,h*.3,w*.62,h*.25); path.curveTo(w*.45,h*.36,w*.45,h*.6,w*.62,h*.72); c.drawPath(path)
+        else:
+            c.circle(w*.5,h*.5,w*.11,fill=0,stroke=1); c.line(w*.35,h*.35,w*.65,h*.65)
+        c.restoreState()
 
 
 def _clean(value: Any, fallback: str = "") -> str:
@@ -90,14 +118,20 @@ def _draw(pdf: canvas.Canvas, flowable: Any, x: float, y: float, width: float,
 
 
 def _box(pdf: canvas.Canvas, x: float, y: float, width: float, height: float,
-         title: str | None = None, header: float = 4.7 * mm) -> None:
+         title: str | None = None, header: float = 4.7 * mm, dark_header: bool = True) -> None:
     pdf.setStrokeColor(LINE)
     pdf.setLineWidth(.35)
     pdf.rect(x, y, width, height, fill=0, stroke=1)
     if title:
-        pdf.setFillColor(NAVY)
-        pdf.rect(x, y + height - header, width, header, fill=1, stroke=0)
-        _draw(pdf, _p(title.upper(), "section"), x, y + height - header, width, header, pad=.5 * mm, bottom=True)
+        if dark_header:
+            pdf.setFillColor(NAVY)
+            pdf.rect(x, y + height - header, width, header, fill=1, stroke=0)
+            title_flowable = _p(title.upper(), "section")
+        else:
+            pdf.setStrokeColor(LINE)
+            pdf.line(x, y + height - header, x + width, y + height - header)
+            title_flowable = _p(title.upper(), "center_bold")
+        _draw(pdf, title_flowable, x, y + height - header, width, header, pad=.5 * mm, bottom=True)
 
 
 def _bullets(values: list[str], width: float, limit: int = 6) -> Table:
@@ -108,6 +142,17 @@ def _bullets(values: list[str], width: float, limit: int = 6) -> Table:
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 1), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
         ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+
+
+def _icon_bullets(values: list[str], width: float, limit: int = 6) -> Table:
+    rows = [[LineIcon("concern", 5 * mm), _p(value)] for value in values[:limit]]
+    if not rows:
+        rows = [[LineIcon("concern", 5 * mm), _p("Not enriched")]]
+    return Table(rows, colWidths=[7 * mm, width - 11 * mm], style=TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 0), (-1, -1), .7), ("BOTTOMPADDING", (0, 0), (-1, -1), .7),
     ]))
 
 
@@ -188,6 +233,13 @@ def build_product_pdf(product: Any) -> bytes:
     if _clean(field("fragrance_present")).lower() in {"no", "false"}:
         signals.append("FRAGRANCE FREE")
     signals = (signals or ["NO VERIFIED FORMULATION SIGNALS"])[:3]
+    inci_lower = inci.lower()
+    present_signals = []
+    if "alcohol denat" in inci_lower:
+        present_signals.append("Alcohol Denat.")
+    if any(term in inci_lower for term in ("parfum", "fragrance", "aroma")) or _yes(field("fragrance_present")):
+        present_signals.append("Fragrance")
+    presence_line = " & ".join(present_signals) + " present" if present_signals else "No additional presence signal recorded"
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4, pageCompression=1)
@@ -248,22 +300,18 @@ def build_product_pdf(product: Any) -> bytes:
     tested = [label for label, key in (("DERMATOLOGICALLY TESTED", "dermatologically_tested"),
               ("CLINICALLY TESTED", "clinically_tested"), ("OPHTHALMOLOGICALLY TESTED", "ophthalmologically_tested")) if _yes(field(key))]
     icon_labels = (credentials + tested + [product_type, country, "Not enriched"])[:3]
+    icon_kinds = ["flask", "cross", "drop"]
     for index, label in enumerate(icon_labels):
         iw = signal_w / 3
-        cx, cy = signal_x + iw * (index + .5), top_y + top_h - 6 * mm
-        pdf.setStrokeColor(NAVY)
-        pdf.circle(cx, cy, 3.1 * mm, fill=0, stroke=1)
-        pdf.setFont("Helvetica-Bold", 6.5)
-        pdf.setFillColor(NAVY)
-        pdf.drawCentredString(cx, cy - 1.8, "✓")
+        _draw(pdf, LineIcon(icon_kinds[index], 8 * mm), signal_x + iw * index, top_y + top_h - 10 * mm, iw, 9 * mm, pad=(iw - 8 * mm) / 2)
         _draw(pdf, _p(label.upper(), "center"), signal_x + iw * index, top_y + top_h - icon_h, iw, 7 * mm, pad=.5 * mm, bottom=True)
     form_h = top_h - icon_h - gap
-    _box(pdf, signal_x, top_y, signal_w, form_h, "Formulation Signals")
+    _box(pdf, signal_x, top_y, signal_w, form_h, "Formulation Signals", dark_header=False)
     for index, label in enumerate(signals):
         sw = signal_w / 3
         signal_copy = Paragraph(f"✓<br/>{escape(label)}", STYLES["center_bold"])
         _draw(pdf, signal_copy, signal_x + index * sw, top_y + 6 * mm, sw, 12 * mm, pad=.5 * mm)
-    _draw(pdf, _p(f"Fragrance: {fragrance}", "center"), signal_x, top_y, signal_w, 7 * mm, pad=.5 * mm, bottom=True)
+    _draw(pdf, _p(presence_line, "center"), signal_x, top_y, signal_w, 7 * mm, pad=.5 * mm, bottom=True)
 
     # Benefits, hero ingredients and concerns.
     y, row_h = top_y - gap - 48 * mm, 48 * mm
@@ -272,7 +320,19 @@ def build_product_pdf(product: Any) -> bytes:
     _box(pdf, xs[1], y, col_w, row_h, "Hero Ingredients & Technology")
     technologies = (field("proprietary_technologies") or {}).get("items", []) if isinstance(field("proprietary_technologies"), dict) else []
     ingredients = technologies[:3] or key_ingredients[:3]
-    hero_rows = [[_p(_name(item)[:1].upper(), "initial"), [_p(_name(item).upper(), "ingredient"), _p(_clean(item.get("description")) or _utility(item), "small")]] for item in ingredients]
+    hero_rows = []
+    for item in ingredients:
+        media: Any = _p(_name(item)[:1].upper(), "initial")
+        image_url = _clean(item.get("image_url"))
+        if image_url:
+            try:
+                media = Image(fetch_public_image(image_url), width=14.5 * mm, height=11.5 * mm, kind="proportional")
+            except Exception:
+                pass
+        hero_rows.append([
+            media,
+            [_p(_name(item).upper(), "ingredient"), _p(_clean(item.get("description")) or _utility(item), "small")],
+        ])
     if not hero_rows:
         hero_rows = [[_p("—", "initial"), [_p("NOT ENRICHED", "ingredient"), _p("No hero ingredient or technology is recorded.", "small")]]]
     hero_table = Table(hero_rows, colWidths=[16 * mm, col_w - 20 * mm], rowHeights=[13.2 * mm] * len(hero_rows), style=TableStyle([
@@ -283,7 +343,7 @@ def build_product_pdf(product: Any) -> bytes:
     ]))
     _draw(pdf, hero_table, xs[1], y, col_w, row_h - 4.7 * mm, pad=1.5 * mm)
     _box(pdf, xs[2], y, col_w, row_h, "Skin Concerns Targeted")
-    _draw(pdf, _bullets(concerns, col_w), xs[2], y, col_w, row_h - 4.7 * mm)
+    _draw(pdf, _icon_bullets(concerns, col_w), xs[2], y, col_w, row_h - 4.7 * mm)
 
     # Skin-fit, directions and sensory.
     y, row_h = y - gap - 34 * mm, 34 * mm
@@ -301,12 +361,19 @@ def build_product_pdf(product: Any) -> bytes:
     ]))
     _draw(pdf, fit_table, xs[0], y, col_w, row_h - 4.7 * mm)
     _box(pdf, xs[1], y, col_w, row_h, "How to Use")
-    use_copy = (
-        f"<b>Time:</b> {escape(_clean(field('routine_time'), 'Not enriched'))}<br/>"
-        f"<b>Step:</b> {escape(_clean(field('routine_step'), 'Not enriched'))}<br/>"
-        f"<b>Application:</b> {escape(_clean(field('application_sequence')) or directions)}"
-    )
-    _draw(pdf, Paragraph(use_copy, STYLES["body"]), xs[1], y, col_w, row_h - 4.7 * mm, pad=3 * mm)
+    sequence = _clean(field("application_sequence")) or directions
+    routine_step = _clean(field("routine_step"), "Not enriched")
+    morning_copy = f"<b>Morning:</b> {escape(sequence)} Step: {escape(routine_step)}."
+    evening_copy = f"<b>Evening:</b> {escape(sequence)} Step: {escape(routine_step)}."
+    use_table = Table([
+        [LineIcon("sun", 7 * mm), Paragraph(morning_copy, STYLES["body"])],
+        [LineIcon("moon", 7 * mm), Paragraph(evening_copy, STYLES["body"])],
+    ], colWidths=[10 * mm, col_w - 15 * mm], style=TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5 * mm),
+    ]))
+    _draw(pdf, use_table, xs[1], y, col_w, row_h - 4.7 * mm, pad=2 * mm)
     _box(pdf, xs[2], y, col_w, row_h, "Texture & Sensory")
     sensory_rows = [
         [_p("Texture:", "label"), _p(texture)], [_p("Color:", "label"), _p(field("colour"), fallback="Not enriched")],
@@ -325,9 +392,9 @@ def build_product_pdf(product: Any) -> bytes:
     y, row_h = y - gap - 46 * mm, 46 * mm
     inci_w = content_w * .72
     drivers_x, drivers_w = margin + inci_w + gap, content_w - inci_w - gap
-    _box(pdf, margin, y, inci_w, row_h, "Ingredients (INCI)")
+    _box(pdf, margin, y, inci_w, row_h, "Ingredients (INCI)", dark_header=False)
     _draw(pdf, _p(inci, "small"), margin, y, inci_w, row_h - 4.7 * mm, pad=2.4 * mm)
-    _box(pdf, drivers_x, y, drivers_w, row_h, "Ingredient Drivers (Top)")
+    _box(pdf, drivers_x, y, drivers_w, row_h, "Ingredient Drivers (Top)", dark_header=False)
     driver_rows = [[_p("INGREDIENT", "micro"), _p("FUNCTION / BENEFIT", "micro")]] + [
         [_p(_name(item), "micro"), _p(_utility(item), "micro")] for item in key_ingredients[:8]
     ]
@@ -337,8 +404,11 @@ def build_product_pdf(product: Any) -> bytes:
     # Detailed ingredient table.
     y, row_h = y - gap - 38 * mm, 38 * mm
     _box(pdf, margin, y, content_w, row_h, "Key Ingredients Breakdown")
-    headers = ["INCI NAME", "STANDARD", "COMMON NAME", "FUNCTION", "POSITION", "SHORT DESCRIPTION", "GROUP", "OTHER UTILITY"]
-    raw_widths = [22, 20, 22, 27, 13, 36, 24, 30]
+    headers = [
+        "INCI NAME", "STANDARD", "COMMON NAME", "CHEMICAL NAME / FUNCTION", "POSITION",
+        "SHORT DESCRIPTION", "SOURCE", "GROUP / FUNCTION", "OTHER UTILITY", "CAUTION / NOTES",
+    ]
+    raw_widths = [20, 19, 19, 24, 11, 29, 18, 20, 20, 18]
     scale = content_w / (sum(raw_widths) * mm)
     detail_rows = [[_p(header, "micro") for header in headers]]
     for index, item in enumerate(key_ingredients[:5], start=1):
@@ -351,8 +421,10 @@ def build_product_pdf(product: Any) -> bytes:
             _p(functions, "micro"),
             _p(str(item.get("inci_position") or index), "micro"),
             _p(_clean(item.get("short_description"), utility), "micro"),
+            _p(_clean(item.get("source_origin"), "Not enriched"), "micro"),
             _p(_clean(item.get("ingredient_group"), functions), "micro"),
             _p(_clean(item.get("other_utility"), utility), "micro"),
+            _p(_clean(item.get("possible_concerns"), "No recorded caution"), "micro"),
         ])
     _draw(pdf, _grid_table(detail_rows, [width * mm * scale for width in raw_widths], pale_first=True),
           margin, y, content_w, row_h - 4.7 * mm, pad=0)
@@ -371,13 +443,13 @@ def build_product_pdf(product: Any) -> bytes:
         ("Sensitivity Status", _clean(field("sensitivity_warning_observation"), "Not enriched")),
         ("Regulatory Notes", _clean(field("regulatory_notes"), "Not enriched")),
     ]
-    _box(pdf, bx[0], bottom_y, widths[0], bottom_h, "Caution Flags")
+    _box(pdf, bx[0], bottom_y, widths[0], bottom_h, "Caution Flags", dark_header=False)
     warning_rows = [[_p(label, "micro"), _p(text, "micro")] for label, text in warnings]
     warning_table = _grid_table(warning_rows, [widths[0] * .38, widths[0] * .62])
     warning_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), PALE)]))
     _draw(pdf, warning_table, bx[0], bottom_y, widths[0], bottom_h - 4.7 * mm, pad=0)
 
-    _box(pdf, bx[1], bottom_y, widths[1], bottom_h, "INCI Stats")
+    _box(pdf, bx[1], bottom_y, widths[1], bottom_h, "INCI Stats", dark_header=False)
     stats_data = field("inci_stats") if isinstance(field("inci_stats"), dict) else {}
     stats = [
         ("Total Ingredients", stats_data.get("total_ingredients", len(inci_items))),
@@ -395,19 +467,24 @@ def build_product_pdf(product: Any) -> bytes:
     stats_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), PALE)]))
     _draw(pdf, stats_table, bx[1], bottom_y, widths[1], bottom_h - 4.7 * mm, pad=0)
 
-    _box(pdf, bx[2], bottom_y, widths[2], bottom_h, "Other Utility")
+    _box(pdf, bx[2], bottom_y, widths[2], bottom_h, "Other Utility", dark_header=False)
     _draw(pdf, _bullets(benefits, widths[2], limit=4), bx[2], bottom_y, widths[2], bottom_h - 4.7 * mm, pad=1.2 * mm)
 
-    _box(pdf, bx[3], bottom_y, widths[3], bottom_h, "Product Identifier")
+    enriched_h = min(17 * mm, bottom_h * .28)
+    identifier_h = bottom_h - enriched_h - gap
+    _box(pdf, bx[3], bottom_y + identifier_h + gap, widths[3], enriched_h, "Enriched At", dark_header=False)
+    _draw(pdf, _p(data.get("updated_at"), "micro"), bx[3], bottom_y + identifier_h + gap,
+          widths[3], enriched_h - 4.7 * mm, pad=1.2 * mm)
+    _box(pdf, bx[3], bottom_y, widths[3], identifier_h, "Product Identifier", dark_header=False)
     identifier_rows = [[_p("Article Number", "micro")], [_p(data.get("internal_code"), "micro")],
-                       [_p("Brand", "micro")], [_p(brand, "micro")], [_p("GTIN / EAN", "micro")],
-                       [_p(gtin, "micro")], [_p("Updated", "micro")], [_p(data.get("updated_at"), "micro")]]
+                       [_p("Brand", "micro")], [_p(brand, "micro")], [_p("Product", "micro")],
+                       [_p(product_name, "micro")], [_p("GTIN / EAN", "micro")], [_p(gtin, "micro")]]
     identifier = _grid_table(identifier_rows, [widths[3]])
     identifier.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), PALE), ("BACKGROUND", (0, 2), (-1, 2), PALE),
                                     ("BACKGROUND", (0, 4), (-1, 4), PALE), ("BACKGROUND", (0, 6), (-1, 6), PALE)]))
-    _draw(pdf, identifier, bx[3], bottom_y, widths[3], bottom_h - 4.7 * mm, pad=0)
+    _draw(pdf, identifier, bx[3], bottom_y, widths[3], identifier_h - 4.7 * mm, pad=0)
 
-    _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Schema.org Structured Data")
+    _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Schema.org Structured Data", dark_header=False)
     schema = field("schema_org") or {"status": "Not enriched"}
     _draw(pdf, _p(json.dumps(schema, ensure_ascii=True, separators=(", ", ": ")), "micro"),
           bx[4], bottom_y, widths[4], bottom_h - 4.7 * mm, pad=1.3 * mm)
