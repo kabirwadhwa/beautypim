@@ -8,16 +8,18 @@ from datetime import datetime, timezone
 
 from app.database import SessionLocal
 from app.models import (
-    CanonicalProduct, CrawlJob, ImportJobItem, ProductVariant,
+    CanonicalProduct, ImportJobItem, ProductVariant,
     ScrapedProductObservation, SourceListing,
 )
 
 
 def reference_only_product_ids(db):
+    # Derive the cohort from normalized observation provenance rather than the
+    # crawl-job display domain, which changed across early importer versions.
     retail_jobs = {
-        row[0] for row in db.query(CrawlJob.id).filter(
-            CrawlJob.domain == "retail-data.invalid"
-        ).all()
+        row[0] for row in db.query(ScrapedProductObservation.crawl_job_id).filter(
+            ScrapedProductObservation.source_domain == "retail-data.invalid"
+        ).distinct().all()
     }
     observed = {
         row[0] for row in db.query(ScrapedProductObservation.canonical_product_id).filter(
