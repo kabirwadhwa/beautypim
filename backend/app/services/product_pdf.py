@@ -85,16 +85,16 @@ def _style(name: str, size: float, *, bold: bool = False, color=INK,
 
 
 STYLES = {
-    "hero": _style("hero", 16, bold=True, color=NAVY, leading=16.8),
-    "country": _style("country", 7.2, bold=True, color=MUTED),
-    "body": _style("body", 6.35, leading=7.55),
-    "small": _style("small", 5.45, leading=6.4),
-    "micro": _style("micro", 4.5, leading=5.15),
-    "label": _style("label", 6.1, bold=True, leading=7.25),
-    "section": _style("section", 6.35, bold=True, color=WHITE, leading=7, align=TA_CENTER),
-    "ingredient": _style("ingredient", 7, bold=True, color=NAVY, leading=8),
-    "center": _style("center", 5.25, leading=6, align=TA_CENTER),
-    "center_bold": _style("center_bold", 5.3, bold=True, color=NAVY, leading=6, align=TA_CENTER),
+    "hero": _style("hero", 17, bold=True, color=NAVY, leading=17.7),
+    "country": _style("country", 7.6, bold=True, color=MUTED),
+    "body": _style("body", 6.7, leading=7.9),
+    "small": _style("small", 5.8, leading=6.75),
+    "micro": _style("micro", 4.75, leading=5.45),
+    "label": _style("label", 6.4, bold=True, leading=7.5),
+    "section": _style("section", 6.65, bold=True, color=WHITE, leading=7.3, align=TA_CENTER),
+    "ingredient": _style("ingredient", 7.35, bold=True, color=NAVY, leading=8.3),
+    "center": _style("center", 5.55, leading=6.3, align=TA_CENTER),
+    "center_bold": _style("center_bold", 5.6, bold=True, color=NAVY, leading=6.35, align=TA_CENTER),
     "initial": _style("initial", 14, bold=True, color=WHITE, align=TA_CENTER),
 }
 
@@ -169,7 +169,8 @@ def _yes(value: Any) -> bool:
 
 
 def _grid_table(rows: list[list[Any]], widths: list[float], *, pale_first: bool = False,
-                font_padding: float = .65 * mm) -> Table:
+                font_padding: float = .65 * mm,
+                row_heights: list[float] | None = None) -> Table:
     commands = [
         ("GRID", (0, 0), (-1, -1), .25, LINE), ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), font_padding),
@@ -179,7 +180,8 @@ def _grid_table(rows: list[list[Any]], widths: list[float], *, pale_first: bool 
     ]
     if pale_first:
         commands.append(("BACKGROUND", (0, 0), (-1, 0), PALE))
-    return Table(rows, colWidths=widths, repeatRows=1 if pale_first else 0, style=TableStyle(commands))
+    return Table(rows, colWidths=widths, rowHeights=row_heights,
+                 repeatRows=1 if pale_first else 0, style=TableStyle(commands))
 
 
 def build_product_pdf(product: Any) -> bytes:
@@ -398,7 +400,11 @@ def build_product_pdf(product: Any) -> bytes:
     driver_rows = [[_p("INGREDIENT", "micro"), _p("FUNCTION / BENEFIT", "micro")]] + [
         [_p(_name(item), "micro"), _p(_utility(item), "micro")] for item in key_ingredients[:8]
     ]
-    _draw(pdf, _grid_table(driver_rows, [drivers_w * .48, drivers_w * .52], pale_first=True),
+    driver_height = (row_h - 4.7 * mm) / max(1, len(driver_rows))
+    _draw(pdf, _grid_table(
+        driver_rows, [drivers_w * .48, drivers_w * .52], pale_first=True,
+        row_heights=[driver_height] * len(driver_rows),
+    ),
           drivers_x, y, drivers_w, row_h - 4.7 * mm, pad=0)
 
     # Detailed ingredient table.
@@ -426,7 +432,11 @@ def build_product_pdf(product: Any) -> bytes:
             _p(_clean(item.get("other_utility"), utility), "micro"),
             _p(_clean(item.get("possible_concerns"), "No recorded caution"), "micro"),
         ])
-    _draw(pdf, _grid_table(detail_rows, [width * mm * scale for width in raw_widths], pale_first=True),
+    detail_height = (row_h - 4.7 * mm) / max(1, len(detail_rows))
+    _draw(pdf, _grid_table(
+        detail_rows, [width * mm * scale for width in raw_widths], pale_first=True,
+        row_heights=[detail_height] * len(detail_rows),
+    ),
           margin, y, content_w, row_h - 4.7 * mm, pad=0)
 
     # Bottom intelligence strip.
@@ -445,7 +455,11 @@ def build_product_pdf(product: Any) -> bytes:
     ]
     _box(pdf, bx[0], bottom_y, widths[0], bottom_h, "Caution Flags", dark_header=False)
     warning_rows = [[_p(label, "micro"), _p(text, "micro")] for label, text in warnings]
-    warning_table = _grid_table(warning_rows, [widths[0] * .38, widths[0] * .62])
+    warning_height = (bottom_h - 4.7 * mm) / max(1, len(warning_rows))
+    warning_table = _grid_table(
+        warning_rows, [widths[0] * .38, widths[0] * .62],
+        row_heights=[warning_height] * len(warning_rows),
+    )
     warning_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), PALE)]))
     _draw(pdf, warning_table, bx[0], bottom_y, widths[0], bottom_h - 4.7 * mm, pad=0)
 
@@ -463,7 +477,11 @@ def build_product_pdf(product: Any) -> bytes:
         ("Preservatives", stats_data.get("preservatives", 0)),
     ]
     stats_rows = [[_p(label, "micro"), _p(str(value), "micro")] for label, value in stats]
-    stats_table = _grid_table(stats_rows, [widths[1] * .72, widths[1] * .28])
+    stats_height = (bottom_h - 4.7 * mm) / max(1, len(stats_rows))
+    stats_table = _grid_table(
+        stats_rows, [widths[1] * .72, widths[1] * .28],
+        row_heights=[stats_height] * len(stats_rows),
+    )
     stats_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), PALE)]))
     _draw(pdf, stats_table, bx[1], bottom_y, widths[1], bottom_h - 4.7 * mm, pad=0)
 
