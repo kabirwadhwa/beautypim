@@ -244,6 +244,15 @@ def ensure_catalogue_coverage(
             data[field] = fallback[field]
     return data
 
+
+def prepare_provider_payload(
+    payload: Dict[str, Any], name: str, brand: str, description: str, raw_ingredients: str,
+) -> Dict[str, Any]:
+    """Merge partial model output over a complete safe schema before validation."""
+    fallback = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+    merged = {**fallback, **payload}
+    return ensure_catalogue_coverage(merged, name, brand, description, raw_ingredients)
+
 def normalize_and_validate_enrichment(data: Dict[str, Any], raw_ingredients: str) -> Dict[str, Any]:
     """Normalize provider vocabulary and reject ingredient observations not in source."""
     positive = {"explicit", "inferred", "targeted", "yes", "true"}
@@ -905,6 +914,9 @@ def run_ai_enrichment(
             parsed_data = normalize_provider_shapes(
                 normalize_null_confidences(json.loads(candidate_text))
             )
+            parsed_data = prepare_provider_payload(
+                parsed_data, name, brand, description, raw_ingredients
+            )
             parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
             parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
             parsed_data = ensure_catalogue_coverage(
@@ -1157,6 +1169,9 @@ def run_ai_enrichment(
         # Validate with Pydantic
         parsed_data = normalize_provider_shapes(
             normalize_null_confidences(json.loads(candidate_text))
+        )
+        parsed_data = prepare_provider_payload(
+            parsed_data, name, brand, description, raw_ingredients
         )
         
         # Ensure default array properties that model might omit

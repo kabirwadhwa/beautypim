@@ -9,6 +9,7 @@ from app.services.enrichment import (
     normalize_null_confidences,
     normalize_provider_shapes,
     normalize_and_validate_enrichment,
+    prepare_provider_payload,
 )
 
 
@@ -46,6 +47,20 @@ def test_provider_shape_drift_is_repaired_before_schema_validation():
     assert normalized["ingredients_intelligence"][0]["possible_concerns"] == [
         {"statement": "skin sensitization potential"}
     ]
+
+
+def test_partial_provider_dossier_is_completed_before_strict_validation():
+    partial = normalize_provider_shapes({
+        "subcategory": {"value": "serum", "value_status": "inferred", "confidence": 0.7, "evidence": []},
+        "phthalate_free": {"value": None, "claim_status": "unverified", "confidence": 0.5, "evidence": [], "reasoning_summary": "Not stated."},
+        "hydration": {"value": {"targeting_status": "inferred"}, "confidence": 0.7, "evidence": [], "reasoning_summary": "Hydrating wording."},
+    })
+    prepared = prepare_provider_payload(partial, "Hydrating Serum", "Example", "Hydrating face serum.", "Aqua, Glycerin")
+    validated = BeautyProductEnrichmentSchema.model_validate(prepared)
+    assert validated.subcategory.value == "serum"
+    assert validated.phthalate_free.value == "unverified"
+    assert validated.hydration.targeting_status == "explicit"
+    assert validated.product_positioning.value
 from app.services.ingredient_knowledge import (
     build_ingredient_grounding_context,
     ground_fallback_ingredients,
