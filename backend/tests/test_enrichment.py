@@ -5,8 +5,22 @@ from app.models import IngredientDefinition
 from app.services.enrichment import (
     ensure_catalogue_coverage,
     generate_deterministic_fallback,
+    normalize_null_confidences,
     normalize_and_validate_enrichment,
 )
+
+
+def test_null_provider_confidences_are_repaired_before_schema_validation():
+    payload = {
+        "vegan": {"confidence": None},
+        "benefits": [{"statement": "Hydration", "confidence": None}],
+        "subcategory": {"confidence": 0.8},
+    }
+
+    normalized = normalize_null_confidences(payload)
+    assert normalized["vegan"]["confidence"] == 0.5
+    assert normalized["benefits"][0]["confidence"] == 0.5
+    assert normalized["subcategory"]["confidence"] == 0.8
 from app.services.ingredient_knowledge import (
     build_ingredient_grounding_context,
     ground_fallback_ingredients,

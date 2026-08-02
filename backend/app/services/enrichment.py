@@ -38,6 +38,18 @@ BALANCED_INFERENCE_GUIDANCE = (
 UNKNOWN_VALUES = {"", "unknown", "none", "null", "nan", "not provided", "not_provided"}
 
 
+def normalize_null_confidences(payload: Any) -> Any:
+    """Repair a common provider JSON defect before strict schema validation."""
+    if isinstance(payload, dict):
+        return {
+            key: (0.5 if key == "confidence" and value is None else normalize_null_confidences(value))
+            for key, value in payload.items()
+        }
+    if isinstance(payload, list):
+        return [normalize_null_confidences(item) for item in payload]
+    return payload
+
+
 def _is_missing_field(payload: Any, key: str) -> bool:
     if not isinstance(payload, dict):
         return True
@@ -654,7 +666,7 @@ def run_ai_enrichment(
             complete_t = response_json.get("usage", {}).get("completion_tokens", calculate_token_count_rough(candidate_text))
             cost = (prompt_t * 0.00015 / 1000) + (complete_t * 0.0006 / 1000)
             
-            parsed_data = json.loads(candidate_text)
+            parsed_data = normalize_null_confidences(json.loads(candidate_text))
             parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()
             parsed_data = normalize_and_validate_enrichment(parsed_data, raw_ingredients)
             parsed_data = ensure_catalogue_coverage(
@@ -905,7 +917,7 @@ def run_ai_enrichment(
         cost = (prompt_t * 0.000075 / 1000) + (complete_t * 0.0003 / 1000)
 
         # Validate with Pydantic
-        parsed_data = json.loads(candidate_text)
+        parsed_data = normalize_null_confidences(json.loads(candidate_text))
         
         # Ensure default array properties that model might omit
         parsed_data = BeautyProductEnrichmentSchema.model_validate(parsed_data).model_dump()

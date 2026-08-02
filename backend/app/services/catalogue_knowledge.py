@@ -23,7 +23,7 @@ from app.services.deduplication import normalize_text
 
 
 MAX_OBSERVATIONS = 3
-MAX_RETAIL_EXAMPLES = 8
+MAX_RETAIL_EXAMPLES = 5
 MAX_FIELD_VALUES = 80
 MAX_TEXT_LENGTH = 12_000
 RETAIL_KNOWLEDGE_FIELDS = (
@@ -191,13 +191,29 @@ def _retail_knowledge_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get(field) not in (None, "", [], {})
     }
     # INCI and descriptions are useful but can dominate the model context.
-    for field, limit in (("description", 2_500), ("ingredient_text_raw", 4_000)):
+    for field, limit in (("description", 1_200), ("ingredient_text_raw", 1_500)):
         value = selected.get(field)
         if isinstance(value, str) and len(value) > limit:
             selected[field] = value[:limit] + "…"
+    preferred_keys = (
+        "ingredient_name", "normalized_inci_name", "name", "label",
+        "statement", "text", "value", "benefit", "concern",
+    )
     for field, value in list(selected.items()):
         if isinstance(value, list):
-            selected[field] = value[:30]
+            compact_items = []
+            for item in value[:12]:
+                if not isinstance(item, dict):
+                    compact_items.append(item)
+                    continue
+                compact = {
+                    key: item[key]
+                    for key in preferred_keys
+                    if item.get(key) not in (None, "", [], {})
+                }
+                if compact:
+                    compact_items.append(compact)
+            selected[field] = compact_items
     return _trim(selected)
 
 
