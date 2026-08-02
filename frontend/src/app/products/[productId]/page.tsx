@@ -347,7 +347,7 @@ export default function ProductDetailPage() {
 
   // Editable fields registry listing
   const coreFields = [
-    "product_type", "gender_target", "texture", "application_area",
+    "subcategory", "product_type", "gender_target", "texture", "application_area",
     "vegan", "cruelty_free", "paraben_free", "sulfate_free",
     "silicone_free", "alcohol_free", "fragrance_present"
   ];
