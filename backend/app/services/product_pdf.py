@@ -134,22 +134,28 @@ def _box(pdf: canvas.Canvas, x: float, y: float, width: float, height: float,
         _draw(pdf, title_flowable, x, y + height - header, width, header, pad=.5 * mm, bottom=True)
 
 
-def _bullets(values: list[str], width: float, limit: int = 6) -> Table:
+def _bullets(values: list[str], width: float, limit: int = 6,
+             fill_height: float | None = None) -> Table:
     rows = [[_p("✓", "center_bold"), _p(value)] for value in values[:limit]]
     if not rows:
         rows = [[_p("—", "center_bold"), _p("Not enriched")]]
-    return Table(rows, colWidths=[6 * mm, width - 10 * mm], style=TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    row_heights = [fill_height / len(rows)] * len(rows) if fill_height else None
+    return Table(rows, colWidths=[6 * mm, width - 10 * mm], rowHeights=row_heights,
+                 style=TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 1), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
         ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
     ]))
 
 
-def _icon_bullets(values: list[str], width: float, limit: int = 6) -> Table:
+def _icon_bullets(values: list[str], width: float, limit: int = 6,
+                  fill_height: float | None = None) -> Table:
     rows = [[LineIcon("concern", 5 * mm), _p(value)] for value in values[:limit]]
     if not rows:
         rows = [[LineIcon("concern", 5 * mm), _p("Not enriched")]]
-    return Table(rows, colWidths=[7 * mm, width - 11 * mm], style=TableStyle([
+    row_heights = [fill_height / len(rows)] * len(rows) if fill_height else None
+    return Table(rows, colWidths=[7 * mm, width - 11 * mm], rowHeights=row_heights,
+                 style=TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
         ("TOPPADDING", (0, 0), (-1, -1), .7), ("BOTTOMPADDING", (0, 0), (-1, -1), .7),
@@ -309,8 +315,9 @@ def build_product_pdf(product: Any) -> bytes:
         _draw(pdf, _p(label.upper(), "center"), signal_x + iw * index, top_y + top_h - icon_h, iw, 7 * mm, pad=.5 * mm, bottom=True)
     form_h = top_h - icon_h - gap
     _box(pdf, signal_x, top_y, signal_w, form_h, "Formulation Signals", dark_header=False)
+    signal_count = max(1, len(signals))
     for index, label in enumerate(signals):
-        sw = signal_w / 3
+        sw = signal_w / signal_count
         signal_copy = Paragraph(f"✓<br/>{escape(label)}", STYLES["center_bold"])
         _draw(pdf, signal_copy, signal_x + index * sw, top_y + 6 * mm, sw, 12 * mm, pad=.5 * mm)
     _draw(pdf, _p(presence_line, "center"), signal_x, top_y, signal_w, 7 * mm, pad=.5 * mm, bottom=True)
@@ -318,7 +325,9 @@ def build_product_pdf(product: Any) -> bytes:
     # Benefits, hero ingredients and concerns.
     y, row_h = top_y - gap - 48 * mm, 48 * mm
     _box(pdf, xs[0], y, col_w, row_h, "Key Benefits")
-    _draw(pdf, _bullets(benefits, col_w), xs[0], y, col_w, row_h - 4.7 * mm)
+    panel_fill_h = row_h - 8.7 * mm
+    _draw(pdf, _bullets(benefits, col_w, fill_height=panel_fill_h),
+          xs[0], y, col_w, row_h - 4.7 * mm)
     _box(pdf, xs[1], y, col_w, row_h, "Hero Ingredients & Technology")
     technologies = (field("proprietary_technologies") or {}).get("items", []) if isinstance(field("proprietary_technologies"), dict) else []
     ingredients = technologies[:3] or key_ingredients[:3]
@@ -345,7 +354,8 @@ def build_product_pdf(product: Any) -> bytes:
     ]))
     _draw(pdf, hero_table, xs[1], y, col_w, row_h - 4.7 * mm, pad=1.5 * mm)
     _box(pdf, xs[2], y, col_w, row_h, "Skin Concerns Targeted")
-    _draw(pdf, _icon_bullets(concerns, col_w), xs[2], y, col_w, row_h - 4.7 * mm)
+    _draw(pdf, _icon_bullets(concerns, col_w, fill_height=panel_fill_h),
+          xs[2], y, col_w, row_h - 4.7 * mm)
 
     # Skin-fit, directions and sensory.
     y, row_h = y - gap - 34 * mm, 34 * mm
@@ -357,7 +367,9 @@ def build_product_pdf(product: Any) -> bytes:
         key = label.lower().replace(" ", "_")
         score = max(0, min(5, int(fit_scores.get(key, 0) or 0)))
         fit_rows.append([_p(label), _p(("● " * score + "o " * (5 - score)).strip(), "center_bold")])
-    fit_table = Table(fit_rows, colWidths=[25 * mm, col_w - 29 * mm], style=TableStyle([
+    fit_height = (row_h - 8.7 * mm) / len(fit_rows)
+    fit_table = Table(fit_rows, colWidths=[25 * mm, col_w - 29 * mm],
+                      rowHeights=[fit_height] * len(fit_rows), style=TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), .2 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), .2 * mm),
     ]))
@@ -383,7 +395,9 @@ def build_product_pdf(product: Any) -> bytes:
         [_p("Fragrance:", "label"), _p(fragrance)],
         [_p("Absorption:", "label"), _p(field("absorption_profile"), fallback="Not enriched")],
     ]
-    sensory = Table(sensory_rows, colWidths=[18 * mm, col_w - 22 * mm], style=TableStyle([
+    sensory_height = (row_h - 8.7 * mm) / len(sensory_rows)
+    sensory = Table(sensory_rows, colWidths=[18 * mm, col_w - 22 * mm],
+                    rowHeights=[sensory_height] * len(sensory_rows), style=TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), .25 * mm),
         ("BOTTOMPADDING", (0, 0), (-1, -1), .25 * mm),
@@ -395,7 +409,36 @@ def build_product_pdf(product: Any) -> bytes:
     inci_w = content_w * .72
     drivers_x, drivers_w = margin + inci_w + gap, content_w - inci_w - gap
     _box(pdf, margin, y, inci_w, row_h, "Ingredients (INCI)", dark_header=False)
-    _draw(pdf, _p(inci, "small"), margin, y, inci_w, row_h - 4.7 * mm, pad=2.4 * mm)
+    inci_content_h = row_h - 4.7 * mm
+    if 1 < len(inci_items) <= 16:
+        columns = 4
+        ingredient_rows = []
+        for start in range(0, len(inci_items), columns):
+            cells = [_p(f"{index + 1:02d}  {name}", "small")
+                     for index, name in enumerate(inci_items[start:start + columns], start=start)]
+            cells.extend([_p("")] * (columns - len(cells)))
+            ingredient_rows.append(cells)
+        raw_copy = Paragraph(f"<b>Exact formulation:</b> {escape(inci)}", STYLES["body"])
+        formula_rows = [[raw_copy] + [_p("")] * (columns - 1)] + ingredient_rows
+        raw_h = 13 * mm
+        index_h = max(4 * mm, (inci_content_h - raw_h) / max(1, len(ingredient_rows)))
+        formula_table = Table(
+            formula_rows, colWidths=[(inci_w - 4 * mm) / columns] * columns,
+            rowHeights=[raw_h] + [index_h] * len(ingredient_rows),
+            style=TableStyle([
+                ("SPAN", (0, 0), (-1, 0)),
+                ("BACKGROUND", (0, 1), (-1, -1), PALE),
+                ("GRID", (0, 1), (-1, -1), .3, LINE),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 1.4 * mm),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 1.4 * mm),
+                ("TOPPADDING", (0, 0), (-1, -1), .7 * mm),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), .7 * mm),
+            ]),
+        )
+        _draw(pdf, formula_table, margin, y, inci_w, inci_content_h, pad=2 * mm)
+    else:
+        _draw(pdf, _p(inci, "body"), margin, y, inci_w, inci_content_h, pad=2.4 * mm)
     _box(pdf, drivers_x, y, drivers_w, row_h, "Ingredient Drivers (Top)", dark_header=False)
     driver_rows = [[_p("INGREDIENT", "micro"), _p("FUNCTION / BENEFIT", "micro")]] + [
         [_p(_name(item), "micro"), _p(_utility(item), "micro")] for item in key_ingredients[:8]
