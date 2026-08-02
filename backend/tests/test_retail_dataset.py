@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ from app.scraping.dataset_import import (
     import_summary,
 )
 from app.models import CanonicalProduct, ScrapedProductObservation
+from app.services.catalogue_knowledge import build_catalogue_knowledge_context
 
 
 def record(record_id="3400000000001"):
@@ -120,3 +122,26 @@ def test_dataset_import_resumes_same_job_from_committed_progress(db, tmp_path):
     assert resumed.id == job.id
     assert result["status"] == "completed"
     assert result["products_persisted"] == 2
+
+
+def test_retail_corpus_retrieves_comparable_products_for_enrichment(db, tmp_path):
+    path = tmp_path / "knowledge-products.json"
+    path.write_text(json.dumps([record()]), encoding="utf-8")
+    import_retail_export(db, str(path))
+
+    context = build_catalogue_knowledge_context(
+        db,
+        uuid.uuid4(),
+        product_name="Golden Glow Vitamin C Serum",
+        brand="A New Brand",
+        category="Skincare",
+        product_family="Serum",
+        description="Brightening niacinamide face serum for radiance",
+    )
+
+    assert context["retail_reference_matches"] == []
+    examples = context["retail_knowledge_examples"]
+    assert len(examples) == 1
+    assert examples[0]["similarity_score"] > 0
+    assert examples[0]["data"]["product_name"] == "Radiance Serum"
+    assert "supports inference, not direct claims" in examples[0]["knowledge_role"]

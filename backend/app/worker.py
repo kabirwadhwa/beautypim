@@ -267,6 +267,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         gtin=raw_ean or "",
         category=raw_category,
         product_family=raw_product_family,
+        description=raw_desc,
     )
     if catalogue_context:
         enrichment_source_context["_beautypim_catalogue_knowledge"] = catalogue_context

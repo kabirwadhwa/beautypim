@@ -71,7 +71,7 @@ class Settings(BaseSettings):
         ),
     )
     
-    PROMPT_VERSION: str = "2.4-retail-reference-kb"
+    PROMPT_VERSION: str = "2.5-retail-rag"
     SCHEMA_VERSION: str = "1.1"
     
     # AI Cost and Job Processing Controls
