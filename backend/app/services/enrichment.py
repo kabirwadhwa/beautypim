@@ -612,7 +612,10 @@ def run_ai_enrichment(
             "to normalize INCI names and report declared cosmetic functions. It is informative and "
             "does not establish safety, legal compliance, product benefits, or brand claims. "
             "When _beautypim_catalogue_knowledge is supplied, it contains observations matched to "
-            "this exact product. Use its direct values as source-backed evidence, retain its source "
+            "this product plus separately labelled taxonomy-only examples. Use retail_reference_matches "
+            "only when their exact-match basis is supplied. Use retail_taxonomy_examples only to choose "
+            "category vocabulary; never transfer their claims, ingredients, benefits or compliance fields. "
+            "Use direct exact-product values as source-backed evidence, retain their source "
             "URLs in evidence or reasoning, and surface contradictions instead of resolving them "
             "by invention. Never transfer attributes from a different product. "
             "Only report a pregnancy ingredient observation when a named retinoid is explicitly present as an INCI item. Never infer retinol from product type, benefits, marketing language, or unrelated oils. Keep any observation factual and make no medical safety conclusion."
@@ -774,6 +777,9 @@ def run_ai_enrichment(
         "The supplied ingredient reference context contains exact glossary matches. Use it only "
         "to normalize INCI names and report declared cosmetic functions. It is informative and "
         "does not establish safety, legal compliance, product benefits, or brand claims. "
+        "When _beautypim_catalogue_knowledge is supplied, use retail_reference_matches only for an exact "
+        "barcode or exact brand/name match. Taxonomy examples may guide category vocabulary only and must "
+        "never donate claims, ingredients, benefits or compliance attributes. "
         "Only report a pregnancy ingredient observation when a named retinoid is explicitly present as an INCI item. Never infer retinol from product type, benefits, marketing language, or unrelated oils. Keep any observation factual and make no medical safety conclusion."
     )
 

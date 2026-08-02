@@ -8,6 +8,7 @@ from app.scraping.dataset_import import (
     import_retail_export,
     import_summary,
 )
+from app.models import CanonicalProduct, ScrapedProductObservation
 
 
 def record(record_id="3400000000001"):
@@ -91,8 +92,10 @@ def test_dataset_import_persists_products_provenance_and_is_idempotent(db, tmp_p
     assert result["status"] == "partially_completed"
     assert result["products_persisted"] == 2
     assert result["products_failed"] == 1
-    assert result["drafts"] == 1
-    assert result["matched"] == 1
+    assert result["drafts"] == 2
+    assert result["matched"] == 0
+    assert db.query(CanonicalProduct).count() == 0
+    assert db.query(ScrapedProductObservation).count() == 2
     assert "missing its product name or brand" in result["error_summary"]
 
     repeated = import_retail_export(db, str(path))

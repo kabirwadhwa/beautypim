@@ -119,9 +119,12 @@ def evaluate_match(
 
     # 1. Exact GTIN Match (Variant level)
     if raw_gtin:
-        variant = db.query(ProductVariant).filter(
+        variant = db.query(ProductVariant).join(
+            CanonicalProduct, CanonicalProduct.id == ProductVariant.canonical_product_id
+        ).filter(
             ProductVariant.gtin == raw_gtin, 
-            ProductVariant.is_deleted == False
+            ProductVariant.is_deleted == False,
+            CanonicalProduct.is_deleted == False,
         ).first()
         if variant:
             return "exact_match", 1.0, variant.canonical_product_id, variant.id

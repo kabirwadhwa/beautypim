@@ -261,7 +261,12 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
     # exact canonical product. Similar-but-unmatched products are never included.
     enrichment_source_context = dict(raw_data)
     catalogue_context = build_catalogue_knowledge_context(
-        db, item.canonical_product_id
+        db, item.canonical_product_id,
+        product_name=raw_name,
+        brand=raw_brand,
+        gtin=raw_ean or "",
+        category=raw_category,
+        product_family=raw_product_family,
     )
     if catalogue_context:
         enrichment_source_context["_beautypim_catalogue_knowledge"] = catalogue_context

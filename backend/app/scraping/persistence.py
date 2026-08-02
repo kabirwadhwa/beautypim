@@ -79,7 +79,7 @@ def _match(db: Session, product: ScrapedProduct):
 
 def persist_product(
     db: Session, job: CrawlJob, raw_page: RawPageObservation,
-    product: ScrapedProduct, adapter: ProductAdapter,
+    product: ScrapedProduct, adapter: ProductAdapter, *, create_unmatched_draft: bool = True,
 ) -> ScrapedProductObservation:
     payload = product.model_dump(mode="json", exclude={"fields"})
     structured_hash = stable_hash(payload)
@@ -101,7 +101,7 @@ def persist_product(
 
     match_status, score, canonical_id, variant_id = _match(db, product)
     suggested_product_id = canonical_id if match_status == "possible_match" else None
-    if match_status in {"unmatched", "possible_match"}:
+    if match_status in {"unmatched", "possible_match"} and create_unmatched_draft:
         brand = _brand(db, product.brand)
         category = _category(db, product.category_path)
         canonical = CanonicalProduct(
@@ -185,8 +185,9 @@ def persist_product(
             parser_version=product.parser_version,
         ))
 
-    _persist_values_and_conflicts(db, job, observation, product, match_status)
-    _persist_formulation(db, listing, canonical_id, variant_id, product)
+    if canonical_id:
+        _persist_values_and_conflicts(db, job, observation, product, match_status)
+        _persist_formulation(db, listing, canonical_id, variant_id, product)
     if product.price is not None and variant_id:
         db.add(SourcePrice(
             id=uuid.uuid4(), source_listing_id=listing.id,

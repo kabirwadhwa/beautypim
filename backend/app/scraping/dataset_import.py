@@ -198,7 +198,13 @@ def import_retail_export(
                 product.raw_payload_reference = (
                     f"{storage_reference}#record={record.get('_id') or processed + 1}"
                 )
-                persist_product(db, job, raw_page, product, adapter)
+                # Retail exports are an internal reference corpus. They may add
+                # provenance to an existing exact match, but never create rows
+                # in the user-facing canonical product catalogue.
+                persist_product(
+                    db, job, raw_page, product, adapter,
+                    create_unmatched_draft=False,
+                )
             processed += 1
             job.products_parsed = processed
             job.products_persisted = processed
