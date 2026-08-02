@@ -591,17 +591,6 @@ export default function ProductDetailPage() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 12 }}>
-              <div style={{ padding: 14, backgroundColor: 'rgba(99,102,241,.06)', borderRadius: 6, border: '1px solid #4f46e555' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 12, color: '#a5b4fc', fontWeight: 700, marginBottom: 8 }}>TARGET CUSTOMER PROFILES</div>
-                    <ul style={{ margin: 0, paddingLeft: 20, color: '#f1f5f9', lineHeight: 1.7 }}>
-                      {prettyStructuredValue(currentValDict.target_audience?.value).slice(0, 3).map((profile, index) => <li key={index}>{profile}</li>)}
-                    </ul>
-                  </div>
-                  <button onClick={() => openOverrideModal('target_audience', currentValDict.target_audience?.value)} className={`${styles.btn} ${styles.btnSecondary}`} style={{ alignSelf: 'start' }}>Override</button>
-                </div>
-              </div>
               {coreFields.map(field => {
                 const fv = currentValDict[field];
                 const isExpanded = !!expandedFields[field];
@@ -692,6 +681,17 @@ export default function ProductDetailPage() {
                   </div>
                 );
               })}
+              <div style={{ padding: 14, backgroundColor: 'rgba(99,102,241,.06)', borderRadius: 6, border: '1px solid #4f46e555' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#a5b4fc', fontWeight: 700, marginBottom: 8 }}>TARGET CUSTOMER PROFILES</div>
+                    <ul style={{ margin: 0, paddingLeft: 20, color: '#f1f5f9', lineHeight: 1.7 }}>
+                      {prettyStructuredValue(currentValDict.target_audience?.value).slice(0, 3).map((profile, index) => <li key={index}>{profile}</li>)}
+                    </ul>
+                  </div>
+                  <button onClick={() => openOverrideModal('target_audience', currentValDict.target_audience?.value)} className={`${styles.btn} ${styles.btnSecondary}`} style={{ alignSelf: 'start' }}>Override</button>
+                </div>
+              </div>
             </div>
           </div>
 
