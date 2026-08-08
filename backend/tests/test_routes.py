@@ -176,7 +176,13 @@ def test_guided_improvement_identity_research_discovery_and_selected_enrichment(
         source_listing_id=listing.id, canonical_product_id=product.id,
         status="completed", match_status="new_product", enrichment_status="succeeded",
     )
-    db.add_all([brand, product, job, listing, item])
+    db.add_all([brand, job])
+    db.flush()
+    db.add(product)
+    db.flush()
+    db.add(listing)
+    db.flush()
+    db.add(item)
     db.commit()
 
     identity = client.put(
