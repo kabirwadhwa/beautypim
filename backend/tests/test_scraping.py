@@ -76,6 +76,23 @@ def test_generic_jsonld_product_parsing():
     assert product.fields["product_name"].method == "json_ld"
 
 
+def test_generic_official_page_open_graph_fallback():
+    html = """
+    <html><head>
+      <meta property="og:title" content="Burberry Goddess Eau de Parfum" />
+      <meta property="og:description" content="A vanilla-led fragrance." />
+      <meta property="og:image" content="https://cdn.brand.example/goddess.jpg" />
+      <link rel="canonical" href="https://brand.example/goddess" />
+    </head><body><h1>Burberry Goddess</h1></body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://brand.example/c/goddess")
+
+    assert product.product_name == "Burberry Goddess Eau de Parfum"
+    assert product.description == "A vanilla-led fragrance."
+    assert product.image_urls == ["https://cdn.brand.example/goddess.jpg"]
+    assert product.fields["image_urls"].method == "open_graph"
+
+
 def test_retail_site_adapter_and_inci_order():
     product = RetailSiteAdapter().parse(
         (FIXTURES / "retail-product.html").read_text(),

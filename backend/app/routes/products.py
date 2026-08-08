@@ -359,6 +359,7 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
         score += sum(1 for token in product_tokens if token in title or token in url)
         score += 2 if candidate.get("image_url") else 0
         score -= 5 if any(part in url for part in ("/search", "/blog", "/article", "?q=")) else 0
+        score -= 3 if any(part in url for part in ("/c/", "/category", "/collection")) else 0
         return score
 
     candidates = sorted(candidates, key=candidate_score, reverse=True)

@@ -224,16 +224,25 @@ def run_crawl_job(db: Session, job_id):
                 classification = preclassified
                 item.page_type = classification.page_type
                 item.classification_reasons = classification.reasons
-                if classification.page_type == "product":
-                    job.product_pages_found += 1
+                is_targeted_research = bool((job.configuration or {}).get("research_product_id"))
+                should_attempt_product = classification.page_type == "product" or (
+                    is_targeted_research and classification.page_type == "unknown"
+                )
+                if should_attempt_product:
                     adapter = adapter_for(config.domain)
                     product = adapter.parse(html, result.final_url, country=config.country, locale=config.locale)
                     if product:
+                        job.product_pages_found += 1
+                        item.page_type = "product"
+                        item.classification_reasons = [
+                            *classification.reasons,
+                            "targeted research metadata extraction",
+                        ]
                         product.raw_payload_reference = storage_ref
                         job.products_parsed += 1
                         persist_product(db, job, raw, product, adapter)
                         job.products_persisted += 1
-                    else:
+                    elif classification.page_type == "product":
                         job.products_failed += 1
                 if classification.page_type in {"category", "pagination", "unknown"} or (
                     classification.page_type == "product" and config.use_category_discovery

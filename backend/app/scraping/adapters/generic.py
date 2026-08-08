@@ -111,8 +111,26 @@ class GenericJsonLdAdapter(ProductAdapter):
     def parse(self, html: str, url: str, *, country=None, locale=None):
         soup = BeautifulSoup(html, "html.parser")
         node = _product_node(soup)
+        extraction_method = "json_ld"
         if not node:
-            return None
+            # Some official brand pages expose product identity only through
+            # Open Graph metadata while rendering the catalogue client-side.
+            # The runner uses this fallback only for an explicitly selected
+            # product-research URL, not for blind domain crawling.
+            title = soup.select_one('meta[property="og:title"][content]')
+            description = soup.select_one('meta[property="og:description"][content], meta[name="description"][content]')
+            image = soup.select_one('meta[property="og:image"][content], meta[name="twitter:image"][content]')
+            brand = soup.select_one('meta[property="product:brand"][content]')
+            if not title or not title.get("content"):
+                return None
+            node = {
+                "@type": "Product",
+                "name": title.get("content"),
+                "description": description.get("content") if description else None,
+                "image": image.get("content") if image else None,
+                "brand": brand.get("content") if brand else None,
+            }
+            extraction_method = "open_graph"
         offers = node.get("offers") or {}
         if isinstance(offers, list):
             offers = offers[0] if offers else {}
@@ -184,7 +202,8 @@ class GenericJsonLdAdapter(ProductAdapter):
             if value not in (None, "", []):
                 product.fields[key] = ExtractedField(
                     value=value, raw_value=node.get(key, value),
-                    path=f"jsonld.Product.{key}", method="json_ld",
+                    path=(f"jsonld.Product.{key}" if extraction_method == "json_ld" else f"meta.og:{key}"),
+                    method=extraction_method,
                 )
         semantic_selectors = {
             "ingredient_text_raw": (
