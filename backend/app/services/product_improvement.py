@@ -89,7 +89,10 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     ).all()
     has_inci = any(_present(row.raw_inci_text) for row in formulations)
     coverage_fields = set(current)
-    if product.description:
+    description = (
+        current.get("description").value if current.get("description") else None
+    ) or _find_value(raw, "description", "product_description", "long_description")
+    if _present(description):
         coverage_fields.add("description")
     if product.image_url:
         coverage_fields.add("image_url")

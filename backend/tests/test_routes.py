@@ -2,7 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 import json
 import uuid
-from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, User, ProductVariant, ValidationIssue, Category
+from unittest.mock import patch
+from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing
 
 def test_database_dialect_matches_environment(db):
     dialect_name = db.bind.dialect.name
@@ -109,6 +110,112 @@ def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(cli
     assert str(product.id) not in [row["id"] for row in clear.json()]
     status_filtered = client.get("/api/products?status_filter=needs_review", headers=headers)
     assert str(product.id) in [row["id"] for row in status_filtered.json()]
+
+
+def test_improve_product_summary_opens_without_canonical_description_column(client: TestClient, db):
+    token = get_admin_token(client)
+    brand = Brand(id=uuid.uuid4(), name="Improve Test", normalized_name=f"improvetest{uuid.uuid4().hex}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Brightening Essence",
+        normalized_name="brighteningessence",
+    )
+    db.add_all([brand, product])
+    db.commit()
+
+    response = client.get(
+        f"/api/products/{product.id}/improvement",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["identity"]["product_name"] == "Brightening Essence"
+    assert "description" in response.json()["fields_recommended_for_research"]
+
+
+def test_product_classification_button_persists_and_writes_valid_audit(client: TestClient, db):
+    token = get_admin_token(client)
+    brand = Brand(id=uuid.uuid4(), name="Classify Test", normalized_name=f"classifytest{uuid.uuid4().hex}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Velvet Body Oil",
+        normalized_name="velvetbodyoil",
+    )
+    db.add_all([brand, product])
+    db.commit()
+
+    response = client.put(
+        f"/api/products/{product.id}/classification",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"category": "Body Care", "subcategory": "Body Oil"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["product_category"] == "Body Care"
+    assert response.json()["subcategory"] == "Body Oil"
+
+
+def test_guided_improvement_identity_research_discovery_and_selected_enrichment(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Guided Test", normalized_name=f"guidedtest{uuid.uuid4().hex}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Moonlight Eau de Parfum",
+        normalized_name="moonlighteaudeparfum",
+    )
+    job = ImportJob(
+        id=uuid.uuid4(), filename="guided.csv", file_hash=uuid.uuid4().hex,
+        status="completed", total_rows=1, processed_rows=1,
+        column_mapping={"product_name": "name", "brand": "brand"},
+    )
+    listing = SourceListing(
+        id=uuid.uuid4(), import_job_id=job.id, canonical_product_id=product.id,
+        raw_data={"name": product.product_name, "brand": brand.name},
+        source_hash=uuid.uuid4().hex,
+    )
+    item = ImportJobItem(
+        id=uuid.uuid4(), import_job_id=job.id, source_row_number=1,
+        source_listing_id=listing.id, canonical_product_id=product.id,
+        status="completed", match_status="new_product", enrichment_status="succeeded",
+    )
+    db.add_all([brand, product, job, listing, item])
+    db.commit()
+
+    identity = client.put(
+        f"/api/products/{product.id}/identity", headers=headers,
+        json={"format": "Eau de Parfum", "variant": "Original", "size": "50", "unit": "ml", "gtin": "1234567890123", "market": "FR"},
+    )
+    assert identity.status_code == 200, identity.text
+
+    with patch("app.services.web_discovery.discover_product_sources", return_value=[{
+        "title": "Official", "url": "https://brand.example/moonlight",
+        "domain": "brand.example", "provider": "test", "candidate_only": True,
+    }]):
+        discovery = client.post(
+            f"/api/products/{product.id}/discover-sources", headers=headers,
+            json={"approved_domains": ["brand.example"]},
+        )
+    assert discovery.status_code == 200, discovery.text
+    assert discovery.json()["results"][0]["candidate_only"] is True
+
+    with patch("app.scraping.url_safety.validate_public_url", return_value="brand.example"):
+        research = client.post(
+            f"/api/products/{product.id}/research", headers=headers,
+            json={"urls": ["https://brand.example/moonlight"], "refresh_interval_hours": 168},
+        )
+    assert research.status_code == 201, research.text
+    assert research.json()["status"] == "queued"
+
+    with patch("app.routes.products.process_item_enrichment") as process:
+        improved = client.post(
+            f"/api/products/{product.id}/improve", headers=headers,
+            json={"mode": "selected", "fields": ["benefits", "directions"]},
+        )
+    assert improved.status_code == 200, improved.text
+    assert process.call_args.kwargs["mode"] == "selected"
+    assert process.call_args.kwargs["selected_fields"] == ["benefits", "directions"]
+
+    results = client.get(f"/api/products/{product.id}/research-results", headers=headers)
+    assert results.status_code == 200
+    assert results.json() == []
 
 
 def test_taxonomy_crud_and_guards(client: TestClient, db):

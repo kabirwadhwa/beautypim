@@ -100,7 +100,7 @@ def _set_product_classification(db: Session, product: CanonicalProduct, category
         )
     record_audit(
         db, entity_type="canonical_product", entity_id=product.id,
-        display_label=product.product_name, action="classification_updated",
+        display_label=product.product_name, action="update",
         before={"category_id": before_category, "subcategory": before_subcategory},
         after={"category_id": str(child.id), "category": category_name, "subcategory": subcategory_name},
         changed={"category": [before_category, category_name], "subcategory": [before_subcategory, subcategory_name]},
@@ -871,8 +871,15 @@ def update_product_classification(
     ).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
-    _set_product_classification(db, product, payload.category, payload.subcategory, current_user)
-    db.commit()
+    try:
+        _set_product_classification(db, product, payload.category, payload.subcategory, current_user)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Classification could not be saved: {exc}") from exc
     return get_product_detail(product_id, db, current_user)
 
 @router.put("/{product_id}", response_model=ProductDetailOut, dependencies=[Depends(rate_limit("edit_product", "30/minute"))])

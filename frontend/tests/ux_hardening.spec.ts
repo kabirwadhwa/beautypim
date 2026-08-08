@@ -53,6 +53,17 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     // Ensure we are on the product detail page
     await expect(page.locator('h1')).toContainText('Cloud Hydrating Masque');
 
+    // Guided improvement must open as a usable workflow rather than surfacing a fetch error.
+    await page.getByRole('button', { name: 'Improve Product', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Improve Product', exact: true })).toBeVisible();
+    await expect(page.getByText('Confirm product identity', { exact: true })).toBeVisible();
+    await expect(page.getByText('Research official or approved pages', { exact: true })).toBeVisible();
+    await expect(page.getByText('Re-enrich with control', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Refresh selected fields', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Run improvement', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close improve product', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Improve Product', exact: true })).not.toBeVisible();
+
     // 6. Test collapsible validation severity groups
     await expect(page.getByText(/Validation Warning Alerts/)).toBeVisible();
     const blockingBtn = page.locator('button:has-text("Blocking Errors")');
