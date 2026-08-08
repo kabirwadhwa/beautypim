@@ -30,6 +30,15 @@ def source_value(raw_data: Dict[str, Any], mapping: Dict[str, str], field_name: 
     return str(value).strip()
 
 
+def normalize_gtin_value(value: Any) -> Optional[str]:
+    """Normalize CSV/Excel identifiers without turning a decimal suffix into a digit."""
+    import re
+    text = str(value or "").strip()
+    text = re.sub(r"\.0+$", "", text)
+    digits = re.sub(r"\D", "", text)
+    return digits if len(digits) in {8, 12, 13, 14} else None
+
+
 def inferred_category_name(product_type: str, application_area: str = "") -> str:
     text = f"{product_type} {application_area}".lower()
     category_rules = (
@@ -400,7 +409,7 @@ def process_item_enrichment(
     raw_brand = source_value(raw_data, mapping, "brand")
     raw_desc = source_value(raw_data, mapping, "description")
     raw_ingr = source_value(raw_data, mapping, "ingredients")
-    raw_ean = source_value(raw_data, mapping, "ean") or None
+    raw_ean = normalize_gtin_value(source_value(raw_data, mapping, "ean"))
     raw_size = source_value(raw_data, mapping, "size") or None
     raw_category = source_value(raw_data, mapping, "category")
     raw_product_family = source_value(raw_data, mapping, "product_family")
@@ -427,7 +436,7 @@ def process_item_enrichment(
 
     raw_desc = raw_desc or str(first_researched("description", "subtitle") or "")
     raw_ingr = raw_ingr or str(first_researched("ingredient_text_raw") or "")
-    raw_ean = raw_ean or first_researched("gtin", "ean", "upc")
+    raw_ean = raw_ean or normalize_gtin_value(first_researched("gtin", "ean", "upc"))
     raw_size = raw_size or first_researched("size")
     researched_claims = first_researched("claims") or []
     raw_claims = raw_claims or "; ".join(researched_claims)
@@ -457,7 +466,8 @@ def process_item_enrichment(
 
     variant = db.query(ProductVariant).filter(ProductVariant.id == item.product_variant_id).first()
     if variant:
-        if raw_ean and not variant.gtin:
+        current_gtin = normalize_gtin_value(variant.gtin)
+        if raw_ean and (not variant.gtin or current_gtin != variant.gtin):
             duplicate = db.query(ProductVariant).filter(
                 ProductVariant.gtin == str(raw_ean), ProductVariant.id != variant.id,
             ).first()
