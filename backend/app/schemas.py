@@ -99,6 +99,7 @@ class MappingTemplateOut(MappingTemplateBase):
 class ImportJobOut(BaseModel):
     id: uuid.UUID
     filename: str
+    source_name: Optional[str] = None
     file_hash: str
     status: str
     total_rows: int
@@ -152,18 +153,20 @@ class AudienceProfilesFieldSchema(BaseModel):
     reasoning_summary: str
     confidence: float
 
-class ClaimFieldSchema(BaseModel):
-    value: str
-    claim_status: str
+class StructuredClaimSchema(BaseModel):
+    name: str
+    value: Optional[str] = None
+    status: Literal["verified", "source_supported", "unverified", "conflicting", "unknown"] = "unknown"
     evidence: List[EvidenceItemSchema] = []
-    reasoning_summary: str
-    confidence: float
+    reasoning_summary: str = ""
+    confidence: float = 0.5
 
-class ConcernFieldSchema(BaseModel):
-    targeting_status: str
+class WarningConsiderationSchema(BaseModel):
+    type: Literal["allergen", "sensitivity", "regulatory", "pregnancy", "other"]
+    observation: str
     evidence: List[EvidenceItemSchema] = []
-    reasoning_summary: str
-    confidence: float
+    source_status: Literal["source_supported", "unverified", "conflicting", "unknown"] = "unknown"
+    confidence: float = 0.5
 
 class BenefitSchema(BaseModel):
     statement: str
@@ -193,46 +196,45 @@ class HairTypeFitSchema(BaseModel):
     evidence: List[EvidenceItemSchema] = []
     confidence: Optional[float] = None
 
-class FragranceIntelligenceSchema(BaseModel):
-    applicable: bool
-    fragrance_presence_status: str
-    fragrance_family: Optional[str] = None
-    top_notes: List[str] = []
-    middle_notes: List[str] = []
-    base_notes: List[str] = []
-    concentration: Optional[str] = None
-    longevity_profile: Optional[str] = None
-    sillage_projection: Optional[str] = None
-    seasonal_fit: List[str] = []
-    occasion_fit: List[str] = []
-    evidence: List[EvidenceItemSchema] = []
-    confidence: Optional[float] = None
-
-class ReviewObservationSchema(BaseModel):
-    observation_domain: str
-    review_required: bool
-    observation_type: str
-    observed_items: List[str] = []
-    evidence: List[EvidenceItemSchema] = []
-    review_message: str
-    confidence: float
-
 class IngredientIntelligenceSchema(BaseModel):
     ingredient_name: str
-    normalized_inci_name: Optional[str] = None
-    common_name: Optional[str] = None
-    source_origin: Optional[str] = None
     inci_position: Optional[int] = None
-    ingredient_group: Optional[str] = None
     short_description: Optional[str] = None
-    other_utility: Optional[str] = None
     functions: List[str] = []
     benefits: List[str] = []
     possible_concerns: List[Dict[str, Any]] = []
     is_key_ingredient: bool
     key_ingredient_status: str
+
+class SkincareModuleSchema(BaseModel):
+    skin_types: SkinTypeFitSchema
+    texture: Optional[CategoricalFieldSchema] = None
+    finish: Optional[CategoricalFieldSchema] = None
+    key_ingredients: List[IngredientIntelligenceSchema] = []
+
+class HaircareModuleSchema(BaseModel):
+    hair_types: HairTypeFitSchema
+    texture_format: Optional[CategoricalFieldSchema] = None
+    key_ingredients: List[IngredientIntelligenceSchema] = []
+
+class MakeupModuleSchema(BaseModel):
+    shade_colour: Optional[CategoricalFieldSchema] = None
+    coverage: Optional[CategoricalFieldSchema] = None
+    finish: Optional[CategoricalFieldSchema] = None
+    texture_format: Optional[CategoricalFieldSchema] = None
+
+class FragranceModuleSchema(BaseModel):
+    concentration: Optional[str] = None
+    fragrance_family: Optional[str] = None
+    top_notes: List[str] = []
+    heart_notes: List[str] = []
+    base_notes: List[str] = []
+    longevity: Optional[str] = None
+    sillage_projection: Optional[str] = None
+    seasonal_fit: List[str] = []
+    occasion_fit: List[str] = []
     evidence: List[EvidenceItemSchema] = []
-    confidence: float
+    confidence: float = 0.5
 
 class StringListFieldSchema(BaseModel):
     values: List[str] = []
@@ -241,96 +243,24 @@ class StringListFieldSchema(BaseModel):
     reasoning_summary: str = ""
     confidence: float = 0.5
 
-class TechnologyItemSchema(BaseModel):
-    name: str
-    description: str
-    related_ingredients: List[str] = []
-    image_url: Optional[str] = None
-    source_status: str = "inferred"
-
-class TechnologyProfileSchema(BaseModel):
-    items: List[TechnologyItemSchema] = []
-    evidence: List[EvidenceItemSchema] = []
-    confidence: float = 0.5
-
-class SkinTypeScoresSchema(BaseModel):
-    scores: Dict[str, int] = {}
-    evidence: List[EvidenceItemSchema] = []
-    reasoning_summary: str = ""
-    confidence: float = 0.5
-
-class InciStatsSchema(BaseModel):
-    total_ingredients: int = 0
-    allergen_count: int = 0
-    fragrance_count: int = 0
-    plant_extracts: int = 0
-    peptides: int = 0
-    antioxidants: int = 0
-    humectants: int = 0
-    emollients_oils: int = 0
-    preservatives: int = 0
-    evidence: List[EvidenceItemSchema] = []
-    confidence: float = 0.5
-
 class BeautyProductEnrichmentSchema(BaseModel):
     subcategory: CategoricalFieldSchema
     product_type: CategoricalFieldSchema
-    gender_target: CategoricalFieldSchema
-    texture: CategoricalFieldSchema
     application_area: CategoricalFieldSchema
     target_audience: AudienceProfilesFieldSchema
-
-    brand_origin: Optional[CategoricalFieldSchema] = None
-    country_of_manufacture: Optional[CategoricalFieldSchema] = None
-    launch_year: Optional[CategoricalFieldSchema] = None
     product_positioning: Optional[CategoricalFieldSchema] = None
-    colour: Optional[CategoricalFieldSchema] = None
-    finish: Optional[CategoricalFieldSchema] = None
-    absorption_profile: Optional[CategoricalFieldSchema] = None
     sensory_description: Optional[CategoricalFieldSchema] = None
     routine_time: Optional[CategoricalFieldSchema] = None
     routine_step: Optional[CategoricalFieldSchema] = None
-    application_sequence: Optional[CategoricalFieldSchema] = None
-    regulatory_notes: Optional[CategoricalFieldSchema] = None
-    product_credentials: Optional[StringListFieldSchema] = None
     targeted_concerns: Optional[StringListFieldSchema] = None
-    proprietary_technologies: Optional[TechnologyProfileSchema] = None
-    skin_type_scores: Optional[SkinTypeScoresSchema] = None
-    inci_stats: Optional[InciStatsSchema] = None
-    
-    vegan: ClaimFieldSchema
-    cruelty_free: ClaimFieldSchema
-    paraben_free: ClaimFieldSchema
-    sulfate_free: ClaimFieldSchema
-    silicone_free: ClaimFieldSchema
-    alcohol_free: ClaimFieldSchema
-    fragrance_present: ClaimFieldSchema
-    phthalate_free: Optional[ClaimFieldSchema] = None
-    dermatologically_tested: Optional[ClaimFieldSchema] = None
-    clinically_tested: Optional[ClaimFieldSchema] = None
-    ophthalmologically_tested: Optional[ClaimFieldSchema] = None
-    
-    hydration: ConcernFieldSchema
-    anti_ageing: ConcernFieldSchema
-    pigmentation: ConcernFieldSchema
-    acne: ConcernFieldSchema
-    redness: ConcernFieldSchema
-    sensitivity: ConcernFieldSchema
-    scalp_care: ConcernFieldSchema
-    hair_growth: ConcernFieldSchema
-    fragrance: ConcernFieldSchema
-    freshness: ConcernFieldSchema
-    
+    claims: List[StructuredClaimSchema] = []
     benefits: List[BenefitSchema] = []
     directions: DirectionsSchema
-    skin_type_fit: SkinTypeFitSchema
-    hair_type_fit: HairTypeFitSchema
-    fragrance_intelligence: FragranceIntelligenceSchema
-    
-    pregnancy_warning_observation: ReviewObservationSchema
-    allergen_warning_observation: ReviewObservationSchema
-    sensitivity_warning_observation: ReviewObservationSchema
-    
+    warnings_considerations: List[WarningConsiderationSchema] = []
+    skincare: Optional[SkincareModuleSchema] = None
+    haircare: Optional[HaircareModuleSchema] = None
+    makeup: Optional[MakeupModuleSchema] = None
+    fragrance: Optional[FragranceModuleSchema] = None
     ingredients_intelligence: List[IngredientIntelligenceSchema] = []
 
 class FieldEnrichmentMetadataOut(BaseModel):
@@ -360,14 +290,12 @@ class EnrichmentMetadataSchema(BaseModel):
 
 class KeyIngredientOut(BaseModel):
     name: str
-    normalized_inci_name: Optional[str] = None
+    position: Optional[int] = None
     functions: list[str] = Field(default_factory=list)
     benefits: list[str] = Field(default_factory=list)
+    caution_notes: list[str] = Field(default_factory=list)
     is_key_ingredient: bool
     key_ingredient_status: Optional[str] = None
-    source_type: Optional[str] = None
-    evidence: list[Any] = Field(default_factory=list)
-    confidence: Optional[float] = None
     formulation_reference: Optional[uuid.UUID] = None
 
     class Config:
@@ -382,6 +310,20 @@ class DynamicConcernOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class MarketObservationOut(BaseModel):
+    source_name: Optional[str] = None
+    source_domain: Optional[str] = None
+    market: Optional[str] = None
+    price: Optional[float] = None
+    promotional_price: Optional[float] = None
+    currency: Optional[str] = None
+    availability: Optional[str] = None
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    review_summary: Optional[Any] = None
+    source_url: Optional[str] = None
+    observed_at: Optional[datetime] = None
 
 # Product Details output schemas
 class FieldValueOut(BaseModel):
@@ -483,6 +425,7 @@ class ProductDetailOut(ProductOut):
     enrichment_metadata: Optional[EnrichmentMetadataSchema] = None
     key_ingredients: list[KeyIngredientOut] = Field(default_factory=list)
     dynamic_concerns: list[DynamicConcernOut] = Field(default_factory=list)
+    market_observations: list[MarketObservationOut] = Field(default_factory=list)
     improvement_result: Optional[dict] = None
 
     class Config:
@@ -494,50 +437,21 @@ class ProductImageUpdate(BaseModel):
 EDITABLE_FIELDS_REGISTRY = {
     "subcategory": str,
     "product_type": str,
-    "gender_target": str,
-    "texture": str,
     "application_area": str,
     "target_audience": list,
-    "brand_origin": str,
-    "country_of_manufacture": str,
-    "launch_year": str,
     "product_positioning": str,
-    "colour": str,
-    "finish": str,
-    "absorption_profile": str,
     "sensory_description": str,
     "routine_time": str,
     "routine_step": str,
-    "application_sequence": str,
-    "regulatory_notes": str,
-    "product_credentials": dict,
     "targeted_concerns": dict,
-    "proprietary_technologies": dict,
-    "skin_type_scores": dict,
-    "inci_stats": dict,
+    "claims": list,
+    "warnings_considerations": list,
+    "skincare": dict,
+    "haircare": dict,
+    "makeup": dict,
+    "fragrance": dict,
     "schema_org": dict,
     "ingredients_intelligence": list,
-    "vegan": str,
-    "cruelty_free": str,
-    "paraben_free": str,
-    "sulfate_free": str,
-    "silicone_free": str,
-    "alcohol_free": str,
-    "fragrance_present": str,
-    "phthalate_free": str,
-    "dermatologically_tested": str,
-    "clinically_tested": str,
-    "ophthalmologically_tested": str,
-    "hydration": bool,
-    "anti_ageing": bool,
-    "pigmentation": bool,
-    "acne": bool,
-    "redness": bool,
-    "sensitivity": bool,
-    "scalp_care": bool,
-    "hair_growth": bool,
-    "fragrance": bool,
-    "freshness": bool,
     "availability": str,
     "rating": float,
     "review_count": int,

@@ -161,16 +161,14 @@ def test_business_rules_integration(client: TestClient, db: Session):
     # Fetch FieldValue for pregnancy warning observation
     preg_obs = db.query(FieldValue).filter(
         FieldValue.canonical_product_id == retinol_prod.id,
-        FieldValue.field_name == "pregnancy_warning_observation"
+        FieldValue.field_name == "warnings_considerations"
     ).first()
     assert preg_obs is not None
-    val = preg_obs.value
-    assert val.get("review_required") is True
-    assert "retinol" in val.get("observed_items", [])
-    # Verify no pregnancy safety conclusions are made
-    msg = val.get("review_message", "").lower()
-    assert "contains retinol" in msg
-    assert "no safety conclusion is made" in msg
+    val = next(item for item in preg_obs.value if item["type"] == "pregnancy")
+    assert val["source_status"] == "source_supported"
+    msg = val.get("observation", "").lower()
+    assert "retinol" in msg
+    assert "no medical conclusion" in msg
     assert "unsafe" not in msg
     assert "prohibited" not in msg
 

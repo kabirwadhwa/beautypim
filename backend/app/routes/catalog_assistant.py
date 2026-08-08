@@ -30,12 +30,13 @@ from app.models import (
 router = APIRouter(prefix="/assistant", tags=["Catalogue Assistant"])
 
 CLAIM_FIELDS = {
-    "vegan", "cruelty_free", "paraben_free", "sulfate_free",
-    "silicone_free", "alcohol_free", "fragrance_present",
+    "vegan", "cruelty_free", "paraben_free", "sulfate_free", "silicone_free",
+    "alcohol_free", "phthalate_free", "dermatologically_tested", "clinically_tested",
+    "ophthalmologically_tested",
 }
 CONCERN_FIELDS = {
-    "hydration", "anti_ageing", "pigmentation", "acne", "redness",
-    "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
+    "hydration", "anti_ageing", "pigmentation", "acne", "redness", "sensitivity",
+    "scalp_care", "hair_thinning", "freshness",
 }
 TRUE_VALUES = {"yes", "true", "1", "explicit", "inferred", "targeted"}
 
@@ -185,15 +186,15 @@ def _fallback_filters(message: str, product_names: Optional[List[str]] = None) -
         "claim": "claims",
         "direction": "directions",
         "use it": "directions",
-        "texture": "texture",
+        "texture": "skincare",
         "category": "category",
         "size": "size",
         "gtin": "gtin",
         "barcode": "gtin",
-        "vegan": "vegan",
+        "vegan": "claims",
         "fragrance": "fragrance",
-        "skin type": "skin_type_fit",
-        "hair type": "hair_type_fit",
+        "skin type": "skincare",
+        "hair type": "haircare",
         "source": "knowledge_sources",
         "last observed": "last_observed",
         "availability": "availability",
@@ -519,20 +520,25 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             continue
 
         failed_field_filter = False
+        concern_values = str(_display_value(field_map.get("targeted_concerns").value) or "").lower() if field_map.get("targeted_concerns") else ""
         for concern in filters.get("concerns", []):
-            field = field_map.get(concern.replace(" ", "_"))
-            if not field or not _truthy_field(field.value, field.semantic_status):
+            if concern.lower() not in concern_values:
                 failed_field_filter = True
                 break
-            matched[concern] = field.value
+            matched[concern] = concern
         if failed_field_filter:
             continue
+        structured_claims = field_map.get("claims").value if field_map.get("claims") else []
         for claim in filters.get("claims", []):
-            field = field_map.get(claim.replace(" ", "_").replace("-", "_"))
-            if not field or not _truthy_field(field.value, field.semantic_status):
+            normalized = claim.replace("-", " ").replace("_", " ").lower()
+            found = next((item for item in structured_claims if isinstance(item, dict)
+                          and str(item.get("name", "")).replace("-", " ").lower() == normalized
+                          and item.get("status") in {"verified", "source_supported"}
+                          and str(item.get("value", "")).lower() not in {"no", "false"}), None)
+            if not found:
                 failed_field_filter = True
                 break
-            matched[claim] = field.value
+            matched[claim] = found
         if failed_field_filter:
             continue
 
@@ -558,16 +564,12 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
         matched.update({
             key: field_map[key].value
             for key in (
-                "product_type", "subcategory", "gender_target", "target_audience",
-                "texture", "application_area", "benefits", "directions",
-                "skin_type_fit", "hair_type_fit", "fragrance_intelligence",
-                "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
-                "colour", "finish", "absorption_profile", "sensory_description",
-                "routine_time", "routine_step", "application_sequence", "regulatory_notes",
-                "product_credentials", "targeted_concerns", "proprietary_technologies",
-                "skin_type_scores", "inci_stats", "ingredients_intelligence", "schema_org",
-                "phthalate_free", "dermatologically_tested", "clinically_tested", "ophthalmologically_tested",
-                *sorted(CLAIM_FIELDS), *sorted(CONCERN_FIELDS),
+                "product_type", "subcategory", "target_audience", "application_area",
+                "benefits", "directions", "product_positioning", "sensory_description",
+                "routine_time", "routine_step", "targeted_concerns", "claims",
+                "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
+                "ingredients_intelligence",
+                "claims",
             )
             if key in field_map
         })
@@ -723,9 +725,8 @@ def _deterministic_answer(
             lines.append(f"Category: {product.category}.")
         highlights = []
         for key in (
-            "product_type", "product_positioning", "texture", "colour", "finish",
-            "absorption_profile", "application_area", "routine_time", "routine_step",
-            "gender_target", "target_audience",
+            "product_type", "product_positioning", "application_area", "routine_time",
+            "routine_step", "target_audience", "sensory_description",
         ):
             value = _display_value(attrs.get(key))
             if value:

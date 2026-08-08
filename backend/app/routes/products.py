@@ -11,7 +11,7 @@ from app.auth import get_current_user, require_editor_or_admin, require_viewer_o
 from app.models import (
     CanonicalProduct, ProductVariant, Brand, Category, FieldValue, 
     ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem, SourceListing,
-    ScrapedProductObservation, CrawlJob
+    ScrapedProductObservation, CrawlJob, SourcePrice
 )
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
@@ -610,13 +610,17 @@ def update_product_identity(
         variant.size = request.size.strip() or None
     if request.unit is not None:
         variant.unit = request.unit.strip() or None
-    for field_name, value in (("product_type", request.format), ("market", request.market)):
+    for field_name, value in (("product_type", request.format),):
         if value and value.strip():
             create_field_value_version(
                 db, product.id, None, field_name, value.strip(), "human_edit",
                 f"user:{current_user.id}", 1.0, "confirmed", None, [],
                 "Identity supplied through Improve Product.", "confirmed", "identity",
             )
+    if request.market and request.market.strip():
+        db.query(SourcePrice).filter(SourcePrice.product_variant_id == variant.id).update(
+            {"country": request.market.strip()}, synchronize_session=False
+        )
     db.commit()
     return {"updated": True, "product_id": str(product.id)}
 
@@ -906,25 +910,19 @@ def get_product_detail(
 
                 key_ingredients_out.append(KeyIngredientOut(
                     name=fi.raw_inci_name,
-                    normalized_inci_name=defn.common_name or defn.name,
+                    position=fi.position,
                     functions=[fn for fn in funcs if fn],
                     benefits=[bn for bn in bens if bn],
+                    caution_notes=[note.strip() for note in (defn.possible_concerns or "").split(",") if note.strip()],
                     is_key_ingredient=fi.is_key_ingredient,
                     key_ingredient_status=fi.key_ingredient_status,
-                    source_type=mapped_source,
-                    evidence=fi_ev,
-                    confidence=float(fi.confidence_score) if fi.confidence_score is not None else None,
                     formulation_reference=f.id
                 ))
 
-    # Dynamic Concern targeting list from persisted FieldValues
-    concern_fields = [
-        "hydration", "anti_ageing", "pigmentation", "acne", "redness", 
-        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness"
-    ]
+    # Compatibility response derived from the single consolidated concern field.
     concerns_out = []
     for fv in fields:
-        if fv.is_current and fv.field_name in concern_fields:
+        if fv.is_current and fv.field_name == "targeted_concerns":
             # evidence list parsing
             fv_ev = []
             if fv.evidence:
@@ -936,16 +934,52 @@ def get_product_detail(
                 elif isinstance(fv.evidence, list):
                     fv_ev = fv.evidence
             
-            # Map semantic status
-            targeting_val = fv.semantic_status or "unknown"
-            
-            concerns_out.append(DynamicConcernOut(
-                concern_name=fv.field_name,
-                targeting_status=targeting_val,
-                evidence=fv_ev,
-                confidence=float(fv.confidence_score) if fv.confidence_score is not None else None,
-                source=fv.source_type
-            ))
+            values = fv.value.get("values", []) if isinstance(fv.value, dict) else (fv.value or [])
+            for concern in values:
+                concerns_out.append(DynamicConcernOut(
+                    concern_name=str(concern), targeting_status=fv.semantic_status or "inferred",
+                    evidence=fv_ev, confidence=float(fv.confidence_score) if fv.confidence_score is not None else None,
+                    source=fv.source_type
+                ))
+
+    market_observations = []
+    for price in db.query(SourcePrice).join(ProductVariant).filter(
+        ProductVariant.canonical_product_id == product_id
+    ).order_by(SourcePrice.captured_at.desc()).all():
+        listing = db.query(SourceListing).filter(SourceListing.id == price.source_listing_id).first() if price.source_listing_id else None
+        market_observations.append({
+            "source_name": price.retailer or (listing.retailer if listing else None),
+            "market": price.country, "price": float(price.amount),
+            "promotional_price": float(price.promotional_amount) if price.promotional_amount is not None else None,
+            "currency": price.currency, "source_url": listing.source_url if listing else None,
+            "observed_at": price.captured_at,
+        })
+    for listing in db.query(SourceListing).filter(
+        SourceListing.canonical_product_id == product_id, SourceListing.is_deleted == False
+    ).order_by(SourceListing.created_at.desc()).limit(20).all():
+        job = db.query(ImportJob).filter(ImportJob.id == listing.import_job_id).first() if listing.import_job_id else None
+        mapping, raw = (job.column_mapping or {}) if job else {}, listing.raw_data or {}
+        def mapped(name):
+            column = mapping.get(name)
+            return raw.get(column) if column else None
+        market_observations.append({
+            "source_name": listing.retailer or (job.source_name if job else None),
+            "market": mapped("market"), "availability": mapped("availability"),
+            "rating": mapped("rating"), "review_count": mapped("review_count"),
+            "source_url": listing.source_url, "observed_at": listing.created_at,
+        })
+    for observation in db.query(ScrapedProductObservation).filter(
+        ScrapedProductObservation.canonical_product_id == product_id
+    ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(20).all():
+        payload = observation.normalized_payload or {}
+        market_observations.append({
+            "source_name": observation.source_name, "source_domain": observation.source_domain,
+            "market": observation.country or observation.locale, "price": payload.get("price"),
+            "promotional_price": payload.get("promotional_price"), "currency": payload.get("currency"),
+            "availability": payload.get("availability"), "rating": payload.get("rating"),
+            "review_count": payload.get("review_count"), "review_summary": payload.get("review_summary"),
+            "source_url": observation.source_url, "observed_at": observation.scraped_at,
+        })
 
     # Preserve source-authored marketing copy and image URLs for existing imports.
     # New enrichment runs also persist image_url directly on CanonicalProduct.
@@ -1009,7 +1043,8 @@ def get_product_detail(
         validation_issues=issues,
         enrichment_metadata=global_meta,
         key_ingredients=key_ingredients_out,
-        dynamic_concerns=concerns_out
+        dynamic_concerns=concerns_out,
+        market_observations=market_observations,
     )
 
 @router.put("/{product_id}/image", response_model=ProductDetailOut)

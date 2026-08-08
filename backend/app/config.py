@@ -73,8 +73,8 @@ class Settings(BaseSettings):
         ),
     )
     
-    PROMPT_VERSION: str = "3.0-catalogue-dossier"
-    SCHEMA_VERSION: str = "1.1"
+    PROMPT_VERSION: str = "4.0-simplified-category-aware"
+    SCHEMA_VERSION: str = "3.0"
     
     # AI Cost and Job Processing Controls
     BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "5"))

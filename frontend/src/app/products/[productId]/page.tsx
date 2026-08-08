@@ -64,6 +64,12 @@ interface ProductDetail {
   updated_at: string;
   variants: Array<{ id: string; gtin: string | null; size: string | null; unit: string | null }>;
   formulations: Array<{ id: string; raw_inci_text: string; market: string | null }>;
+  market_observations: Array<{
+    source_name: string | null; source_domain: string | null; market: string | null;
+    price: number | null; promotional_price: number | null; currency: string | null;
+    availability: string | null; rating: number | null; review_count: number | null;
+    review_summary: any; source_url: string | null; observed_at: string | null;
+  }>;
   field_values: FieldValue[];
   validation_issues: Array<{
     id: string;
@@ -85,14 +91,12 @@ interface ProductDetail {
   } | null;
   key_ingredients?: Array<{
     name: string;
-    normalized_inci_name: string;
+    position: number | null;
     functions: string[];
     benefits: string[];
+    caution_notes: string[];
     is_key_ingredient: boolean;
     key_ingredient_status: string;
-    source_type: string;
-    evidence: any[];
-    confidence: number | null;
     formulation_reference: string;
   }>;
   dynamic_concerns?: Array<{
@@ -549,27 +553,15 @@ export default function ProductDetailPage() {
 
   // Editable fields registry listing
   const coreFields = [
-    "subcategory", "product_type", "gender_target", "texture", "application_area",
-    "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
-    "colour", "finish", "absorption_profile", "sensory_description", "routine_time",
-    "routine_step", "application_sequence", "regulatory_notes",
-    "availability", "rating", "review_count", "review_summary",
-    "vegan", "cruelty_free", "paraben_free", "sulfate_free",
-    "silicone_free", "alcohol_free", "fragrance_present", "phthalate_free",
-    "dermatologically_tested", "clinically_tested", "ophthalmologically_tested"
+    "subcategory", "product_type", "application_area", "product_positioning",
+    "sensory_description", "routine_time", "routine_step"
   ];
   const richFields = [
-    "source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit",
-    "fragrance_intelligence", "pregnancy_warning_observation",
-    "allergen_warning_observation", "sensitivity_warning_observation",
-    "product_credentials", "targeted_concerns", "proprietary_technologies",
-    "skin_type_scores", "inci_stats", "ingredients_intelligence", "schema_org"
+    "benefits", "directions", "targeted_concerns", "claims",
+    "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
+    "ingredients_intelligence"
   ];
-  const claimOverrideFields = [
-    'vegan', 'cruelty_free', 'paraben_free', 'sulfate_free', 'silicone_free',
-    'alcohol_free', 'fragrance_present', 'phthalate_free', 'dermatologically_tested',
-    'clinically_tested', 'ophthalmologically_tested'
-  ];
+  const claimOverrideFields = ['claims'];
   const structuredOverrideFields = richFields.filter(field => field !== 'source_claims');
 
   const prettyStructuredValue = (value: any): string[] => {
@@ -616,11 +608,12 @@ export default function ProductDetailPage() {
     return String(value).toUpperCase();
   };
 
-  const reviewObservations = researchResults.filter(result => {
-    const summary = result.data?.review_summary || {};
-    return result.data?.rating != null || result.data?.review_count != null ||
-      summary.average_rating != null || summary.review_count != null;
-  });
+  const persistedObservations = (product?.market_observations || []).map((observation, index) => ({
+    id: `persisted-${index}`, data: observation, source_url: observation.source_url,
+    source_domain: observation.source_domain || observation.source_name || 'Imported feed',
+    observed_at: observation.observed_at,
+  }));
+  const marketObservations = persistedObservations.length ? persistedObservations : researchResults;
 
   return (
     <Shell>
@@ -792,11 +785,11 @@ export default function ProductDetailPage() {
 
       {/* Global AI Enrichment Run Metadata */}
       {product?.enrichment_metadata && (
-        <div className={styles.panelCard} style={{ marginBottom: 20, background: 'linear-gradient(135deg, #131c35 0%, #0d1222 100%)', borderColor: '#3b82f633' }}>
-          <div className={styles.panelTitle} style={{ borderBottom: '1px solid #3b82f622', paddingBottom: 10 }}>
+        <details className={styles.panelCard} style={{ marginBottom: 20, background: 'linear-gradient(135deg, #131c35 0%, #0d1222 100%)', borderColor: '#3b82f633' }}>
+          <summary className={styles.panelTitle} style={{ cursor: 'pointer' }}>
             <Sparkles size={18} color="#3b82f6" />
-            <span style={{ fontWeight: 600, color: '#93c5fd' }}>Active AI Enrichment Run Diagnostics</span>
-          </div>
+            <span style={{ fontWeight: 600, color: '#93c5fd' }}>Audit & enrichment provenance</span>
+          </summary>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16, marginTop: 12, fontSize: 12 }}>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>LLM Provider</div>
@@ -825,23 +818,24 @@ export default function ProductDetailPage() {
               <div style={{ fontWeight: 500, color: '#e2e8f0' }}>{(product.enrichment_metadata.processing_time_ms / 1000).toFixed(2)}s</div>
             </div>
           </div>
-        </div>
+        </details>
       )}
 
       <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
           <Star size={18} color="#fbbf24" />
-          <span>Retail Rating & Review Evidence</span>
+          <span>Market Observations</span>
         </div>
-        {reviewObservations.length ? (
+        {marketObservations.length ? (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginTop: 12 }}>
-            {reviewObservations.map(result => {
+            {marketObservations.map(result => {
               const summary = result.data?.review_summary || {};
               const rating = result.data?.rating ?? summary.average_rating;
               const count = result.data?.review_count ?? summary.review_count;
               const praised = summary.frequently_praised_topics || [];
               const complaints = summary.frequent_complaint_topics || [];
               const sampleCount = summary.review_sample_count;
+              const price = result.data?.promotional_price ?? result.data?.price;
               return (
                 <div key={result.id} style={{ padding: 14, borderRadius: 8, border: '1px solid #334155', background: '#10192c' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
@@ -850,6 +844,10 @@ export default function ProductDetailPage() {
                     </div>
                     <div style={{ color: '#94a3b8', fontSize: 12 }}>{count != null ? `${Number(count).toLocaleString()} reviews` : 'Count unavailable'}</div>
                   </div>
+                  {(price != null || result.data?.availability) && <div style={{ color: '#e2e8f0', fontSize: 12, marginTop: 7 }}>
+                    {price != null ? `${result.data?.currency || ''} ${Number(price).toFixed(2)}`.trim() : ''}
+                    {price != null && result.data?.availability ? ' · ' : ''}{result.data?.availability || ''}
+                  </div>}
                   <a href={result.source_url} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', gap: 5, alignItems: 'center', color: '#93c5fd', fontSize: 12, marginTop: 7 }}>
                     {result.source_domain} <ExternalLink size={11} />
                   </a>
@@ -863,7 +861,7 @@ export default function ProductDetailPage() {
           </div>
         ) : (
           <div style={{ marginTop: 12, padding: 14, borderRadius: 8, border: '1px dashed #334155', color: '#94a3b8', fontSize: 13 }}>
-            No public retailer rating or review count has been observed for this exact product yet. Research & Improve will check multiple distinct product-page sources; BeautyPIM will not manufacture review data when sources do not publish it.
+            No price, availability, rating or review observation has been recorded for this exact product yet.
           </div>
         )}
       </div>
@@ -891,14 +889,6 @@ export default function ProductDetailPage() {
                           <span style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9' }}>
                             {displayValue(fv?.value, fv?.semantic_status)}
                           </span>
-                          <span style={{ fontSize: 11, color: '#94a3b8', backgroundColor: '#1e293b', padding: '2px 8px', borderRadius: 4, textTransform: 'capitalize' }}>
-                            Source: {fv ? fv.source_type.replace("_", " ") : 'None'}
-                          </span>
-                          {fv?.confidence_score !== null && fv?.confidence_score !== undefined && (
-                            <span style={{ fontSize: 11, color: fv.confidence_score >= 0.8 ? '#10b981' : '#f59e0b', fontWeight: 600 }}>
-                              ({Math.round(fv.confidence_score * 100)}% Conf)
-                            </span>
-                          )}
                         </div>
                       </div>
 
@@ -989,7 +979,7 @@ export default function ProductDetailPage() {
               <span>Claims, Usage, Suitability & Safety Observations</span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
-              {richFields.map(field => {
+              {richFields.filter(field => currentValDict[field]?.value != null).map(field => {
                 const fv = currentValDict[field];
                 return (
                   <div key={field} style={{ padding: 12, backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid #2e3c64', borderRadius: 6 }}>
@@ -1003,23 +993,18 @@ export default function ProductDetailPage() {
                         </div>
                       ))}
                     </div>
-                    {fv?.confidence_score !== null && fv?.confidence_score !== undefined && (
-                      <div style={{ color: '#94a3b8', fontSize: 10, marginTop: 8 }}>
-                        {Math.round(fv.confidence_score * 100)}% confidence · {fv.source_type.replaceAll("_", " ")}
-                      </div>
-                    )}
                   </div>
                 );
               })}
             </div>
           </div>
 
-          {/* Key Ingredients Provenance Panel */}
+          {/* Product-facing ingredient intelligence; evidence remains available through field inspection. */}
           {product?.key_ingredients && product.key_ingredients.length > 0 && (
             <div className={styles.panelCard}>
               <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
                 <BookOpen size={18} color="#10b981" />
-                <span>Formulation Key Ingredients Provenance</span>
+                <span>Key Ingredient Intelligence</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginTop: 12 }}>
                 {product.key_ingredients.map((ing, idx) => (
@@ -1027,19 +1012,10 @@ export default function ProductDetailPage() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
                         <div style={{ fontWeight: 700, color: '#f1f5f9', fontSize: 14 }}>{ing.name}</div>
-                        <div style={{ fontSize: 11, color: '#94a3b8' }}>INCI Name: {ing.normalized_inci_name}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>INCI position: {ing.position || 'Not recorded'}</div>
                       </div>
                       
-                      {/*Provenance labeling badges */}
-                      <span className={`${styles.badge} ${
-                        ing.source_type === 'human_edit' ? styles.badgeSuccess :
-                        ing.source_type === 'ai_inference' ? styles.badgeNeutral :
-                        styles.badgeSecondary
-                      }`} style={{ fontSize: 10, padding: '2px 8px' }}>
-                        {ing.source_type === 'human_edit' ? 'HUMAN CONFIRMED' :
-                         ing.source_type === 'ai_inference' ? 'AI INFERRED' :
-                         ing.is_key_ingredient ? 'EXPLICIT KEY INGREDIENT' : 'PARSED INCI INGREDIENT'}
-                      </span>
+                      {ing.is_key_ingredient && <span className={`${styles.badge} ${styles.badgeSuccess}`}>KEY INGREDIENT</span>}
                     </div>
 
                     <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
@@ -1049,11 +1025,7 @@ export default function ProductDetailPage() {
                       {ing.benefits.length > 0 && (
                         <div>Benefits: <span style={{ color: '#cbd5e1' }}>{ing.benefits.join(', ')}</span></div>
                       )}
-                      {ing.confidence && (
-                        <div style={{ marginTop: 4, fontSize: 11, color: '#f59e0b' }}>
-                          Confidence: {Math.round(ing.confidence * 100)}%
-                        </div>
-                      )}
+                      {ing.caution_notes.length > 0 && <div>Considerations: <span style={{ color: '#cbd5e1' }}>{ing.caution_notes.join(', ')}</span></div>}
                     </div>
                   </div>
                 ))}

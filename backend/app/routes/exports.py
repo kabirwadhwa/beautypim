@@ -56,14 +56,11 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
         # 3. ai_inference (if permitted)
         # 4. unknown
         enrichment_keys = [
-            "subcategory", "product_type", "gender_target", "texture", "application_area", "target_audience",
-            "brand_origin", "country_of_manufacture", "launch_year", "product_positioning", "colour",
-            "finish", "absorption_profile", "sensory_description", "routine_time", "routine_step",
-            "application_sequence", "regulatory_notes", "product_credentials", "targeted_concerns",
-            "proprietary_technologies", "skin_type_scores", "inci_stats", "ingredients_intelligence", "schema_org",
-            "vegan", "cruelty_free", "paraben_free", "sulfate_free", "silicone_free", "alcohol_free", "fragrance_present",
-            "phthalate_free", "dermatologically_tested", "clinically_tested", "ophthalmologically_tested",
-            "hydration", "anti_ageing", "pigmentation", "acne", "redness", "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness"
+            "subcategory", "product_type", "application_area", "target_audience",
+            "product_positioning", "benefits", "targeted_concerns", "directions",
+            "sensory_description", "routine_time", "routine_step", "claims",
+            "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
+            "ingredients_intelligence"
         ]
 
         for key in enrichment_keys:
@@ -76,11 +73,11 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
                 elif fv.review_status == "not_applicable":
                     val = "NOT_APPLICABLE"
                 elif fv.source_type == "human_edit":
-                    val = str(fv.value)
+                    val = fv.value
                 elif fv.source_type in ["source_data", "deterministic_rule"]:
-                    val = str(fv.value)
+                    val = fv.value
                 elif fv.source_type == "ai_inference" and include_inferred:
-                    val = str(fv.value)
+                    val = fv.value
 
             row[key] = val
 

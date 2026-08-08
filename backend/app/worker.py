@@ -51,6 +51,19 @@ def normalize_gtin_value(value: Any) -> Optional[str]:
     digits = re.sub(r"\D", "", text)
     return digits if len(digits) in {8, 12, 13, 14} else None
 
+def split_size_and_unit(size: Any, explicit_unit: Any = None) -> tuple[Optional[str], Optional[str]]:
+    """Accept legacy separate units while parsing common combined values such as 100 ml."""
+    import re
+    text = str(size or "").strip()
+    unit = str(explicit_unit or "").strip() or None
+    if not text:
+        return None, unit
+    match = re.fullmatch(r"\s*(\d+(?:[.,]\d+)?)\s*(ml|cl|l|g|kg|oz|fl\.?\s*oz)\s*", text, re.I)
+    if not match:
+        return text, unit
+    value = match.group(1).replace(",", ".")
+    return value, unit or re.sub(r"\s+", " ", match.group(2).lower().replace(".", ""))
+
 
 def inferred_category_name(product_type: str, application_area: str = "") -> str:
     text = f"{product_type} {application_area}".lower()
@@ -141,62 +154,32 @@ def normalize_claim_value(value: Any) -> str:
 def apply_category_specific_enrichment(
     enrichment_result: Dict[str, Any], identity_text: str, raw_ingredients: str,
 ) -> Dict[str, Any]:
-    """Replace universal-schema artefacts with useful category semantics."""
+    """Enforce one applicable category module and fragrance-specific semantics."""
     text = identity_text.lower()
-    is_fragrance = any(token in text for token in ("perfume", "parfum", "fragrance", "eau de"))
-    if not is_fragrance:
+    if not any(token in text for token in ("perfume", "parfum", "fragrance", "eau de")):
         return enrichment_result
-
-    def inferred_field(value: str, confidence: float = 0.8):
-        return {
-            "value": value, "value_status": "inferred", "confidence": confidence,
-            "evidence": [], "reasoning_summary": "Category-specific personal fragrance normalization.",
-        }
-
-    enrichment_result["application_area"] = inferred_field("Pulse points and skin", 0.9)
-    enrichment_result["absorption_profile"] = inferred_field("Evaporative fragrance", 0.9)
-    enrichment_result["finish"] = inferred_field("Fragrance dry-down", 0.9)
-    enrichment_result["texture"] = inferred_field("Liquid fragrance", 0.9)
-    gender = str((enrichment_result.get("gender_target") or {}).get("value") or "").lower()
-    if any(token in gender for token in ("women", "woman", "female")):
-        enrichment_result["gender_target"] = inferred_field("Women", 0.85)
-    elif any(token in gender for token in ("men", "man", "male")):
-        enrichment_result["gender_target"] = inferred_field("Men", 0.85)
-    elif any(token in gender for token in ("unisex", "gender-neutral", "gender neutral")):
-        enrichment_result["gender_target"] = inferred_field("Unisex", 0.85)
-
-    fragrance = enrichment_result.get("fragrance_intelligence") or {}
-    source_identity_text = identity_text.rsplit(" __model_type__ ", 1)[0].lower()
+    enrichment_result["application_area"] = {
+        "value": "Pulse points and skin", "value_status": "inferred", "confidence": 0.9,
+        "evidence": [], "reasoning_summary": "Category-specific fragrance normalization.",
+    }
+    existing = enrichment_result.get("fragrance") or enrichment_result.get("fragrance_intelligence") or {}
     concentration = next((label for token, label in (
         ("eau de toilette", "Eau de Toilette"), ("eau de parfum", "Eau de Parfum"),
         ("extrait", "Extrait de Parfum"), ("parfum", "Parfum"), ("cologne", "Eau de Cologne"),
-    ) if token in source_identity_text), None)
-    fragrance["applicable"] = True
-    fragrance["concentration"] = concentration or "Not specified in source"
-    if not concentration:
-        fragrance["longevity_profile"] = "Varies by concentration and application"
-        fragrance["sillage_projection"] = "Varies by concentration and application"
-    else:
-        fragrance["longevity_profile"] = fragrance.get("longevity_profile") or (
-            "Moderate" if concentration in {"Eau de Toilette", "Eau de Cologne"} else
-            "Moderate to long-lasting" if concentration == "Eau de Parfum" else "Long-lasting"
-        )
-        fragrance["sillage_projection"] = fragrance.get("sillage_projection") or "Moderate"
-    fragrance.setdefault("seasonal_fit", [])
-    fragrance.setdefault("occasion_fit", [])
-    enrichment_result["fragrance_intelligence"] = fragrance
-
+    ) if token in text), existing.get("concentration"))
+    enrichment_result["fragrance"] = {
+        "concentration": concentration, "fragrance_family": existing.get("fragrance_family"),
+        "top_notes": existing.get("top_notes") or [], "heart_notes": existing.get("heart_notes") or existing.get("middle_notes") or [],
+        "base_notes": existing.get("base_notes") or [], "longevity": existing.get("longevity") or existing.get("longevity_profile"),
+        "sillage_projection": existing.get("sillage_projection"), "seasonal_fit": existing.get("seasonal_fit") or [],
+        "occasion_fit": existing.get("occasion_fit") or [], "evidence": existing.get("evidence") or [],
+        "confidence": existing.get("confidence") or 0.7,
+    }
+    enrichment_result.update(skincare=None, haircare=None, makeup=None)
     if not raw_ingredients.strip():
-        unavailable = {
-            "observation_domain": "ingredients", "review_required": True,
-            "observation_type": "ingredient_list_unavailable", "observed_items": [],
-            "evidence": [],
-            "review_message": "Cannot assess ingredient, allergen or sensitivity signals until a source INCI list is available.",
-            "confidence": 1.0,
-        }
-        enrichment_result["allergen_warning_observation"] = dict(unavailable)
-        enrichment_result["sensitivity_warning_observation"] = dict(unavailable)
-        enrichment_result["pregnancy_warning_observation"] = dict(unavailable)
+        warnings = enrichment_result.setdefault("warnings_considerations", [])
+        warnings.append({"type": "other", "observation": "Ingredient list unavailable; ingredient-related considerations cannot be assessed.",
+                         "evidence": [], "source_status": "unknown", "confidence": 1.0})
     return enrichment_result
 
 def record_audit(
@@ -423,7 +406,9 @@ def process_item_enrichment(
     raw_desc = source_value(raw_data, mapping, "description")
     raw_ingr = source_value(raw_data, mapping, "ingredients")
     raw_ean = normalize_gtin_value(source_value(raw_data, mapping, "ean"))
-    raw_size = source_value(raw_data, mapping, "size") or None
+    raw_size, raw_unit = split_size_and_unit(
+        source_value(raw_data, mapping, "size"), source_value(raw_data, mapping, "unit")
+    )
     raw_category = source_value(raw_data, mapping, "category")
     raw_product_family = source_value(raw_data, mapping, "product_family")
     raw_product_type = source_value(raw_data, mapping, "product_type") or source_alias_value(
@@ -491,6 +476,8 @@ def process_item_enrichment(
                 variant.gtin = str(raw_ean)
         if raw_size and not variant.size:
             variant.size = str(raw_size)
+        if raw_unit and not variant.unit:
+            variant.unit = raw_unit
         researched_unit = first_researched("unit")
         if researched_unit and not variant.unit:
             variant.unit = str(researched_unit)
@@ -598,34 +585,27 @@ def process_item_enrichment(
             if claim.strip()
         ]
         enrichment_result["source_claims"] = source_claim_entries
+        structured_claims = enrichment_result.get("claims") if isinstance(enrichment_result.get("claims"), list) else []
+        for claim in source_claim_entries:
+            structured_claims.append({
+                "name": claim["statement"], "value": "Yes", "status": "source_supported",
+                "evidence": claim["evidence"], "reasoning_summary": "Explicitly supplied in the company feed.",
+                "confidence": 1.0,
+            })
+        enrichment_result["claims"] = structured_claims
         existing_benefits = enrichment_result.get("benefits")
         if not isinstance(existing_benefits, list):
             existing_benefits = []
         enrichment_result["benefits"] = source_claim_entries + existing_benefits
 
-    # Do not manufacture skincare/hair suitability for personal fragrance.
-    # These fields are structurally present in the universal schema, but their
-    # honest product-specific value is not-applicable.
     model_product_type = (enrichment_result.get('product_type') or {}).get('value', '')
     product_identity_text = f"{raw_name} {raw_category} {raw_product_family} " \
         f"__model_type__ {model_product_type}".lower()
-    if any(token in product_identity_text for token in ("perfume", "parfum", "fragrance", "eau de")):
-        not_applicable_fit = {
-            "applicable": False, "recommended_for": [], "not_recommended_for": [],
-            "unknown_for": [], "confidence": 1.0, "evidence": [],
-        }
-        enrichment_result["skin_type_fit"] = dict(not_applicable_fit)
-        enrichment_result["hair_type_fit"] = dict(not_applicable_fit)
-        for field_name in ("hydration", "anti_ageing", "pigmentation", "acne", "redness",
-                           "sensitivity", "scalp_care", "hair_growth"):
-            enrichment_result[field_name] = {
-                "targeting_status": "not_applicable", "confidence": 1.0,
-                "evidence": [],
-                "reasoning_summary": "Not applicable to a personal fragrance product.",
-            }
     enrichment_result = apply_category_specific_enrichment(
         enrichment_result, product_identity_text, raw_ingr,
     )
+    from app.services.enrichment import consolidate_enrichment_payload
+    enrichment_result = consolidate_enrichment_payload(enrichment_result)
     from app.services.product_identity import product_version_label
     raw_identity_text = f"{raw_name} {raw_category} {raw_product_family} {raw_product_type}"
     if any(token in raw_identity_text.lower() for token in ("perfume", "parfum", "fragrance", "eau de")) \
@@ -674,11 +654,8 @@ def process_item_enrichment(
 
     # Write core enriched fields
     core_categorical_fields = [
-        "subcategory", "product_type", "gender_target", "texture", 
-        "application_area", "target_audience", "brand_origin", "country_of_manufacture",
-        "launch_year", "product_positioning", "colour", "finish", "absorption_profile",
-        "sensory_description", "routine_time", "routine_step", "application_sequence",
-        "regulatory_notes"
+        "subcategory", "product_type", "application_area", "target_audience",
+        "product_positioning", "sensory_description", "routine_time", "routine_step"
     ]
     for field in core_categorical_fields:
         if not should_write(field):
@@ -702,65 +679,11 @@ def process_item_enrichment(
             semantic_status_type="value_status"
         )
 
-    core_claims_fields = [
-        "vegan", "cruelty_free", "paraben_free", "sulfate_free", 
-        "silicone_free", "alcohol_free", "fragrance_present", "phthalate_free",
-        "dermatologically_tested", "clinically_tested", "ophthalmologically_tested"
-    ]
-    for field in core_claims_fields:
-        if not should_write(field):
-            continue
-        field_data = enrichment_result.get(field, {})
-        status = field_data.get("claim_status", "unknown")
-        create_field_value_version(
-            db=db,
-            canonical_product_id=item.canonical_product_id,
-            product_variant_id=None,
-            field_name=field,
-            value=normalize_claim_value(field_data.get("value")),
-            source_type="ai_inference",
-            source_ref=source_ref,
-            confidence=field_data.get("confidence", 0.0),
-            status=status,
-            run_id=run_id,
-            evidence=field_data.get("evidence", []),
-            reasoning_summary=field_data.get("reasoning_summary"),
-            semantic_status=status,
-            semantic_status_type="claim_status"
-        )
-
-    core_concerns_fields = [
-        "hydration", "anti_ageing", "pigmentation", "acne", "redness", 
-        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness"
-    ]
-    for field in core_concerns_fields:
-        if not should_write(field):
-            continue
-        field_data = enrichment_result.get(field, {})
-        status = field_data.get("targeting_status", "unknown")
-        create_field_value_version(
-            db=db,
-            canonical_product_id=item.canonical_product_id,
-            product_variant_id=None,
-            field_name=field,
-        value=field_data.get("targeting_status") in {"explicit", "inferred"},
-            source_type="ai_inference",
-            source_ref=source_ref,
-            confidence=field_data.get("confidence", 0.0),
-            status=status,
-            run_id=run_id,
-            evidence=field_data.get("evidence", []),
-            reasoning_summary=field_data.get("reasoning_summary"),
-            semantic_status=status,
-            semantic_status_type="targeting_status"
-        )
-
     # Persist rich enrichment blocks that were previously discarded.
     for field in [
-        "source_claims", "benefits", "directions", "skin_type_fit", "hair_type_fit",
-        "fragrance_intelligence", "product_credentials", "targeted_concerns",
-        "proprietary_technologies", "skin_type_scores", "inci_stats",
-        "ingredients_intelligence",
+        "source_claims", "benefits", "directions",
+        "targeted_concerns", "claims", "warnings_considerations",
+        "skincare", "haircare", "makeup", "fragrance", "ingredients_intelligence",
     ]:
         if not should_write(field):
             continue
@@ -808,33 +731,10 @@ def process_item_enrichment(
             semantic_status="confirmed", semantic_status_type="structured_data",
         )
 
-    # Write warning observations
-    for field in ["pregnancy_warning_observation", "allergen_warning_observation", "sensitivity_warning_observation"]:
-        if not should_write(field):
-            continue
-        field_data = enrichment_result.get(field, {})
-        if field_data:
-            create_field_value_version(
-                db=db,
-                canonical_product_id=item.canonical_product_id,
-                product_variant_id=None,
-                field_name=field,
-                value=field_data,
-                source_type="ai_inference",
-                source_ref=source_ref,
-                confidence=field_data.get("confidence", 0.0),
-                status="processed",
-                run_id=run_id,
-                evidence=field_data.get("evidence", []),
-                reasoning_summary=field_data.get("review_message"),
-                semantic_status="processed",
-                semantic_status_type="observation_status"
-            )
-
     # Save formulation only when the requested operation includes formulation
     # intelligence. A selective merchandising refresh must not touch INCI data.
     refresh_formulation = mode != "selected" or bool(
-        selected & {"ingredients", "ingredients_intelligence", "inci_stats"}
+        selected & {"ingredients", "ingredients_intelligence", "skincare", "haircare", "makeup"}
     )
     formulation = None
     # Save formulation
@@ -1198,7 +1098,9 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             raw_name = source_value(raw_data, mapping, "product_name")
             raw_brand = source_value(raw_data, mapping, "brand")
             raw_ean = source_value(raw_data, mapping, "ean") or None
-            raw_size = source_value(raw_data, mapping, "size") or None
+            raw_size, raw_unit = split_size_and_unit(
+                source_value(raw_data, mapping, "size"), source_value(raw_data, mapping, "unit")
+            )
             raw_price = source_value(raw_data, mapping, "price")
             
             # Step 1: Matching / Deduplication
@@ -1247,7 +1149,8 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
                             canonical_product_id=matched_canonical_id,
                             variant_name=raw_size or "Standard Size",
                             gtin=raw_ean,
-                            size=raw_size
+                            size=raw_size,
+                            unit=raw_unit,
                         )
                         db.add(variant)
                         db.flush()
@@ -1288,7 +1191,8 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
                     canonical_product_id=canonical.id,
                     variant_name=raw_size,
                     gtin=raw_ean,
-                    size=raw_size
+                    size=raw_size,
+                    unit=raw_unit,
                 )
                 db.add(variant)
                 db.flush()

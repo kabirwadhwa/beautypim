@@ -15,8 +15,8 @@ from app.services.ingredient_knowledge import (
 )
 
 BALANCED_INFERENCE_GUIDANCE = (
-    "Return a useful answer for every catalogue field. For classification fields such as subcategory, product type, "
-    "gender target, texture and application area, make a reasonable inference "
+    "Return useful universal catalogue fields and exactly one applicable category module. For classification fields "
+    "such as subcategory, product type and application area, make a reasonable inference "
     "when the product title or description strongly implies one. For concern targeting, skin or "
     "hair fit, benefits, directions and fragrance intelligence, infer typical values when they "
     "are reasonably supported by the product type, wording or ingredient functions. Mark these "
@@ -33,12 +33,10 @@ BALANCED_INFERENCE_GUIDANCE = (
     "a concrete need, routine, preference or usage occasion with the relevant product characteristic, "
     "so it can guide advertising or in-store recommendations. Never use generic labels such as adults, "
     "beauty lovers or everyone, and never infer sensitive personal traits. "
-    "The product dossier is catalogue-backed: enrich brand origin, manufacturing country, launch year, "
-    "positioning, colour, finish, absorption, sensory profile, routine timing and sequence, credentials, "
-    "testing claims, targeted concerns, technology, scored skin fit and ingredient statistics as structured "
-    "fields. Infer merchandising and sensory values at moderate confidence where comparable retail knowledge "
-    "supports them. Testing, origin, launch year, regulatory and free-from claims require explicit evidence; "
-    "return unverified rather than inventing them. Never invent technology image URLs. "
+    "Generate positioning, benefits, targeted concerns, directions and a sensory profile. Claims are an extensible "
+    "list and must be verified/source-supported, unverified, conflicting or unknown; never guess a positive claim. "
+    "Warnings are factual observations, not medical advice. Do not generate origin, manufacture country, launch year, "
+    "gender, ingredient counts, skin scores, credentials, absorption or application sequence as separate attributes. "
     "Apply category-specific semantics. For personal fragrance prioritize concentration, fragrance family, "
     "top/heart/base notes, longevity, sillage/projection, seasonal fit, occasion fit and pulse-point usage; "
     "do not describe fragrance as skincare absorption, skin-type suitability or a cosmetic finish. "
@@ -46,19 +44,87 @@ BALANCED_INFERENCE_GUIDANCE = (
     "for makeup prioritize shade, coverage, finish and wear occasion. "
 )
 
-DOSSIER_CATEGORICAL_FIELDS = (
-    "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
-    "colour", "finish", "absorption_profile", "sensory_description", "routine_time",
-    "routine_step", "application_sequence", "regulatory_notes",
+CLAIM_NAMES = (
+    "vegan", "cruelty_free", "paraben_free", "sulfate_free", "silicone_free",
+    "alcohol_free", "fragrance_present", "phthalate_free", "dermatologically_tested",
+    "clinically_tested", "ophthalmologically_tested",
 )
-DOSSIER_CLAIM_FIELDS = (
-    "phthalate_free", "dermatologically_tested", "clinically_tested",
-    "ophthalmologically_tested",
-)
-DOSSIER_STRUCTURED_FIELDS = (
-    "product_credentials", "targeted_concerns", "proprietary_technologies",
-    "skin_type_scores", "inci_stats",
-)
+
+def consolidate_enrichment_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert legacy/provider shapes into the simplified v3 product contract."""
+    data = dict(payload or {})
+    claims = data.get("claims") if isinstance(data.get("claims"), list) else []
+    if not claims:
+        for name in CLAIM_NAMES:
+            item = data.get(name)
+            if not isinstance(item, dict):
+                continue
+            raw_status = str(item.get("claim_status") or "unknown").lower()
+            status = "source_supported" if raw_status in {"explicit", "verified", "source_supported"} else (
+                raw_status if raw_status in {"unverified", "conflicting", "unknown"} else "unverified"
+            )
+            claims.append({"name": name.replace("_", " ").title(), "value": item.get("value"),
+                           "status": status, "evidence": _evidence_list(item.get("evidence")),
+                           "reasoning_summary": item.get("reasoning_summary") or "",
+                           "confidence": item.get("confidence") or 0.5})
+    data["claims"] = claims
+
+    warnings = data.get("warnings_considerations") if isinstance(data.get("warnings_considerations"), list) else []
+    if not warnings:
+        for old, warning_type in (("pregnancy_warning_observation", "pregnancy"),
+                                  ("allergen_warning_observation", "allergen"),
+                                  ("sensitivity_warning_observation", "sensitivity")):
+            item = data.get(old)
+            if isinstance(item, dict) and item.get("review_required"):
+                warnings.append({"type": warning_type, "observation": item.get("review_message") or "Review required.",
+                                 "evidence": _evidence_list(item.get("evidence")),
+                                 "source_status": "source_supported" if item.get("observed_items") else "unverified",
+                                 "confidence": item.get("confidence") or 0.5})
+        regulatory = (data.get("regulatory_notes") or {}).get("value") if isinstance(data.get("regulatory_notes"), dict) else None
+        if regulatory and str(regulatory).lower() not in UNKNOWN_VALUES:
+            warnings.append({"type": "regulatory", "observation": regulatory, "evidence": [],
+                             "source_status": "unverified", "confidence": 0.5})
+    data["warnings_considerations"] = warnings
+
+    ptype = str((data.get("product_type") or {}).get("value") or "").lower()
+    subcat = str((data.get("subcategory") or {}).get("value") or "").lower()
+    category_text = f"{ptype} {subcat}"
+    ingredients = data.get("ingredients_intelligence") or []
+    simplified_ingredients = []
+    for item in ingredients:
+        if isinstance(item, dict):
+            simplified_ingredients.append({key: item.get(key) for key in (
+                "ingredient_name", "inci_position", "short_description", "functions", "benefits",
+                "possible_concerns", "is_key_ingredient", "key_ingredient_status"
+            ) if key in item})
+    data["ingredients_intelligence"] = simplified_ingredients
+    is_fragrance = any(term in category_text for term in ("fragrance", "perfume", "parfum", "eau de"))
+    is_hair = any(term in category_text for term in ("hair", "shampoo", "conditioner", "scalp"))
+    is_makeup = any(term in category_text for term in ("makeup", "lipstick", "foundation", "concealer", "mascara"))
+    if is_fragrance:
+        old = data.get("fragrance_intelligence") or {}
+        data["fragrance"] = data.get("fragrance") if isinstance(data.get("fragrance"), dict) and "concentration" in data.get("fragrance", {}) else {
+            "concentration": old.get("concentration"), "fragrance_family": old.get("fragrance_family"),
+            "top_notes": old.get("top_notes") or [], "heart_notes": old.get("heart_notes") or old.get("middle_notes") or [],
+            "base_notes": old.get("base_notes") or [], "longevity": old.get("longevity_profile"),
+            "sillage_projection": old.get("sillage_projection"), "seasonal_fit": old.get("seasonal_fit") or [],
+            "occasion_fit": old.get("occasion_fit") or [], "evidence": _evidence_list(old.get("evidence")),
+            "confidence": old.get("confidence") or 0.5}
+        data.update(skincare=None, haircare=None, makeup=None)
+    elif is_hair:
+        data["haircare"] = data.get("haircare") or {"hair_types": data.get("hair_type_fit") or {"applicable": True},
+            "texture_format": data.get("texture"), "key_ingredients": [i for i in simplified_ingredients if i.get("is_key_ingredient")]}
+        data.update(skincare=None, makeup=None, fragrance=None)
+    elif is_makeup:
+        data["makeup"] = data.get("makeup") or {"shade_colour": data.get("colour"), "coverage": data.get("coverage"),
+            "finish": data.get("finish"), "texture_format": data.get("texture")}
+        data.update(skincare=None, haircare=None, fragrance=None)
+    else:
+        data["skincare"] = data.get("skincare") or {"skin_types": data.get("skin_type_fit") or {"applicable": True},
+            "texture": data.get("texture"), "finish": data.get("finish"),
+            "key_ingredients": [i for i in simplified_ingredients if i.get("is_key_ingredient")]}
+        data.update(haircare=None, makeup=None, fragrance=None)
+    return data
 
 UNKNOWN_VALUES = {"", "unknown", "none", "null", "nan", "not provided", "not_provided"}
 
@@ -106,78 +172,26 @@ def _evidence_list(value: Any) -> list[dict[str, Any]]:
 
 
 def normalize_provider_shapes(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Coerce recurring LLM JSON shape drift into the declared PIM schema."""
-    categorical_fields = (
-        "subcategory", "product_type", "gender_target", "texture",
-        "application_area", "target_audience",
-    ) + DOSSIER_CATEGORICAL_FIELDS
-    claim_fields = (
-        "vegan", "cruelty_free", "paraben_free", "sulfate_free",
-        "silicone_free", "alcohol_free", "fragrance_present",
-    ) + DOSSIER_CLAIM_FIELDS
-    concern_fields = (
-        "hydration", "anti_ageing", "pigmentation", "acne", "redness",
-        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
-    )
-    evidence_fields = categorical_fields + claim_fields + concern_fields + (
-        "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence",
-        "pregnancy_warning_observation", "allergen_warning_observation",
-        "sensitivity_warning_observation",
-    )
-    for field in evidence_fields:
+    """Coerce provider JSON drift into the current simplified schema."""
+    for field in ("subcategory", "product_type", "application_area", "target_audience",
+                  "product_positioning", "sensory_description", "routine_time", "routine_step"):
         item = payload.get(field)
         if isinstance(item, dict):
             item["evidence"] = _evidence_list(item.get("evidence"))
-    for field in categorical_fields:
-        item = payload.get(field)
-        if not isinstance(item, dict):
-            continue
-        item.setdefault("value_status", "inferred" if item.get("value") else "unknown")
-        item.setdefault("reasoning_summary", "Provider inference normalized to the catalogue schema.")
-        item.setdefault("confidence", 0.65 if item.get("value") else 0.5)
+            item.setdefault("value_status", "inferred" if item.get("value") else "unknown")
+            item.setdefault("reasoning_summary", "Provider output normalized to the catalogue schema.")
+            item.setdefault("confidence", 0.65 if item.get("value") else 0.5)
+    for item in payload.get("claims") or []:
+        if isinstance(item, dict):
+            item["evidence"] = _evidence_list(item.get("evidence"))
+    for item in payload.get("warnings_considerations") or []:
+        if isinstance(item, dict):
+            item["evidence"] = _evidence_list(item.get("evidence"))
     for benefit in payload.get("benefits") or []:
-        if not isinstance(benefit, dict):
-            continue
-        evidence = benefit.get("evidence")
-        if isinstance(evidence, list):
-            benefit["evidence"] = "; ".join(
-                str(item.get("supporting_text") or item) if isinstance(item, dict) else str(item)
-                for item in evidence
-            )
-        elif evidence is None:
-            benefit["evidence"] = ""
-    for ingredient in payload.get("ingredients_intelligence") or []:
-        if not isinstance(ingredient, dict):
-            continue
-        ingredient["evidence"] = _evidence_list(ingredient.get("evidence"))
-        concerns = ingredient.get("possible_concerns") or []
-        ingredient["possible_concerns"] = [
-            item if isinstance(item, dict) else {"statement": str(item)}
-            for item in concerns
-        ]
-    for field in DOSSIER_STRUCTURED_FIELDS:
-        item = payload.get(field)
-        if isinstance(item, dict):
-            item["evidence"] = _evidence_list(item.get("evidence"))
-    technology = payload.get("proprietary_technologies") or {}
-    for item in technology.get("items") or []:
-        if isinstance(item, dict):
-            item.setdefault("name", "Product technology")
-            item.setdefault("description", "Technology referenced by the enrichment provider.")
-            item.setdefault("related_ingredients", [])
-            item.setdefault("image_url", None)
-            item.setdefault("source_status", "inferred")
-    scores = (payload.get("skin_type_scores") or {}).get("scores")
-    if isinstance(scores, dict):
-        normalized_scores = {}
-        for key, value in scores.items():
-            try:
-                normalized_scores[str(key)] = max(0, min(5, int(value or 0)))
-            except (TypeError, ValueError):
-                normalized_scores[str(key)] = 0
-        payload["skin_type_scores"]["scores"] = normalized_scores
-    return payload
-
+        if isinstance(benefit, dict) and isinstance(benefit.get("evidence"), list):
+            benefit["evidence"] = "; ".join(str(x.get("supporting_text") or x) if isinstance(x, dict) else str(x)
+                                              for x in benefit["evidence"])
+    return consolidate_enrichment_payload(payload)
 
 def _is_missing_field(payload: Any, key: str) -> bool:
     if not isinstance(payload, dict):
@@ -193,71 +207,22 @@ def ensure_catalogue_coverage(
     description: str,
     raw_ingredients: str,
 ) -> Dict[str, Any]:
-    """Fill safe catalogue gaps while preserving supported model output.
-
-    Product classification and merchandising attributes can be transparently
-    inferred. Ethical/free-from claims remain explicitly unverified rather than
-    being fabricated.
-    """
-    # A provider may successfully identify the format even when the imported
-    # title is sparse. Feed that classification into the coverage pass so the
-    # fallback does not turn an Eau de Parfum into a generic "beauty product".
-    model_type = str((data.get("product_type") or {}).get("value") or "").strip()
-    model_subcategory = str((data.get("subcategory") or {}).get("value") or "").strip()
-    classification_context = " ".join(
-        value for value in (description, model_type, model_subcategory) if value
-    )
-    fallback = generate_deterministic_fallback(
-        name, brand, classification_context, raw_ingredients
-    )
-    categorical_fields = (
-        "subcategory", "product_type", "gender_target", "texture",
-        "application_area",
-    ) + DOSSIER_CATEGORICAL_FIELDS
-    for field in categorical_fields:
+    """Fill only safe gaps in the simplified, category-aware contract."""
+    data = consolidate_enrichment_payload(data)
+    model_type = str((data.get("product_type") or {}).get("value") or "")
+    model_subcategory = str((data.get("subcategory") or {}).get("value") or "")
+    fallback = generate_deterministic_fallback(name, brand, " ".join(filter(None, (description, model_type, model_subcategory))), raw_ingredients)
+    for field in ("subcategory", "product_type", "application_area", "product_positioning", "sensory_description"):
         if _is_missing_field(data.get(field), "value"):
             data[field] = fallback[field]
-
     audience = (data.get("target_audience") or {}).get("value")
-    if not isinstance(audience, list) or len([item for item in audience if str(item).strip()]) != 3:
+    if not isinstance(audience, list) or len([x for x in audience if str(x).strip()]) != 3:
         data["target_audience"] = fallback["target_audience"]
-
-    for field in (
-        "vegan", "cruelty_free", "paraben_free", "sulfate_free",
-        "silicone_free", "alcohol_free", "fragrance_present",
-    ) + DOSSIER_CLAIM_FIELDS:
-        payload = data.get(field) or {}
-        if _is_missing_field(payload, "value"):
-            data[field] = fallback[field]
-
-    for field in (
-        "hydration", "anti_ageing", "pigmentation", "acne", "redness",
-        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
-    ):
-        if _is_missing_field(data.get(field), "targeting_status"):
-            data[field] = fallback[field]
-
-    for field in ("benefits", "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence"):
-        payload = data.get(field)
-        if payload is None or payload == [] or (
-            field == "directions" and _is_missing_field(payload, "text")
-        ) or (
-            field == "fragrance_intelligence"
-            and _is_missing_field(payload, "fragrance_presence_status")
-        ):
-            data[field] = fallback[field]
-    for field in DOSSIER_STRUCTURED_FIELDS:
-        payload = data.get(field)
-        incomplete = not payload
-        if field in {"product_credentials", "targeted_concerns"} and isinstance(payload, dict):
-            incomplete = not payload.get("values")
-        elif field == "skin_type_scores" and isinstance(payload, dict):
-            incomplete = not payload.get("scores")
-        elif field == "inci_stats" and isinstance(payload, dict):
-            incomplete = bool(raw_ingredients) and not payload.get("total_ingredients")
-        if incomplete:
-            data[field] = fallback[field]
-    return data
+    for field in ("benefits", "directions", "targeted_concerns", "claims", "warnings_considerations",
+                  "skincare", "haircare", "makeup", "fragrance", "ingredients_intelligence"):
+        if data.get(field) in (None, []):
+            data[field] = fallback.get(field)
+    return consolidate_enrichment_payload(data)
 
 
 def prepare_provider_payload(
@@ -266,618 +231,134 @@ def prepare_provider_payload(
     """Merge partial model output over a complete safe schema before validation."""
     fallback = generate_deterministic_fallback(name, brand, description, raw_ingredients)
     merged = {**fallback, **payload}
-    return ensure_catalogue_coverage(merged, name, brand, description, raw_ingredients)
+    return ensure_catalogue_coverage(consolidate_enrichment_payload(merged), name, brand, description, raw_ingredients)
 
 def normalize_and_validate_enrichment(data: Dict[str, Any], raw_ingredients: str) -> Dict[str, Any]:
-    """Normalize provider vocabulary and reject ingredient observations not in source."""
-    positive = {"explicit", "inferred", "targeted", "yes", "true"}
-    negative = {"not_targeted", "not targeted", "no", "false", "unknown", "not_applicable"}
-    for field in (
-        "hydration", "anti_ageing", "pigmentation", "acne", "redness",
-        "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
-    ):
-        payload = data.get(field) or {}
-        raw_status = str(payload.get("targeting_status", "unknown")).strip().lower()
-        if raw_status in positive:
-            payload["targeting_status"] = "explicit" if raw_status == "explicit" else "inferred"
-        elif raw_status in negative:
-            payload["targeting_status"] = "not_targeted" if raw_status not in {"unknown", "not_applicable"} else raw_status
-        else:
-            payload["targeting_status"] = "unknown"
-
+    """Normalize provider vocabulary and keep warnings factual and source-bound."""
+    data = consolidate_enrichment_payload(data)
     ingredient_text = (raw_ingredients or "").lower()
-    ingredient_names = {
-        re.sub(r"\s+", " ", part.strip())
-        for part in re.split(r"[,;\n]", ingredient_text)
-        if part.strip()
-    }
-    pregnancy = data.get("pregnancy_warning_observation") or {}
-    observed = [str(item).strip().lower() for item in pregnancy.get("observed_items", [])]
-    verified = [item for item in observed if item and item in ingredient_text]
     retinoids = ("retinol", "retinal", "retinaldehyde", "retinyl palmitate", "retinyl acetate")
-    verified_retinoids = [
-        name for name in retinoids
-        if any(candidate == name or candidate.startswith(f"{name} (") for candidate in ingredient_names)
-    ]
-    if verified_retinoids:
-        pregnancy.update({
-            "review_required": True,
-            "observation_type": "retinoid_present",
-            "observed_items": verified_retinoids,
-            "review_message": (
-                f"Contains {', '.join(verified_retinoids)}. "
-                "Factual review required; no safety conclusion is made."
-            ),
-            "confidence": 1.0,
-        })
-    elif not verified:
-        pregnancy.update({
-            "review_required": False,
-            "observation_type": "none_observed",
-            "observed_items": [],
-            "review_message": "No pregnancy-related ingredient observation was verified from the supplied list.",
-            "confidence": 1.0,
-            "evidence": [],
-        })
-    else:
-        pregnancy["observed_items"] = verified
-    data["pregnancy_warning_observation"] = pregnancy
+    verified = [name for name in retinoids if re.search(rf"(?:^|[,;])\s*{re.escape(name)}(?:\s*\(|\s*[,;]|$)", ingredient_text)]
+    warnings = [w for w in data.get("warnings_considerations", []) if w.get("type") != "pregnancy"]
+    if verified:
+        warnings.append({"type": "pregnancy", "observation": f"Contains {', '.join(verified)}; factual review required. No medical conclusion is made.",
+                         "evidence": [], "source_status": "source_supported", "confidence": 1.0})
+    data["warnings_considerations"] = warnings
     return data
 
 def calculate_token_count_rough(text: str) -> int:
     # Basic rough calculation: ~4 chars per token
     return len(text) // 4
 
-def generate_deterministic_fallback(
-    name: str,
-    brand: str,
-    description: str,
-    raw_ingredients: str
-) -> Dict[str, Any]:
-    """Run balanced deterministic extraction when no model is available.
+def generate_deterministic_fallback(name: str, brand: str, description: str, raw_ingredients: str) -> Dict[str, Any]:
+    """Balanced, category-aware fallback using only the current product model."""
+    source = f"{name} {description}".lower()
 
-    Direct keyword matches remain explicit. Safe catalogue classifications may
-    be inferred at moderate confidence so a temporary provider outage does not
-    turn an otherwise useful product record into a page of unknown values.
-    """
-    evidence = []
-    
-    # 1. Ingredients splitting
-    ingredients_list = []
-    if raw_ingredients:
-        # Split by comma or semicolon
-        delims = [",", ";"]
-        parts = [raw_ingredients]
-        for d in delims:
-            temp = []
-            for p in parts:
-                temp.extend(p.split(d))
-            parts = temp
-        
-        for idx, part in enumerate(parts):
-            clean_part = part.strip()
-            if clean_part:
-                ingredients_list.append({
-                    "ingredient_name": clean_part,
-                    "normalized_inci_name": None,
-                    "common_name": None,
-                    "source_origin": None,
-                    "inci_position": idx + 1,
-                    "ingredient_group": None,
-                    "short_description": "Ingredient retained from the supplied INCI list.",
-                    "other_utility": None,
-                    "functions": [],
-                    "benefits": [],
-                    "possible_concerns": [],
-                    "is_key_ingredient": False,
-                    "key_ingredient_status": "unknown",
-                    "evidence": [],
-                    "confidence": 0.0
-                })
+    def categorical(value: str, reason: str, confidence: float = 0.6) -> Dict[str, Any]:
+        return {"value": value, "value_status": "inferred", "evidence": [],
+                "reasoning_summary": reason, "confidence": confidence}
 
-    # 2. Exact Claim Detection (Deterministic search only)
-    desc_lower = description.lower()
-    name_lower = name.lower()
-    
-    def detect_simple_claim(keyword: str, field_name: str) -> Dict[str, Any]:
-        if keyword in desc_lower or keyword in name_lower:
-            evidence_text = f"Found keyword '{keyword}' in source data."
-            return {
-                "value": "yes",
-                "claim_status": "explicit_brand_claim",
-                "evidence": [{
-                    "source_reference": None,
-                    "source_field": "description" if keyword in desc_lower else "title",
-                    "supporting_text": evidence_text,
-                    "evidence_type": "keyword_match",
-                    "char_offsets": None
-                }],
-                "reasoning_summary": f"Detected claim by keyword '{keyword}'.",
-                "confidence": 0.95
-            }
-        return {
-            "value": "unverified",
-            "claim_status": "unverified",
-            "evidence": [],
-            "reasoning_summary": f"No explicit '{keyword}' claim was supplied; no yes/no claim is inferred.",
-            "confidence": 1.0
-        }
-
-    # Helper for simple categorizations
-    def make_unknown_categorical() -> Dict[str, Any]:
-        return {
-            "value": None,
-            "value_status": "unknown",
-            "evidence": [],
-            "reasoning_summary": "Unprocessed. Requires AI model enrichment.",
-            "confidence": 0.0
-        }
-
-    def make_inferred_categorical(value: str, reason: str, confidence: float = 0.62) -> Dict[str, Any]:
-        return {
-            "value": value,
-            "value_status": "inferred",
-            "evidence": [{
-                "source_reference": None,
-                "source_field": "title/description",
-                "supporting_text": reason,
-                "evidence_type": "catalogue_rule_inference",
-                "char_offsets": None
-            }],
-            "reasoning_summary": reason,
-            "confidence": confidence
-        }
-
-    def make_unknown_concern() -> Dict[str, Any]:
-        return {
-            "targeting_status": "unknown",
-            "evidence": [],
-            "reasoning_summary": "Unprocessed. Requires AI model enrichment.",
-            "confidence": 0.0
-        }
-
-    source_text = f"{name} {description}".lower()
-
-    def detect_categorical(rules: list[tuple[str, str]], field_name: str) -> Dict[str, Any]:
-        for keyword, value in rules:
-            if keyword in source_text:
-                return {
-                    "value": value,
-                    "value_status": "explicit_source",
-                    "evidence": [{
-                        "source_reference": None,
-                        "source_field": "title/description",
-                        "supporting_text": f"Found '{keyword}' in source title or description.",
-                        "evidence_type": "keyword_match",
-                        "char_offsets": None
-                    }],
-                    "reasoning_summary": f"Mapped {field_name} from the explicit source keyword '{keyword}'.",
-                    "confidence": 0.9
-                }
-        return make_inferred_categorical(
-            "beauty product",
-            f"No precise {field_name} signal was supplied; assigned the broad catalogue fallback.",
-            0.51,
-        )
-
-    def detect_concern(keywords: list[str]) -> Dict[str, Any]:
-        for keyword in keywords:
-            if keyword in source_text:
-                return {
-                    "targeting_status": "explicit",
-                    "evidence": [{
-                        "source_reference": None,
-                        "source_field": "title/description",
-                        "supporting_text": f"Found '{keyword}' in source title or description.",
-                        "evidence_type": "keyword_match",
-                        "char_offsets": None
-                    }],
-                    "reasoning_summary": f"The source explicitly mentions '{keyword}'.",
-                    "confidence": 0.9
-                }
-        return {
-            "targeting_status": "not_targeted",
-            "evidence": [],
-            "reasoning_summary": "No source or product-type signal indicates this concern is targeted.",
-            "confidence": 0.55
-        }
-
-    product_type = detect_categorical([
-        ("eau de parfum", "eau de parfum"), ("eau de toilette", "eau de toilette"),
-        ("eau de cologne", "eau de cologne"), ("parfum extract", "parfum"),
-        ("cleanser", "cleanser"), ("face wash", "cleanser"), ("serum", "serum"),
-        ("moisturizer", "moisturizer"), ("moisturiser", "moisturizer"),
-        ("cream", "cream"), ("lotion", "lotion"), ("toner", "toner"),
-        ("shampoo", "shampoo"), ("conditioner", "conditioner"),
-        ("mascara", "mascara"), ("lipstick", "lipstick"), ("fragrance", "fragrance"),
-        ("perfume", "fragrance"), ("foundation", "foundation"),
-        ("concealer", "concealer"), ("sunscreen", "sunscreen"), ("spf", "sunscreen"),
-        ("deodorant", "deodorant"), ("body wash", "body wash"), ("mask", "mask")
-    ], "product type")
-    texture = detect_categorical([
-        ("gel", "gel"), ("cream", "cream"), ("lotion", "lotion"),
-        ("oil", "oil"), ("balm", "balm"), ("foam", "foam"), ("spray", "spray")
-    ], "texture")
-    application_area = detect_categorical([
-        ("scalp", "scalp"), ("hair", "hair"), ("eye", "eye area"),
-        ("lip", "lips"), ("face", "face"), ("body", "body")
-    ], "application area")
-
-    inferred_type = product_type.get("value")
-    if application_area.get("value") == "beauty product" and inferred_type:
-        area_by_type = {
-            "cleanser": "face", "serum": "face", "moisturizer": "face",
-            "toner": "face", "foundation": "face", "concealer": "face",
-            "sunscreen": "face/body", "mascara": "eye area", "lipstick": "lips",
-            "shampoo": "hair/scalp", "conditioner": "hair", "deodorant": "underarms",
-            "body wash": "body", "fragrance": "body", "eau de parfum": "body",
-            "eau de toilette": "body", "eau de cologne": "body", "parfum": "body",
-        }
-        inferred_area = area_by_type.get(inferred_type)
-        if inferred_area:
-            application_area = make_inferred_categorical(
-                inferred_area, f"Application area inferred from product type '{inferred_type}'."
-            )
-
-    gender_target = detect_categorical([
-        ("for men", "men"), ("men's", "men"), ("for women", "women"),
-        ("women's", "women"), ("unisex", "unisex")
-    ], "gender target")
-    if gender_target.get("value") == "beauty product":
-        gender_target = make_inferred_categorical(
-            "unisex",
-            "No gender restriction is stated; the catalogue default is unisex.",
-            0.55
-        )
-
-    audience_type = inferred_type or "beauty product"
-    audience_area = application_area.get("value") or "beauty routine"
-    need = next((label.lower() for label, field in [
-        ("hydration", detect_concern(["hydrat", "moistur"])),
-        ("visible signs of ageing", detect_concern(["anti-age", "wrinkle"])),
-        ("uneven tone", detect_concern(["pigmentation", "dark spot", "brightening"])),
-        ("blemishes", detect_concern(["acne", "blemish", "breakout"])),
-        ("sensitivity and comfort", detect_concern(["sensitive", "soothing"])),
-    ] if field["targeting_status"] == "explicit"), "everyday care")
-    target_audience = make_inferred_categorical(
-        [
-            f"Customers seeking {need} support in their {audience_area} routine.",
-            f"Shoppers who prefer a {texture.get('value') or 'practical'} {audience_type} for regular use.",
-            f"Customers comparing {audience_type} options and wanting a clear, easy-to-integrate routine step.",
-        ],
-        "Three merchandising profiles inferred from product type, application area, texture and stated needs.",
-        0.62,
+    type_rules = (
+        ("eau de parfum", "Eau de Parfum"), ("eau de toilette", "Eau de Toilette"),
+        ("parfum", "Parfum"), ("perfume", "Fragrance"), ("shampoo", "Shampoo"),
+        ("conditioner", "Conditioner"), ("foundation", "Foundation"), ("concealer", "Concealer"),
+        ("mascara", "Mascara"), ("lipstick", "Lipstick"), ("cleanser", "Cleanser"),
+        ("serum", "Serum"), ("moistur", "Moisturiser"), ("cream", "Cream"),
+        ("toner", "Toner"), ("sunscreen", "Sunscreen"), ("spf", "Sunscreen"),
     )
-
-    fragrance_types = {"fragrance", "eau de parfum", "eau de toilette", "eau de cologne", "parfum"}
-    if texture.get("value") == "beauty product" and inferred_type in fragrance_types:
-        texture = make_inferred_categorical(
-            "liquid fragrance",
-            f"Liquid fragrance format inferred from product type '{inferred_type}'.",
-            0.72,
-        )
-    elif texture.get("value") == "beauty product" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
-        texture_defaults = {
-            "serum": "serum/liquid", "toner": "liquid",
-            "shampoo": "liquid/gel", "conditioner": "cream"
-        }
-        texture = make_inferred_categorical(
-            texture_defaults[inferred_type],
-            f"Typical texture inferred from product type '{inferred_type}'.",
-            0.58
-        )
-    elif texture.get("value") == "beauty product":
-        texture = make_inferred_categorical(
-            "standard formulation",
-            f"Texture is not explicit; a neutral merchandising value was assigned for '{inferred_type}'.",
-            0.51,
-        )
-
-    if application_area.get("value") == "beauty product":
-        application_area = make_inferred_categorical(
-            "face and body",
-            "No narrower application area is stated; assigned a broad beauty-use area.",
-            0.51,
-        )
-
-    hydration = detect_concern(["hydrat", "moistur"])
-    anti_ageing = detect_concern(["anti-age", "anti age", "anti-wrinkle", "wrinkle"])
-    pigmentation = detect_concern(["pigmentation", "dark spot", "brightening"])
-    acne = detect_concern(["acne", "blemish", "breakout"])
-    redness = detect_concern(["redness", "red skin"])
-    sensitivity = detect_concern(["sensitive skin", "sensitivity", "soothing"])
-    scalp_care = detect_concern(["scalp"])
-    hair_growth = detect_concern(["hair growth", "thinning hair"])
-    fragrance = detect_concern(["fragrance", "perfume", "parfum"])
-    freshness = detect_concern(["freshness", "refreshing"])
-
-    benefits = []
-    for label, field in [
-        ("Hydration support", hydration), ("Anti-ageing targeting", anti_ageing),
-        ("Brightening or pigmentation targeting", pigmentation), ("Blemish targeting", acne),
-        ("Soothing or sensitivity targeting", sensitivity), ("Scalp care", scalp_care),
-        ("Freshness", freshness),
-    ]:
-        if field["targeting_status"] == "explicit":
-            benefits.append({
-                "statement": label,
-                "source_type": "source_claim",
-                "evidence": field["evidence"][0]["supporting_text"],
-                "confidence": field["confidence"]
-            })
-    if not benefits:
-        benefit_by_type = {
-            "cleanser": "Helps cleanse the skin",
-            "serum": "Supports a targeted daily beauty routine",
-            "moisturizer": "Helps maintain skin comfort and moisture",
-            "cream": "Helps condition and soften the application area",
-            "lotion": "Helps condition and soften the application area",
-            "toner": "Helps prepare skin for the next routine step",
-            "shampoo": "Helps cleanse hair and scalp",
-            "conditioner": "Helps condition and soften hair",
-            "mascara": "Helps define the lashes",
-            "lipstick": "Adds colour and definition to the lips",
-            "foundation": "Helps create a more even-looking complexion",
-            "concealer": "Helps visually reduce the appearance of uneven tone",
-            "sunscreen": "Supports daily sun-care application",
-            "fragrance": "Provides a personal fragrance experience",
-            "eau de parfum": "Provides a concentrated personal fragrance experience",
-            "eau de toilette": "Provides a lighter personal fragrance experience",
-            "eau de cologne": "Provides a fresh personal fragrance experience",
-            "parfum": "Provides an intensive personal fragrance experience",
-            "deodorant": "Supports everyday freshness",
-            "body wash": "Helps cleanse the body",
-            "mask": "Supports a focused beauty-care step",
-            "beauty product": "Supports an everyday beauty and personal-care routine",
-        }
-        benefits.append({
-            "statement": benefit_by_type.get(inferred_type, "Supports an everyday beauty and personal-care routine"),
-            "source_type": "catalogue_inference",
-            "evidence": f"General benefit inferred from product type '{inferred_type}'.",
-            "confidence": 0.52,
-        })
-
-    directions_by_type = {
-        "cleanser": "Apply to damp skin, gently massage, then rinse.",
-        "serum": "Apply a small amount to clean skin.",
-        "moisturizer": "Apply to clean skin and massage until absorbed.",
-        "toner": "Apply to clean skin before serum or moisturizer.",
-        "shampoo": "Apply to wet hair and scalp, massage, then rinse.",
-        "conditioner": "Apply to hair lengths after shampooing, then rinse.",
-        "sunscreen": "Apply evenly before sun exposure and reapply as needed.",
-        "fragrance": "Spray lightly onto pulse points; avoid rubbing after application.",
-        "eau de parfum": "Spray lightly onto pulse points; avoid rubbing after application.",
-        "eau de toilette": "Spray lightly onto pulse points; avoid rubbing after application.",
-        "eau de cologne": "Spray lightly onto pulse points as desired.",
-        "parfum": "Apply sparingly to pulse points.",
+    product_type = next((label for token, label in type_rules if token in source), "Beauty Product")
+    lower_type = product_type.lower()
+    is_fragrance = any(x in lower_type for x in ("fragrance", "parfum", "eau de"))
+    is_hair = any(x in lower_type for x in ("hair", "shampoo", "conditioner"))
+    is_makeup = any(x in lower_type for x in ("foundation", "concealer", "mascara", "lipstick", "makeup"))
+    category = "Fragrance" if is_fragrance else "Haircare" if is_hair else "Makeup" if is_makeup else "Skincare"
+    area = "body/pulse points" if is_fragrance else "hair and scalp" if is_hair else ("face, eyes or lips" if is_makeup else "face and skin")
+    texture = next((label for token, label in (("gel", "Gel"), ("cream", "Cream"), ("oil", "Oil"),
+                                                ("balm", "Balm"), ("spray", "Spray"), ("foam", "Foam"))
+                    if token in source), "Product-appropriate format")
+    concern_rules = (("hydrat", "Dehydration"), ("moistur", "Dryness"), ("wrinkle", "Fine lines"),
+                     ("anti-age", "Visible ageing"), ("bright", "Dullness"), ("pigment", "Pigmentation"),
+                     ("acne", "Acne"), ("blemish", "Blemishes"), ("sensitive", "Sensitivity"),
+                     ("redness", "Redness"), ("scalp", "Scalp comfort"), ("thinning", "Hair thinning"))
+    concerns = []
+    for token, label in concern_rules:
+        if token in source and label not in concerns:
+            concerns.append(label)
+    if not concerns:
+        concerns = ["Personal scent expression"] if is_fragrance else [f"Everyday {category.lower()} care"]
+    audience = [
+        f"Shoppers looking for {concerns[0].lower()} support from an easy-to-understand {lower_type}.",
+        f"Customers who prefer a {texture.lower()} product suited to an everyday {area} routine.",
+        f"Beauty shoppers comparing {lower_type} options and wanting clear benefits and straightforward use.",
+    ]
+    benefit = ("Creates a personal fragrance signature" if is_fragrance else
+               "Helps cleanse and care for hair and scalp" if is_hair else
+               "Supports colour, definition or complexion enhancement" if is_makeup else
+               "Supports an effective everyday skincare routine")
+    direction_map = {"fragrance": "Apply sparingly to pulse points; do not rub after application.",
+                     "haircare": "Apply as directed to hair or scalp and rinse when the format requires it.",
+                     "makeup": "Apply to the intended area and build or blend to the desired result.",
+                     "skincare": "Apply to clean skin in the product-appropriate step; follow pack directions."}
+    ingredients = []
+    for position, part in enumerate(re.split(r"[,;]", raw_ingredients or ""), 1):
+        ingredient = part.strip()
+        if ingredient:
+            ingredients.append({"ingredient_name": ingredient, "inci_position": position,
+                                "short_description": None, "functions": [], "benefits": [],
+                                "possible_concerns": [], "is_key_ingredient": False,
+                                "key_ingredient_status": "unreviewed"})
+    claim_tokens = {
+        "Vegan": "vegan", "Cruelty Free": "cruelty-free", "Paraben Free": "paraben-free",
+        "Sulfate Free": "sulfate-free", "Silicone Free": "silicone-free", "Alcohol Free": "alcohol-free",
+        "Phthalate Free": "phthalate-free", "Dermatologically Tested": "dermatologically tested",
+        "Clinically Tested": "clinically tested", "Ophthalmologically Tested": "ophthalmologically tested",
     }
-    inferred_directions = directions_by_type.get(
-        inferred_type,
-        "Use as directed on the product packaging for this product type.",
-    )
-
-    finish_by_type = {
-        "foundation": "natural cosmetic finish", "concealer": "natural cosmetic finish",
-        "lipstick": "colour finish", "serum": "lightweight finish",
-        "moisturizer": "comfortable moisturised finish", "cream": "comfortable moisturised finish",
-        "sunscreen": "protective skincare finish", "fragrance": "fragrant dry-down",
-        "eau de parfum": "fragrant dry-down", "eau de toilette": "fragrant dry-down",
-        "eau de cologne": "fresh fragrant dry-down", "parfum": "intensive fragrant dry-down",
+    claims = []
+    for label, token in claim_tokens.items():
+        supported = token in source
+        claims.append({"name": label, "value": "Yes" if supported else None,
+                       "status": "source_supported" if supported else "unverified", "evidence": [],
+                       "reasoning_summary": "Explicit source wording detected." if supported else "No supporting source statement supplied.",
+                       "confidence": 0.9 if supported else 0.5})
+    common = {
+        "subcategory": categorical(product_type, "Subcategory inferred from the supplied identity."),
+        "product_type": categorical(product_type, "Product type inferred from title and description."),
+        "application_area": categorical(area, "Application area inferred from product type."),
+        "target_audience": {"value": audience, "value_status": "inferred", "evidence": [],
+                            "reasoning_summary": "Three distinct commercial profiles inferred from product evidence.", "confidence": 0.62},
+        "product_positioning": categorical(f"{product_type} for {concerns[0].lower()}", "Merchandising positioning inferred from the product profile."),
+        "sensory_description": categorical(f"{texture} format with a product-appropriate application experience.", "Sensory wording inferred from format."),
+        "routine_time": categorical("As appropriate for the product and pack directions", "Controlled routine timing."),
+        "routine_step": categorical("Product-specific routine step", "Controlled routine step."),
+        "targeted_concerns": {"values": concerns, "value_status": "inferred", "evidence": [],
+                              "reasoning_summary": "Consolidated concerns inferred from supplied wording.", "confidence": 0.62},
+        "claims": claims,
+        "benefits": [{"statement": benefit, "source_type": "catalogue_inference",
+                      "evidence": f"Inferred from product type {product_type}.", "confidence": 0.55}],
+        "directions": {"text": direction_map[category.lower()], "source_status": "inferred", "evidence": [], "confidence": 0.55},
+        "warnings_considerations": [], "ingredients_intelligence": ingredients,
+        "skincare": None, "haircare": None, "makeup": None, "fragrance": None,
     }
-    absorption_by_type = {
-        "serum": "designed to layer within a skincare routine",
-        "moisturizer": "designed to absorb with gentle massage",
-        "cream": "designed to absorb with gentle massage",
-        "lotion": "spreadable and designed for routine absorption",
-        "oil": "emollient application with a conditioning after-feel",
-    }
-    routine_step_by_type = {
-        "cleanser": "cleanse", "toner": "tone and prepare", "serum": "targeted treatment",
-        "moisturizer": "moisturise", "cream": "moisturise", "sunscreen": "daytime protection",
-        "shampoo": "cleanse hair", "conditioner": "condition after shampooing",
-        "fragrance": "final fragrance step", "eau de parfum": "final fragrance step",
-        "eau de toilette": "final fragrance step", "eau de cologne": "final fragrance step",
-        "parfum": "final fragrance step",
-    }
-    routine_step = routine_step_by_type.get(inferred_type, "product-specific routine step")
-    targeted_labels = [label for label, concern in (
-        ("Dryness and dehydration", hydration), ("Fine lines and visible ageing", anti_ageing),
-        ("Uneven tone and pigmentation", pigmentation), ("Blemishes and congestion", acne),
-        ("Redness", redness), ("Sensitivity and comfort", sensitivity),
-        ("Scalp care", scalp_care), ("Hair density concerns", hair_growth),
-        ("Freshness", freshness),
-    ) if concern["targeting_status"] in {"explicit", "inferred"}]
-    if not targeted_labels:
-        targeted_labels = (
-            ["Personal scent expression", "Fragrance wardrobe and occasion dressing"]
-            if inferred_type in fragrance_types
-            else [f"Everyday {audience_type} maintenance"]
-        )
-
-    ingredient_names_lower = [str(item["ingredient_name"]).lower() for item in ingredients_list]
-    def count_terms(*terms: str) -> int:
-        return sum(any(term in ingredient for term in terms) for ingredient in ingredient_names_lower)
-    inci_stats = {
-        "total_ingredients": len(ingredients_list),
-        "allergen_count": count_terms("limonene", "linalool", "citral", "geraniol", "eugenol", "coumarin"),
-        "fragrance_count": count_terms("parfum", "fragrance", "aroma"),
-        "plant_extracts": count_terms("extract", "leaf", "root", "flower", "seed"),
-        "peptides": count_terms("peptide"),
-        "antioxidants": count_terms("tocopher", "ascorb", "vitamin e", "ferulic"),
-        "humectants": count_terms("glycerin", "hyaluron", "propanediol", "butylene glycol"),
-        "emollients_oils": count_terms("oil", "butter", "squalane", "triglyceride"),
-        "preservatives": count_terms("phenoxyethanol", "benzoate", "sorbate", "paraben"),
-        "evidence": [],
-        "confidence": 0.8 if ingredients_list else 0.5,
-    }
-
-    return {
-        "subcategory": product_type,
-        "product_type": product_type,
-        "gender_target": gender_target,
-        "texture": texture,
-        "application_area": application_area,
-        "target_audience": target_audience,
-        "brand_origin": make_inferred_categorical("Unverified", "Brand origin requires an explicit source.", 0.5),
-        "country_of_manufacture": make_inferred_categorical("Unverified", "Manufacturing country requires an explicit source.", 0.5),
-        "launch_year": make_inferred_categorical("Unverified", "Launch year requires an explicit source.", 0.5),
-        "product_positioning": make_inferred_categorical(
-            f"{audience_type.title()} for {need}", "Merchandising positioning inferred from product type and stated need.", 0.6
-        ),
-        "colour": make_inferred_categorical("Product dependent", "Colour is not explicit in the supplied source.", 0.5),
-        "finish": make_inferred_categorical(
-            finish_by_type.get(inferred_type, "product-appropriate finish"),
-            "Finish inferred conservatively from product type.", 0.56,
-        ),
-        "absorption_profile": make_inferred_categorical(
-            absorption_by_type.get(inferred_type, "application profile appropriate to product format"),
-            "Absorption and after-feel inferred from product format.", 0.55,
-        ),
-        "sensory_description": make_inferred_categorical(
-            f"{(texture.get('value') or 'cosmetic').title()} format with a {finish_by_type.get(inferred_type, 'product-appropriate finish')}.",
-            "Sensory summary inferred from texture and product type.", 0.57,
-        ),
-        "routine_time": make_inferred_categorical(
-            "morning and/or evening as appropriate", "Routine timing inferred from product type; packaging directions take precedence.", 0.55
-        ),
-        "routine_step": make_inferred_categorical(routine_step, "Routine step inferred from product type.", 0.62),
-        "application_sequence": make_inferred_categorical(
-            inferred_directions, "Sequence inferred from standard use of this product type.", 0.55
-        ),
-        "regulatory_notes": make_inferred_categorical(
-            "Follow market-specific packaging directions and warnings.",
-            "No product-specific regulatory statement was supplied.", 0.5,
-        ),
-        "product_credentials": {
-            "values": [f"{audience_type.title()} category", f"{need.title()} positioning"],
-            "value_status": "inferred", "evidence": [],
-            "reasoning_summary": "Merchandising credentials inferred from the product profile.", "confidence": 0.58,
-        },
-        "targeted_concerns": {
-            "values": targeted_labels, "value_status": "inferred", "evidence": [],
-            "reasoning_summary": "Concern list consolidated from the structured concern fields.", "confidence": 0.62,
-        },
-        "proprietary_technologies": {"items": [], "evidence": [], "confidence": 0.5},
-        "skin_type_scores": {
-            "scores": {} if inferred_type in fragrance_types else {
-                name: 3 for name in ("normal", "dry", "very_dry", "combination", "oily", "sensitive")
-            },
-            "evidence": [],
-            "reasoning_summary": (
-                "Skin-type scoring is not applicable to personal fragrance."
-                if inferred_type in fragrance_types
-                else "Neutral fit scores pending product-specific evidence."
-            ),
-            "confidence": 1.0 if inferred_type in fragrance_types else 0.5,
-        },
-        "inci_stats": inci_stats,
-        
-        "vegan": detect_simple_claim("vegan", "vegan"),
-        "cruelty_free": detect_simple_claim("cruelty-free", "cruelty_free"),
-        "paraben_free": detect_simple_claim("paraben-free", "paraben_free"),
-        "sulfate_free": detect_simple_claim("sulfate-free", "sulfate_free"),
-        "silicone_free": detect_simple_claim("silicone-free", "silicone_free"),
-        "alcohol_free": detect_simple_claim("alcohol-free", "alcohol_free"),
-        "fragrance_present": detect_simple_claim("fragrance", "fragrance_present"),
-        "phthalate_free": detect_simple_claim("phthalate-free", "phthalate_free"),
-        "dermatologically_tested": detect_simple_claim("dermatologically tested", "dermatologically_tested"),
-        "clinically_tested": detect_simple_claim("clinically tested", "clinically_tested"),
-        "ophthalmologically_tested": detect_simple_claim("ophthalmologically tested", "ophthalmologically_tested"),
-        
-        "hydration": hydration,
-        "anti_ageing": anti_ageing,
-        "pigmentation": pigmentation,
-        "acne": acne,
-        "redness": redness,
-        "sensitivity": sensitivity,
-        "scalp_care": scalp_care,
-        "hair_growth": hair_growth,
-        "fragrance": fragrance,
-        "freshness": freshness,
-        
-        "benefits": benefits,
-        "directions": {
-            "text": inferred_directions,
-            "source_status": "inferred",
-            "evidence": [{
-                "source_reference": None,
-                "source_field": "product_type",
-                "supporting_text": f"General usage inferred from product type '{inferred_type}'.",
-                "evidence_type": "catalogue_rule_inference",
-                "char_offsets": None
-            }],
-            "confidence": 0.55
-        },
-        "skin_type_fit": {
-            "applicable": False,
-            "recommended_for": [],
-            "not_recommended_for": [],
-            "unknown_for": [],
-            "evidence": [],
-            "confidence": None
-        },
-        "hair_type_fit": {
-            "applicable": False,
-            "recommended_for": [],
-            "not_recommended_for": [],
-            "unknown_for": [],
-            "evidence": [],
-            "confidence": None
-        },
-        "fragrance_intelligence": {
-            "applicable": inferred_type in fragrance_types,
-            "fragrance_presence_status": "present_by_product_type" if inferred_type in fragrance_types else "not_detected_from_supplied_data",
-            "fragrance_family": None,
-            "top_notes": [],
-            "middle_notes": [],
-            "base_notes": [],
-            "concentration": next((label for token, label in (
-                ("eau de toilette", "Eau de Toilette"), ("eau de parfum", "Eau de Parfum"),
-                ("extrait", "Extrait de Parfum"), ("parfum", "Parfum"),
-                ("cologne", "Eau de Cologne"),
-            ) if token in source_text), None),
-            "longevity_profile": None,
-            "sillage_projection": None,
-            "seasonal_fit": [],
-            "occasion_fit": [],
-            "evidence": [],
-            "confidence": 0.95 if inferred_type in fragrance_types else None
-        },
-        "pregnancy_warning_observation": {
-            "observation_domain": "pregnancy",
-            "review_required": True if "retinol" in raw_ingredients.lower() else False,
-            "observation_type": "retinol_present" if "retinol" in raw_ingredients.lower() else "none",
-            "observed_items": ["retinol"] if "retinol" in raw_ingredients.lower() else [],
-            "evidence": [{
-                "source_reference": None,
-                "source_field": "ingredients",
-                "supporting_text": "Ingredients contain retinol.",
-                "evidence_type": "keyword_match",
-                "char_offsets": None
-            }] if "retinol" in raw_ingredients.lower() else [],
-            "review_message": "Contains Retinol. Factual review required for pregnancy use (no safety conclusion is made)." if "retinol" in raw_ingredients.lower() else "No pregnancy safety concerns detected.",
-            "confidence": 1.0
-        },
-        "allergen_warning_observation": {
-            "observation_domain": "allergen",
-            "review_required": True,
-            "observation_type": "unknown",
-            "observed_items": [],
-            "evidence": [],
-            "review_message": "Awaiting AI enrichment run observation.",
-            "confidence": 0.0
-        },
-        "sensitivity_warning_observation": {
-            "observation_domain": "sensitivity",
-            "review_required": True,
-            "observation_type": "unknown",
-            "observed_items": [],
-            "evidence": [],
-            "review_message": "Awaiting AI enrichment run observation.",
-            "confidence": 0.0
-        },
-        "ingredients_intelligence": ingredients_list
-    }
+    if is_fragrance:
+        concentration = next((label for token, label in (("eau de parfum", "Eau de Parfum"),
+                            ("eau de toilette", "Eau de Toilette"), ("parfum", "Parfum")) if token in source), None)
+        common["fragrance"] = {"concentration": concentration, "fragrance_family": None, "top_notes": [],
+            "heart_notes": [], "base_notes": [], "longevity": None, "sillage_projection": None,
+            "seasonal_fit": [], "occasion_fit": [], "evidence": [], "confidence": 0.6}
+    elif is_hair:
+        common["haircare"] = {"hair_types": {"applicable": True, "recommended_for": [], "not_recommended_for": [],
+            "unknown_for": ["all hair types pending evidence"], "evidence": [], "confidence": 0.5},
+            "texture_format": categorical(texture, "Format inferred from source."), "key_ingredients": []}
+    elif is_makeup:
+        common["makeup"] = {"shade_colour": None, "coverage": None,
+            "finish": categorical("Product-appropriate finish", "Finish requires product evidence."),
+            "texture_format": categorical(texture, "Format inferred from source.")}
+    else:
+        common["skincare"] = {"skin_types": {"applicable": True, "recommended_for": [], "not_recommended_for": [],
+            "unknown_for": ["all skin types pending evidence"], "evidence": [], "confidence": 0.5},
+            "texture": categorical(texture, "Texture inferred from source."),
+            "finish": categorical("Product-appropriate finish", "Finish requires product evidence."), "key_ingredients": []}
+    return common
 
 def run_ai_enrichment(
     db: Session,
@@ -1115,95 +596,13 @@ def run_ai_enrichment(
         f"\n\nExact ingredient reference context:\n{grounding_context}"
     )
 
-    # Define evidence schema to reuse
-    evidence_schema = {
-        "type": "ARRAY",
-        "items": {
-            "type": "OBJECT",
-            "properties": {
-                "source_reference": {"type": "STRING"},
-                "source_field": {"type": "STRING"},
-                "supporting_text": {"type": "STRING"},
-                "evidence_type": {"type": "STRING"},
-                "char_offsets": {"type": "STRING"}
-            },
-            "required": ["source_field", "supporting_text", "evidence_type"]
-        }
-    }
-
-    # Define payload schema config
+    # Gemini receives the same simplified contract as OpenAI. JSON mode keeps the
+    # provider response machine-readable; Pydantic remains the authoritative validator.
+    system_prompt += f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": {
-                "type": "OBJECT",
-                "properties": {
-                    "subcategory": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    "product_type": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    "gender_target": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    "texture": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    "application_area": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    "target_audience": {"type": "OBJECT", "properties": {"value": {"type": "ARRAY", "items": {"type": "STRING"}, "minItems": 3, "maxItems": 3}, "value_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "value_status", "reasoning_summary", "confidence", "evidence"]},
-                    
-                    "vegan": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    "cruelty_free": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    "paraben_free": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    "sulfate_free": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    "silicone_free": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    "alcohol_free": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    "fragrance_present": {"type": "OBJECT", "properties": {"value": {"type": "STRING"}, "claim_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["value", "claim_status", "reasoning_summary", "confidence", "evidence"]},
-                    
-                    "hydration": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "anti_ageing": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "pigmentation": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "acne": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "redness": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "sensitivity": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "scalp_care": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "hair_growth": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "fragrance": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    "freshness": {"type": "OBJECT", "properties": {"targeting_status": {"type": "STRING"}, "reasoning_summary": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["targeting_status", "reasoning_summary", "confidence", "evidence"]},
-                    
-                    "benefits": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"statement": {"type": "STRING"}, "source_type": {"type": "STRING"}, "evidence": {"type": "STRING"}, "confidence": {"type": "NUMBER"}}, "required": ["statement", "source_type", "evidence", "confidence"]}},
-                    "directions": {"type": "OBJECT", "properties": {"text": {"type": "STRING"}, "source_status": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["text", "source_status", "confidence", "evidence"]},
-                    
-                    "skin_type_fit": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "not_recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "unknown_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "recommended_for", "not_recommended_for", "unknown_for", "confidence", "evidence"]},
-                    "hair_type_fit": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "not_recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "unknown_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "recommended_for", "not_recommended_for", "unknown_for", "confidence", "evidence"]},
-                    "fragrance_intelligence": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "fragrance_presence_status": {"type": "STRING"}, "fragrance_family": {"type": "STRING"}, "top_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "middle_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "base_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "concentration": {"type": "STRING"}, "longevity_profile": {"type": "STRING"}, "sillage_projection": {"type": "STRING"}, "seasonal_fit": {"type": "ARRAY", "items": {"type": "STRING"}}, "occasion_fit": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "fragrance_presence_status", "fragrance_family", "top_notes", "middle_notes", "base_notes", "confidence", "evidence"]},
-                    
-                    "pregnancy_warning_observation": {"type": "OBJECT", "properties": {"observation_domain": {"type": "STRING"}, "review_required": {"type": "BOOLEAN"}, "observation_type": {"type": "STRING"}, "observed_items": {"type": "ARRAY", "items": {"type": "STRING"}}, "review_message": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["observation_domain", "review_required", "observation_type", "observed_items", "review_message", "confidence", "evidence"]},
-                    "allergen_warning_observation": {"type": "OBJECT", "properties": {"observation_domain": {"type": "STRING"}, "review_required": {"type": "BOOLEAN"}, "observation_type": {"type": "STRING"}, "observed_items": {"type": "ARRAY", "items": {"type": "STRING"}}, "review_message": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["observation_domain", "review_required", "observation_type", "observed_items", "review_message", "confidence", "evidence"]},
-                    "sensitivity_warning_observation": {"type": "OBJECT", "properties": {"observation_domain": {"type": "STRING"}, "review_required": {"type": "BOOLEAN"}, "observation_type": {"type": "STRING"}, "observed_items": {"type": "ARRAY", "items": {"type": "STRING"}}, "review_message": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["observation_domain", "review_required", "observation_type", "observed_items", "review_message", "confidence", "evidence"]},
-                    
-                    "ingredients_intelligence": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "ingredient_name": {"type": "STRING"},
-                                "normalized_inci_name": {"type": "STRING"},
-                                "functions": {"type": "ARRAY", "items": {"type": "STRING"}},
-                                "benefits": {"type": "ARRAY", "items": {"type": "STRING"}},
-                                "is_key_ingredient": {"type": "BOOLEAN"},
-                                "key_ingredient_status": {"type": "STRING"},
-                                "confidence": {"type": "NUMBER"},
-                                "evidence": evidence_schema
-                            },
-                            "required": ["ingredient_name", "normalized_inci_name", "functions", "benefits", "is_key_ingredient", "key_ingredient_status", "confidence", "evidence"]
-                        }
-                    }
-                },
-                "required": [
-                    "subcategory", "product_type", "gender_target", "texture", "application_area", "target_audience",
-                    "vegan", "cruelty_free", "paraben_free", "sulfate_free", "silicone_free", "alcohol_free", "fragrance_present",
-                    "hydration", "anti_ageing", "pigmentation", "acne", "redness", "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness",
-                    "benefits", "directions", "skin_type_fit", "hair_type_fit", "fragrance_intelligence",
-                    "pregnancy_warning_observation", "allergen_warning_observation", "sensitivity_warning_observation", "ingredients_intelligence"
-                ]
-            }
-        }
+        "generationConfig": {"responseMimeType": "application/json"},
     }
 
     try:

@@ -24,6 +24,7 @@ export default function ImportsPage() {
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [saveTemplate, setSaveTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
+  const [sourceName, setSourceName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,22 +32,19 @@ export default function ImportsPage() {
     { key: "product_name", label: "Product Name (Required)" },
     { key: "brand", label: "Brand (Required)" },
     { key: "ean", label: "GTIN / EAN / UPC Barcode" },
-    { key: "size", label: "Unit Size (e.g. 50ml, 30ml)" },
-    { key: "unit", label: "Size Unit" },
+    { key: "size", label: "Size (e.g. 50 ml)" },
     { key: "variant", label: "Variant / Option Name" },
     { key: "sku", label: "Supplier SKU" },
     { key: "price", label: "List Price" },
     { key: "description", label: "Product Description" },
     { key: "ingredients", label: "Raw INCI Ingredients List" },
     { key: "category", label: "Product Category" },
-    { key: "product_family", label: "Product Family / Subcategory" },
     { key: "claims", label: "Product Claims" },
     { key: "directions", label: "Directions / How To Use" },
     { key: "market", label: "Market / Country" },
     { key: "language", label: "Language / Locale" },
     { key: "product_url", label: "Product Page URL" },
     { key: "image_url", label: "Product Image URL" },
-    { key: "retailer", label: "Retailer / Source" }
   ];
 
   useEffect(() => {
@@ -72,6 +70,7 @@ export default function ImportsPage() {
     if (!uploadedFile) return;
 
     setFile(uploadedFile);
+    setSourceName(uploadedFile.name.replace(/\.[^.]+$/, ''));
     setError(null);
     setLoading(true);
 
@@ -130,7 +129,7 @@ export default function ImportsPage() {
         column_mapping: mapping,
         save_template: saveTemplate,
         template_name: saveTemplate ? templateName : null,
-        source_name: file.name
+        source_name: sourceName || file.name
       };
 
       const processForm = new FormData();
@@ -194,6 +193,13 @@ export default function ImportsPage() {
           <div className={styles.mappingGrid}>
             <div className={styles.mappingCard}>
               <h3 style={{ marginBottom: 16, fontSize: 15 }}>Configure Field Mapping</h3>
+
+              <div className={styles.formGroup}>
+                <label>Feed / Source Name</label>
+                <input className={styles.inputField} value={sourceName}
+                  onChange={(e) => setSourceName(e.target.value)}
+                  placeholder="e.g. Company catalogue France" />
+              </div>
               
               <div className={styles.formGroup} style={{ marginBottom: 24 }}>
                 <label>Load Saved Template</label>

@@ -67,6 +67,7 @@ class ImportJob(Base):
     __tablename__ = 'import_jobs'
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     filename = Column(String(255), nullable=False)
+    source_name = Column(String(255), nullable=True)
     file_hash = Column(String(64), unique=False, nullable=False, index=True)
     status = Column(String(50), nullable=False, default='pending') # pending, processing, completed, failed, cancelled
     total_rows = Column(Integer, default=0, nullable=False)

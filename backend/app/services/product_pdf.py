@@ -209,12 +209,14 @@ def build_product_pdf(product: Any) -> bytes:
     variant = variants[0] if variants else {}
     size = " ".join(filter(None, (_clean(variant.get("size")), _clean(variant.get("unit"))))) or "Not supplied"
     gtin = _clean(data.get("gtin")) or _clean(variant.get("gtin"), "Not supplied")
-    country = _clean(field("brand_origin"), "Not enriched")
-    texture = _clean(field("texture"), "Not enriched")
-    fragrance_data = field("fragrance_intelligence") or {}
+    modules = {name: field(name) for name in ("skincare", "haircare", "makeup", "fragrance")}
+    module_name = next((name for name, value in modules.items() if isinstance(value, dict)), "")
+    module = modules.get(module_name) or {}
+    texture = _clean(module.get("texture") or module.get("texture_format"), "Not enriched")
+    fragrance_data = modules.get("fragrance") or {}
     fragrance = (
         _clean(fragrance_data.get("fragrance_family")) if isinstance(fragrance_data, dict) else ""
-    ) or _clean(field("fragrance_present"), "Not enriched")
+    ) or "Not enriched"
     directions = _clean(field("directions"), "Not enriched")
 
     concerns = _items((field("targeted_concerns") or {}).get("values") if isinstance(field("targeted_concerns"), dict) else field("targeted_concerns"))
@@ -234,18 +236,16 @@ def build_product_pdf(product: Any) -> bytes:
     inci = _clean(formulation.get("raw_inci_text"), "Full ingredient list not supplied.")
     inci_items = [item.strip() for item in inci.replace(";", ",").split(",") if item.strip()]
     key_ingredients = field("ingredients_intelligence") or data.get("key_ingredients") or []
-    signals = [label for label, key in (("PARABEN FREE", "paraben_free"), ("SULFATE FREE", "sulfate_free"),
-               ("PHTHALATE FREE", "phthalate_free"),
-               ("SILICONE FREE", "silicone_free"), ("VEGAN", "vegan"),
-               ("CRUELTY FREE", "cruelty_free"), ("ALCOHOL FREE", "alcohol_free")) if _yes(field(key))]
-    if _clean(field("fragrance_present")).lower() in {"no", "false"}:
-        signals.append("FRAGRANCE FREE")
+    claims = field("claims") or []
+    signals = [str(item.get("name") or "").upper() for item in claims if isinstance(item, dict)
+               and item.get("status") in {"verified", "source_supported"}
+               and str(item.get("value", "")).lower() not in {"no", "false"}]
     signals = (signals or ["NO VERIFIED FORMULATION SIGNALS"])[:3]
     inci_lower = inci.lower()
     present_signals = []
     if "alcohol denat" in inci_lower:
         present_signals.append("Alcohol Denat.")
-    if any(term in inci_lower for term in ("parfum", "fragrance", "aroma")) or _yes(field("fragrance_present")):
+    if any(term in inci_lower for term in ("parfum", "fragrance", "aroma")):
         present_signals.append("Fragrance")
     presence_line = " & ".join(present_signals) + " present" if present_signals else "No additional presence signal recorded"
 
@@ -284,7 +284,7 @@ def build_product_pdf(product: Any) -> bytes:
         pdf.setFont("Helvetica-Bold", 6.4)
         pdf.drawCentredString(margin + image_w / 2, top_y + top_h / 2 - 5 * mm, brand.upper()[:27])
 
-    hero = Table([[_p(brand.upper(), "hero")], [_p(product_name.upper(), "hero")], [_p(country.upper(), "country")]],
+    hero = Table([[_p(brand.upper(), "hero")], [_p(product_name.upper(), "hero")], [_p(category.upper(), "country")]],
                  colWidths=[center_w], style=TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), .3 * mm),
@@ -294,7 +294,7 @@ def build_product_pdf(product: Any) -> bytes:
         [_p("Product Type:", "label"), _p(product_type)], [_p("Category:", "label"), _p(category)],
         [_p("Consistency:", "label"), _p(texture)], [_p("Size:", "label"), _p(size)],
         [_p("Article Number:", "label"), _p(data.get("internal_code"))],
-        [_p("Brand Origin:", "label"), _p(country)], [_p("Launch Year:", "label"), _p(field("launch_year"), fallback="Not enriched")],
+        [_p("Subcategory:", "label"), _p(subcategory)], [_p("Application Area:", "label"), _p(field("application_area"), fallback="Not enriched")],
     ], colWidths=[28 * mm, center_w - 28 * mm], style=TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 1), ("TOPPADDING", (0, 0), (-1, -1), .25 * mm),
@@ -304,10 +304,7 @@ def build_product_pdf(product: Any) -> bytes:
 
     icon_h = 17 * mm
     _box(pdf, signal_x, top_y + top_h - icon_h, signal_w, icon_h)
-    credentials = _items((field("product_credentials") or {}).get("values") if isinstance(field("product_credentials"), dict) else field("product_credentials"))
-    tested = [label for label, key in (("DERMATOLOGICALLY TESTED", "dermatologically_tested"),
-              ("CLINICALLY TESTED", "clinically_tested"), ("OPHTHALMOLOGICALLY TESTED", "ophthalmologically_tested")) if _yes(field(key))]
-    icon_labels = (credentials + tested + [product_type, country, "Not enriched"])[:3]
+    icon_labels = (signals + [product_type, category, "No additional verified claim"])[:3]
     icon_kinds = ["flask", "cross", "drop"]
     for index, label in enumerate(icon_labels):
         iw = signal_w / 3
@@ -329,8 +326,7 @@ def build_product_pdf(product: Any) -> bytes:
     _draw(pdf, _bullets(benefits, col_w, fill_height=panel_fill_h),
           xs[0], y, col_w, row_h - 4.7 * mm)
     _box(pdf, xs[1], y, col_w, row_h, "Hero Ingredients & Technology")
-    technologies = (field("proprietary_technologies") or {}).get("items", []) if isinstance(field("proprietary_technologies"), dict) else []
-    ingredients = technologies[:3] or key_ingredients[:3]
+    ingredients = key_ingredients[:3]
     hero_rows = []
     for item in ingredients:
         media: Any = _p(_name(item)[:1].upper(), "initial")
@@ -353,20 +349,16 @@ def build_product_pdf(product: Any) -> bytes:
         ("LINEBELOW", (0, 0), (-1, -2), .3, LINE),
     ]))
     _draw(pdf, hero_table, xs[1], y, col_w, row_h - 4.7 * mm, pad=1.5 * mm)
-    _box(pdf, xs[2], y, col_w, row_h, "Skin Concerns Targeted")
+    _box(pdf, xs[2], y, col_w, row_h, "Targeted Concerns")
     _draw(pdf, _icon_bullets(concerns, col_w, fill_height=panel_fill_h),
           xs[2], y, col_w, row_h - 4.7 * mm)
 
     # Skin-fit, directions and sensory.
     y, row_h = y - gap - 34 * mm, 34 * mm
-    _box(pdf, xs[0], y, col_w, row_h, "Skin Type Fit")
-    fit_data = field("skin_type_scores") or {}
-    fit_scores = fit_data.get("scores", {}) if isinstance(fit_data, dict) else {}
-    fit_rows = []
-    for label in ["Normal", "Dry", "Very Dry", "Combination", "Oily", "Sensitive"]:
-        key = label.lower().replace(" ", "_")
-        score = max(0, min(5, int(fit_scores.get(key, 0) or 0)))
-        fit_rows.append([_p(label), _p(("● " * score + "o " * (5 - score)).strip(), "center_bold")])
+    _box(pdf, xs[0], y, col_w, row_h, "Hair Type Fit" if module_name == "haircare" else "Skin Type Fit" if module_name == "skincare" else "Category Profile")
+    fit = module.get("skin_types") or module.get("hair_types") or {}
+    fit_values = _items(fit.get("recommended_for") if isinstance(fit, dict) else fit)
+    fit_rows = [[_p(label), _p("Suitable", "center_bold")] for label in (fit_values or ["Not enriched"])]
     fit_height = (row_h - 8.7 * mm) / len(fit_rows)
     fit_table = Table(fit_rows, colWidths=[25 * mm, col_w - 29 * mm],
                       rowHeights=[fit_height] * len(fit_rows), style=TableStyle([
@@ -375,7 +367,7 @@ def build_product_pdf(product: Any) -> bytes:
     ]))
     _draw(pdf, fit_table, xs[0], y, col_w, row_h - 4.7 * mm)
     _box(pdf, xs[1], y, col_w, row_h, "How to Use")
-    sequence = _clean(field("application_sequence")) or directions
+    sequence = directions
     routine_step = _clean(field("routine_step"), "Not enriched")
     morning_copy = f"<b>Morning:</b> {escape(sequence)} Step: {escape(routine_step)}."
     evening_copy = f"<b>Evening:</b> {escape(sequence)} Step: {escape(routine_step)}."
@@ -390,10 +382,10 @@ def build_product_pdf(product: Any) -> bytes:
     _draw(pdf, use_table, xs[1], y, col_w, row_h - 4.7 * mm, pad=2 * mm)
     _box(pdf, xs[2], y, col_w, row_h, "Texture & Sensory")
     sensory_rows = [
-        [_p("Texture:", "label"), _p(texture)], [_p("Color:", "label"), _p(field("colour"), fallback="Not enriched")],
-        [_p("Finish:", "label"), _p(field("finish"), fallback="Not enriched")],
+        [_p("Texture:", "label"), _p(texture)], [_p("Color / Shade:", "label"), _p(module.get("shade_colour"), fallback="Not enriched")],
+        [_p("Finish:", "label"), _p(module.get("finish"), fallback="Not enriched")],
         [_p("Fragrance:", "label"), _p(fragrance)],
-        [_p("Absorption:", "label"), _p(field("absorption_profile"), fallback="Not enriched")],
+        [_p("Sensory:", "label"), _p(field("sensory_description"), fallback="Not enriched")],
     ]
     sensory_height = (row_h - 8.7 * mm) / len(sensory_rows)
     sensory = Table(sensory_rows, colWidths=[18 * mm, col_w - 22 * mm],
@@ -454,10 +446,10 @@ def build_product_pdf(product: Any) -> bytes:
     y, row_h = y - gap - 38 * mm, 38 * mm
     _box(pdf, margin, y, content_w, row_h, "Key Ingredients Breakdown")
     headers = [
-        "INCI NAME", "STANDARD", "COMMON NAME", "CHEMICAL NAME / FUNCTION", "POSITION",
-        "SHORT DESCRIPTION", "SOURCE", "GROUP / FUNCTION", "OTHER UTILITY", "CAUTION / NOTES",
+        "INCI NAME", "POSITION", "FUNCTIONS", "BENEFITS / UTILITY",
+        "SHORT DESCRIPTION", "CAUTION / NOTES",
     ]
-    raw_widths = [20, 19, 19, 24, 11, 29, 18, 20, 20, 18]
+    raw_widths = [34, 13, 31, 42, 48, 32]
     scale = content_w / (sum(raw_widths) * mm)
     detail_rows = [[_p(header, "micro") for header in headers]]
     for index, item in enumerate(key_ingredients[:5], start=1):
@@ -465,14 +457,10 @@ def build_product_pdf(product: Any) -> bytes:
         functions = _clean(item.get("functions"), "Not enriched")
         detail_rows.append([
             _p(_clean(item.get("ingredient_name"), name), "micro"),
-            _p(_clean(item.get("normalized_inci_name"), name.upper()), "micro"),
-            _p(_clean(item.get("common_name"), name), "micro"),
-            _p(functions, "micro"),
             _p(str(item.get("inci_position") or index), "micro"),
+            _p(functions, "micro"),
+            _p(utility, "micro"),
             _p(_clean(item.get("short_description"), utility), "micro"),
-            _p(_clean(item.get("source_origin"), "Not enriched"), "micro"),
-            _p(_clean(item.get("ingredient_group"), functions), "micro"),
-            _p(_clean(item.get("other_utility"), utility), "micro"),
             _p(_clean(item.get("possible_concerns"), "No recorded caution"), "micro"),
         ])
     detail_height = (row_h - 4.7 * mm) / max(1, len(detail_rows))
@@ -490,12 +478,9 @@ def build_product_pdf(product: Any) -> bytes:
     for width in widths[:-1]:
         bx.append(bx[-1] + width + gap)
 
-    warnings = [
-        ("Pregnancy Caution", _clean(field("pregnancy_warning_observation"), "Not enriched")),
-        ("Allergen Caution", _clean(field("allergen_warning_observation"), "Not enriched")),
-        ("Sensitivity Status", _clean(field("sensitivity_warning_observation"), "Not enriched")),
-        ("Regulatory Notes", _clean(field("regulatory_notes"), "Not enriched")),
-    ]
+    warnings = [(str(item.get("type") or "Other").title(), _clean(item.get("observation")))
+                for item in (field("warnings_considerations") or []) if isinstance(item, dict)]
+    warnings = warnings or [("Status", "No sourced warning observation recorded")]
     _box(pdf, bx[0], bottom_y, widths[0], bottom_h, "Caution Flags", dark_header=False)
     warning_rows = [[_p(label, "micro"), _p(text, "micro")] for label, text in warnings]
     warning_height = (bottom_h - 4.7 * mm) / max(1, len(warning_rows))
@@ -506,19 +491,10 @@ def build_product_pdf(product: Any) -> bytes:
     warning_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), PALE)]))
     _draw(pdf, warning_table, bx[0], bottom_y, widths[0], bottom_h - 4.7 * mm, pad=0)
 
-    _box(pdf, bx[1], bottom_y, widths[1], bottom_h, "INCI Stats", dark_header=False)
-    stats_data = field("inci_stats") if isinstance(field("inci_stats"), dict) else {}
-    stats = [
-        ("Total Ingredients", stats_data.get("total_ingredients", len(inci_items))),
-        ("Allergens", stats_data.get("allergen_count", 0)),
-        ("Fragrance", stats_data.get("fragrance_count", 0)),
-        ("Plant Extracts", stats_data.get("plant_extracts", 0)),
-        ("Peptides", stats_data.get("peptides", 0)),
-        ("Antioxidants", stats_data.get("antioxidants", 0)),
-        ("Humectants", stats_data.get("humectants", 0)),
-        ("Emollients / Oils", stats_data.get("emollients_oils", 0)),
-        ("Preservatives", stats_data.get("preservatives", 0)),
-    ]
+    _box(pdf, bx[1], bottom_y, widths[1], bottom_h, "Target Audience", dark_header=False)
+    audience_value = field("target_audience") or {}
+    audience = _items(audience_value.get("value") if isinstance(audience_value, dict) else audience_value)
+    stats = [(str(index), profile) for index, profile in enumerate(audience[:3], 1)] or [("—", "Not enriched")]
     stats_rows = [[_p(label, "micro"), _p(str(value), "micro")] for label, value in stats]
     stats_height = (bottom_h - 4.7 * mm) / max(1, len(stats_rows))
     stats_table = _grid_table(
@@ -545,9 +521,9 @@ def build_product_pdf(product: Any) -> bytes:
                                     ("BACKGROUND", (0, 4), (-1, 4), PALE), ("BACKGROUND", (0, 6), (-1, 6), PALE)]))
     _draw(pdf, identifier, bx[3], bottom_y, widths[3], identifier_h - 4.7 * mm, pad=0)
 
-    _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Schema.org Structured Data", dark_header=False)
-    schema = field("schema_org") or {"status": "Not enriched"}
-    _draw(pdf, _p(json.dumps(schema, ensure_ascii=True, separators=(", ", ": ")), "micro"),
+    _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Verified Claims", dark_header=False)
+    verified_claims = [item for item in claims if isinstance(item, dict) and item.get("status") in {"verified", "source_supported"}]
+    _draw(pdf, _p("; ".join(str(item.get("name")) for item in verified_claims) or "No verified claims recorded", "micro"),
           bx[4], bottom_y, widths[4], bottom_h - 4.7 * mm, pad=1.3 * mm)
 
     pdf.setFillColor(MUTED)

@@ -114,7 +114,8 @@ def ingest_file_to_source_listings(
     file_bytes: bytes,
     file_type: str,
     job_id: uuid.UUID,
-    column_mapping: Dict[str, str]
+    column_mapping: Dict[str, str],
+    source_name: str | None = None,
 ) -> int:
     """Parses the uploaded file and stores each row as a SourceListing.
     Creates corresponding ImportJobItem tasks.
@@ -167,7 +168,7 @@ def ingest_file_to_source_listings(
         retailer_col = column_mapping.get("retailer")
         
         source_url = str(row[url_col]) if url_col and url_col in row else None
-        retailer = str(row[retailer_col]) if retailer_col and retailer_col in row else "unknown"
+        retailer = str(row[retailer_col]) if retailer_col and retailer_col in row else (source_name or "uploaded_feed")
 
         # Create SourceListing
         listing = SourceListing(

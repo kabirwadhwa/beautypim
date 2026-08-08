@@ -95,8 +95,8 @@ def seed_product(
     ))
     for field_name, value, status in (
         ("product_type", product_type, "inferred"),
-        ("hydration", hydration, "explicit" if hydration else "not_targeted"),
-        ("vegan", "yes" if vegan else "unknown", "explicit_brand_claim" if vegan else "unknown"),
+        ("targeted_concerns", {"values": ["Dehydration"]} if hydration else {"values": []}, "source_supported" if hydration else "unknown"),
+        ("claims", [{"name": "Vegan", "value": "Yes", "status": "source_supported"}] if vegan else [], "source_supported" if vegan else "unknown"),
     ):
         db.add(FieldValue(
             id=uuid.uuid4(),

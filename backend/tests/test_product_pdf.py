@@ -130,8 +130,8 @@ def test_pdf_requires_authentication(client, db):
 def test_dossier_catalogue_fields_are_editable(client, db):
     product = make_product(db)
     for field_name, value in (
-        ("finish", "Velvety satin"),
-        ("skin_type_scores", {"scores": {"normal": 5, "dry": 4}}),
+            ("skincare", {"skin_types": {"applicable": True, "recommended_for": ["Normal", "Dry"]}, "finish": {"value": "Velvety satin"}}),
+            ("claims", [{"name": "Dermatologically Tested", "value": "Yes", "status": "verified"}]),
         ("ingredients_intelligence", [{"ingredient_name": "Glycerin", "inci_position": 2}]),
     ):
         response = client.put(

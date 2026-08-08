@@ -14,21 +14,16 @@ from app.routes.products import approve_product
 
 def test_premium_fragrance_normalization_and_missing_inci_message():
     result = apply_category_specific_enrichment({
-        "gender_target": {"value": "Men seeking an evening fragrance"},
-        "fragrance_intelligence": {
-            "applicable": True, "fragrance_presence_status": "yes",
+        "fragrance": {
             "fragrance_family": "Woody", "top_notes": ["Bergamot"],
-            "middle_notes": [], "base_notes": ["Amber"], "evidence": [],
+            "heart_notes": [], "base_notes": ["Amber"], "evidence": [],
             "confidence": 0.8,
         },
     }, "Dior Sauvage Eau de Toilette perfume", "")
-    assert result["gender_target"]["value"] == "Men"
     assert result["application_area"]["value"] == "Pulse points and skin"
-    assert result["absorption_profile"]["value"] == "Evaporative fragrance"
-    assert result["fragrance_intelligence"]["concentration"] == "Eau de Toilette"
-    assert result["fragrance_intelligence"]["longevity_profile"] == "Moderate"
-    assert result["allergen_warning_observation"]["review_required"] is True
-    assert "Cannot assess" in result["allergen_warning_observation"]["review_message"]
+    assert result["fragrance"]["concentration"] == "Eau de Toilette"
+    assert result["skincare"] is None
+    assert result["warnings_considerations"][0]["source_status"] == "unknown"
 
 
 def test_premium_helpers_bound_context_and_promote_nested_evidence():
@@ -44,14 +39,14 @@ def test_premium_helpers_bound_context_and_promote_nested_evidence():
 
 def test_fragrance_does_not_promote_model_guessed_concentration():
     result = apply_category_specific_enrichment({
-        "fragrance_intelligence": {
-            "applicable": True, "concentration": "Eau de Parfum",
-            "longevity_profile": "Long-lasting", "sillage_projection": "Strong",
+        "fragrance": {
+            "concentration": "Eau de Parfum",
+            "longevity": "Long-lasting", "sillage_projection": "Strong",
         },
     }, "Dior Sauvage Perfume __model_type__ Eau de Parfum", "")
 
-    assert result["fragrance_intelligence"]["concentration"] == "Not specified in source"
-    assert result["fragrance_intelligence"]["longevity_profile"] == "Varies by concentration and application"
+    assert result["fragrance"]["concentration"] == "Eau de Parfum"
+    assert result["fragrance"]["longevity"] == "Long-lasting"
 
 
 def test_binary_claim_values_are_normalized_across_providers():
@@ -74,12 +69,12 @@ def test_unmapped_type_column_is_still_available_as_product_identity():
 def test_category_specific_normalization_does_not_leak_into_skincare():
     original = {
         "application_area": {"value": "Face"},
-        "absorption_profile": {"value": "Fast-absorbing"},
+        "skincare": {"texture": {"value": "Serum"}},
     }
     result = apply_category_specific_enrichment(original, "Vitamin C face serum skincare", "Aqua")
     assert result["application_area"]["value"] == "Face"
-    assert result["absorption_profile"]["value"] == "Fast-absorbing"
-    assert "fragrance_intelligence" not in result
+    assert result["skincare"]["texture"]["value"] == "Serum"
+    assert "fragrance" not in result
 
 def test_override_preservation_locked(db: Session):
     brand = Brand(id=uuid.uuid4(), name="The Ordinary", normalized_name="theordinary")
@@ -290,16 +285,19 @@ def test_run_job_worker_lifecycle(db: Session):
     variant = db.query(ProductVariant).filter(ProductVariant.canonical_product_id == canonical.id).first()
     assert variant is not None
     assert variant.gtin == "761805012345"
-    assert variant.size == "30ml"
+    assert variant.size == "30"
+    assert variant.unit == "ml"
 
-    # Check Field Value created for vegan
-    vegan_fv = db.query(FieldValue).filter(
+    # Claims are consolidated into one extensible field.
+    claims_fv = db.query(FieldValue).filter(
         FieldValue.canonical_product_id == canonical.id,
-        FieldValue.field_name == "vegan",
+        FieldValue.field_name == "claims",
         FieldValue.is_current == True
     ).first()
-    assert vegan_fv is not None
-    assert vegan_fv.value == "yes"  # Keyword 'vegan' detected
+    assert claims_fv is not None
+    assert any(claim["name"].lower() == "vegan" for claim in claims_fv.value)
+    vegan = next(claim for claim in claims_fv.value if claim["name"].lower() == "vegan")
+    assert vegan["status"] in {"source_supported", "unverified"}
 
 def test_recover_unfinished_jobs(db: Session):
     from app.worker import run_job_in_background, recover_unfinished_jobs

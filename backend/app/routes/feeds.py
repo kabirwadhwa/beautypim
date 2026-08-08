@@ -138,6 +138,7 @@ def process_ingest(
     job = ImportJob(
         id=uuid.uuid4(),
         filename=request.filename,
+        source_name=request.source_name or request.filename,
         file_hash=request.file_hash,
         status="pending",
         column_mapping=request.column_mapping,
@@ -166,7 +167,8 @@ def process_ingest(
             file_bytes=file_bytes,
             file_type=ext,
             job_id=job.id,
-            column_mapping=request.column_mapping
+            column_mapping=request.column_mapping,
+            source_name=job.source_name,
         )
         job.total_rows = total_rows
         db.commit()

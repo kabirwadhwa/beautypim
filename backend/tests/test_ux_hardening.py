@@ -415,9 +415,8 @@ def test_key_ingredient_provenance(client: TestClient, db: Session):
     assert resp.status_code == 200
     ing = resp.json()["key_ingredients"][0]
     assert ing["name"] == "Sodium Hyaluronate"
-    assert ing["source_type"] == "ai_inference"
-    assert ing["confidence"] == 0.95
-    assert len(ing["evidence"]) == 1
+    assert ing["position"] == 1
+    assert ing["functions"] == ["Hydration"]
 
 def test_dynamic_concerns_returned(client: TestClient, db: Session):
     # 14. Concern fields return dynamic concerns
@@ -436,8 +435,8 @@ def test_dynamic_concerns_returned(client: TestClient, db: Session):
     fv = FieldValue(
         id=uuid.uuid4(),
         canonical_product_id=product.id,
-        field_name="hydration",
-        value=True,
+        field_name="targeted_concerns",
+        value={"values": ["Dehydration"], "value_status": "source_supported"},
         source_type="ai_inference",
         confidence_score=0.9,
         review_status="confirmed",
@@ -453,7 +452,7 @@ def test_dynamic_concerns_returned(client: TestClient, db: Session):
     assert resp.status_code == 200
     concerns = resp.json()["dynamic_concerns"]
     assert len(concerns) >= 1
-    assert concerns[0]["concern_name"] == "hydration"
+    assert concerns[0]["concern_name"] == "Dehydration"
     assert concerns[0]["targeting_status"] == "explicit"
 
 def test_viewer_cannot_override(client: TestClient, db: Session):
@@ -622,11 +621,11 @@ def test_invalid_field_value_type_rejected(client: TestClient, db: Session):
     db.add(product)
     db.commit()
     
-    # hydration expects bool, pass string
+    # claims expects a structured list, pass a string
     resp = client.put(
         f"/api/products/{product.id}",
         headers=headers,
-        json={"field_name": "hydration", "value": "not_a_bool", "reason": "correct"}
+        json={"field_name": "claims", "value": "not_a_list", "reason": "correct"}
     )
     assert resp.status_code == 400
     assert "Invalid value type for" in resp.json()["detail"]

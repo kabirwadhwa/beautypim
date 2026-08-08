@@ -22,13 +22,12 @@ from app.services.product_identity import product_is_fragrance, trusted_product_
 
 IDENTITY_FIELDS = ("brand", "product_name", "format", "variant", "size", "gtin", "market")
 RESEARCHABLE_FIELDS = (
-    "description", "image_url", "fragrance_intelligence", "ingredients_intelligence",
-    "directions", "benefits", "product_credentials", "targeted_concerns",
-    "brand_origin", "country_of_manufacture", "launch_year",
+    "description", "image_url", "fragrance", "ingredients_intelligence",
+    "directions", "benefits", "claims", "targeted_concerns",
+    "product_positioning", "sensory_description", "warnings_considerations",
 )
 EVIDENCE_REQUIRED_FIELDS = (
-    "ingredients_intelligence", "image_url", "brand_origin", "country_of_manufacture",
-    "launch_year", "dermatologically_tested", "clinically_tested", "phthalate_free",
+    "ingredients_intelligence", "image_url", "claims", "warnings_considerations",
 )
 
 

@@ -27,8 +27,8 @@ def test_business_export_rules(db: Session):
     fv = FieldValue(
         id=uuid.uuid4(),
         canonical_product_id=prod.id,
-        field_name="vegan",
-        value="yes",
+        field_name="claims",
+        value=[{"name": "Vegan", "value": "Yes", "status": "verified"}],
         source_type="human_edit",
         review_status="confirmed",
         is_current=True
@@ -40,7 +40,7 @@ def test_business_export_rules(db: Session):
     data = build_business_export_data(db, include_inferred=False)
     assert len(data) == 1
     assert data[0]["product_name"] == "Mineral 89"
-    assert data[0]["vegan"] == "yes"
+    assert data[0]["claims"][0]["status"] == "verified"
 
 def test_audit_export_rules(db: Session):
     brand = Brand(id=uuid.uuid4(), name="Avene", normalized_name="avene")

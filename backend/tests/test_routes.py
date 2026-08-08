@@ -267,8 +267,8 @@ def test_edit_product_api(client: TestClient, db):
 
     # Edit
     edit_payload = {
-        "field_name": "vegan",
-        "value": "yes",
+        "field_name": "claims",
+        "value": [{"name": "Vegan", "value": "Yes", "status": "verified"}],
         "reason": "Verified brand certification page"
     }
     resp = client.put(
@@ -282,7 +282,7 @@ def test_edit_product_api(client: TestClient, db):
     fvs = db.query(FieldValue).filter(FieldValue.canonical_product_id == prod.id).all()
     assert len(fvs) == 1
     assert fvs[0].is_current == True
-    assert fvs[0].value == "yes"
+    assert fvs[0].value[0]["status"] == "verified"
     assert fvs[0].source_type == "human_edit"
 
 def test_run_export_api(client: TestClient):
