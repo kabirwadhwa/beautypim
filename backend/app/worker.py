@@ -429,6 +429,15 @@ def process_item_enrichment(
             if product:
                 product.image_url = normalized_image_url
 
+    # Old enrichment runs could create blank formulation shells. They are not
+    # evidence and must not appear in the product page or PDF.
+    for formulation in db.query(Formulation).filter(
+        Formulation.canonical_product_id == item.canonical_product_id,
+        Formulation.is_deleted == False,
+    ).all():
+        if not (formulation.raw_inci_text or "").strip():
+            formulation.is_deleted = True
+
     variant = db.query(ProductVariant).filter(ProductVariant.id == item.product_variant_id).first()
     if variant:
         if raw_ean and not variant.gtin:

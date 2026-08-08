@@ -56,6 +56,21 @@ class ProductSourceDiscoveryRequest(BaseModel):
 
 router = APIRouter(prefix="/products", tags=["Product PIM Center"])
 
+
+def _product_expected_format(db: Session, product: CanonicalProduct) -> str:
+    values = {
+        row.field_name: str(row.value or "")
+        for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == product.id,
+            FieldValue.field_name.in_(["product_type", "subcategory"]),
+            FieldValue.is_current == True,
+        ).all()
+    }
+    return " ".join(filter(None, (
+        values.get("product_type"), values.get("subcategory"),
+        product.category.path if product.category else "",
+    )))
+
 def product_internal_code(product_id: uuid.UUID) -> str:
     return f"ICN-{product_id.hex.upper()}"
 
@@ -333,14 +348,11 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
         ProductVariant.canonical_product_id == product.id,
         ProductVariant.is_deleted == False,
     ).order_by(ProductVariant.created_at.asc()).first()
-    product_type = db.query(FieldValue).filter(
-        FieldValue.canonical_product_id == product.id,
-        FieldValue.field_name == "product_type", FieldValue.is_current == True,
-    ).first()
+    expected_format = _product_expected_format(db, product)
     candidates = discover_product_sources(
         brand=product.brand.name if product.brand else "",
         product_name=product.product_name,
-        product_format=str(product_type.value or "") if product_type else "",
+        product_format=expected_format,
         gtin=variant.gtin if variant and variant.gtin else "",
         approved_domains=[],
     )
@@ -362,6 +374,14 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
         score -= 3 if any(part in url for part in ("/c/", "/category", "/collection")) else 0
         return score
 
+    from app.services.product_identity import product_version_compatible
+    candidates = [
+        candidate for candidate in candidates
+        if product_version_compatible(
+            expected_format,
+            " ".join(str(candidate.get(key) or "") for key in ("title", "url", "snippet")),
+        )
+    ]
     candidates = sorted(candidates, key=candidate_score, reverse=True)
     # An image result is tied to its product-page source. Prefer the strongest
     # identity match, not merely the provider's first arbitrary result.
@@ -439,7 +459,10 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
         job = CrawlJob(
             id=uuid.uuid4(), domain=domain, starting_urls=[url],
             crawl_mode="single_url", status="queued",
-            configuration={**configuration, "research_product_id": str(product.id)},
+            configuration={
+                **configuration, "research_product_id": str(product.id),
+                "research_expected_format": expected_format,
+            },
             requested_by_id=user.id,
         )
         db.add(job)
@@ -617,7 +640,10 @@ def research_product(
     job = CrawlJob(
         id=uuid.uuid4(), domain=domain, starting_urls=urls,
         crawl_mode=configuration["crawl_mode"], status="queued",
-        configuration={**configuration, "research_product_id": str(product.id)},
+        configuration={
+            **configuration, "research_product_id": str(product.id),
+            "research_expected_format": _product_expected_format(db, product),
+        },
         requested_by_id=current_user.id,
     )
     db.add(job)
@@ -644,19 +670,24 @@ def discover_product_source_candidates(
         ProductVariant.canonical_product_id == product.id,
         ProductVariant.is_deleted == False,
     ).order_by(ProductVariant.created_at.asc()).first()
-    product_type = db.query(FieldValue).filter(
-        FieldValue.canonical_product_id == product.id,
-        FieldValue.field_name == "product_type", FieldValue.is_current == True,
-    ).first()
     from app.services.web_discovery import SearchProviderUnavailable, discover_product_sources
     try:
         results = discover_product_sources(
             brand=product.brand.name if product.brand else "",
             product_name=product.product_name,
-            product_format=str(product_type.value or "") if product_type else "",
+            product_format=_product_expected_format(db, product),
             gtin=variant.gtin if variant and variant.gtin else "",
             approved_domains=request.approved_domains,
         )
+        from app.services.product_identity import product_version_compatible
+        expected_format = _product_expected_format(db, product)
+        results = [
+            result for result in results
+            if product_version_compatible(
+                expected_format,
+                " ".join(str(result.get(key) or "") for key in ("title", "url", "snippet")),
+            )
+        ]
     except SearchProviderUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     return {"query_product_id": str(product.id), "results": results}
@@ -712,7 +743,8 @@ def get_product_detail(
     # Fetch Formulations
     formulations = db.query(Formulation).filter(
         Formulation.canonical_product_id == product_id,
-        Formulation.is_deleted == False
+        Formulation.is_deleted == False,
+        func.length(func.trim(Formulation.raw_inci_text)) > 0,
     ).all()
 
     # Fetch field values

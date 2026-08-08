@@ -18,6 +18,7 @@ from app.scraping.adapters.base import ProductAdapter
 from app.scraping.ingredients import normalize_ingredient, split_inci
 from app.scraping.schemas import ScrapedProduct
 from app.services.deduplication import evaluate_match, normalize_text
+from app.services.product_identity import product_version_compatible
 
 
 def stable_hash(value) -> str:
@@ -110,6 +111,16 @@ def persist_product(
             CanonicalProduct.is_deleted == False,
         ).first()
         if target:
+            expected_format = (job.configuration or {}).get("research_expected_format") or ""
+            observed_format = " ".join(filter(None, (
+                product.product_name, product.product_type, product.variant_name,
+                " ".join(product.category_path or []), product.subtitle,
+            )))
+            if not product_version_compatible(expected_format, observed_format):
+                raise ValueError(
+                    "Discovered page is a conflicting product edition and was not attached "
+                    f"to the requested product ({expected_format!r} vs {observed_format!r})."
+                )
             canonical_id = target.id
             target_variant = db.query(ProductVariant).filter(
                 ProductVariant.canonical_product_id == target.id,

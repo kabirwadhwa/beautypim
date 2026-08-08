@@ -1,4 +1,5 @@
 import uuid
+import pytest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
@@ -178,6 +179,51 @@ def test_product_research_attaches_observation_and_image_to_requested_product(db
     assert variant.unit == "ml"
     assert db.query(Formulation).filter(Formulation.canonical_product_id == canonical.id).count() == 0
     assert db.query(CanonicalProduct).filter(CanonicalProduct.product_name.like("Goddess Eau%")).count() == 0
+
+
+def test_product_research_rejects_conflicting_fragrance_edition(db):
+    brand = Brand(id=uuid.uuid4(), name="Dior", normalized_name="dior")
+    db.add(brand); db.flush()
+    canonical = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Dior Sauvage",
+        normalized_name="dior sauvage", review_status="imported",
+    )
+    db.add(canonical); db.flush()
+    config = CrawlConfiguration(
+        domain="retailer.example", crawl_mode="single_url",
+        starting_urls=["https://retailer.example/sauvage-parfum"],
+    ).model_dump(mode="json")
+    config.update({
+        "research_product_id": str(canonical.id),
+        "research_expected_format": "Perfume Eau de Toilette",
+    })
+    job = CrawlJob(
+        id=uuid.uuid4(), domain="retailer.example", starting_urls=config["starting_urls"],
+        crawl_mode="single_url", status="parsing", configuration=config,
+    )
+    url = CrawlUrl(
+        id=uuid.uuid4(), crawl_job_id=job.id, url=config["starting_urls"][0],
+        normalized_url=config["starting_urls"][0], state="fetching", depth=0,
+    )
+    db.add_all([job, url]); db.flush()
+    raw = RawPageObservation(
+        id=uuid.uuid4(), crawl_job_id=job.id, crawl_url_id=url.id,
+        source_url=url.url, final_url=url.url, http_status=200,
+        content_hash="c" * 64, response_size=100, parser_version="1.0.0",
+    )
+    db.add(raw); db.flush()
+    scraped = ScrapedProduct(
+        source_name="Retailer", source_domain="retailer.example",
+        source_url=url.url, canonical_url=url.url,
+        scraped_at=datetime.now(timezone.utc), brand="Dior",
+        product_name="Sauvage Parfum - 1.0 oz", size="1.0 oz",
+        parser_version="1.0.0",
+    )
+
+    with pytest.raises(ValueError, match="conflicting product edition"):
+        persist_product(db, job, raw, scraped, GenericJsonLdAdapter())
+
+    assert db.query(ScrapedProductObservation).count() == 0
 
 
 def test_worker_recovers_interrupted_frontier(db):
