@@ -98,6 +98,25 @@ def test_openai_citations_are_discovered_and_unsafe_urls_are_rejected(post, vali
     assert results[0]["title"] == "Moon"
 
 
+@patch("app.services.web_discovery.validate_public_url")
+@patch("app.services.web_discovery.requests.post")
+def test_openai_discovery_retries_one_timeout(post, validate, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", None)
+    response = Mock(status_code=200)
+    response.json.return_value = {"output": [{
+        "type": "web_search_call",
+        "action": {"sources": [{"url": "https://brand.example/product/moon", "title": "Official"}]},
+    }]}
+    import requests
+    post.side_effect = [requests.Timeout("slow provider"), response]
+
+    results = discover_product_sources(brand="Example", product_name="Moon Serum")
+
+    assert len(results) == 1
+    assert post.call_count == 2
+
+
 @pytest.mark.parametrize("provider", ["openai", "brave"])
 def test_discovery_reports_provider_http_errors(provider, monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "key" if provider == "openai" else None)

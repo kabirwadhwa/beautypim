@@ -391,7 +391,7 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
             "maximum_runtime_seconds": 45, "maximum_discovered_urls": 1,
             "use_sitemap": False, "use_category_discovery": False,
             "use_browser_rendering": False, "respect_robots_txt": True,
-            "allow_subdomains": False, "request_delay_seconds": 0.1,
+            "allow_subdomains": False, "request_delay_seconds": 0.25,
             "per_domain_concurrency": 1, "retry_limit": 0,
             "request_timeout_seconds": 20, "maximum_response_bytes": 8000000,
             "maximum_redirects": 5, "browser_page_limit": 1,

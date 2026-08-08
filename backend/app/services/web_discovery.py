@@ -48,23 +48,34 @@ def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
     }
     if domains:
         tool["filters"] = {"allowed_domains": domains[:100]}
-    response = requests.post(
-        "https://api.openai.com/v1/responses",
-        headers={
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.OPENAI_WEB_SEARCH_MODEL,
-            "tools": [tool], "tool_choice": "required",
-            "include": ["web_search_call.action.sources", "web_search_call.results"],
-            "input": (
-                f"Find the official brand product page and reputable retailer product pages for: {identity}. "
-                "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles."
-            ),
-        },
-        timeout=45,
-    )
+    request = {
+        "model": settings.OPENAI_WEB_SEARCH_MODEL,
+        "tools": [tool], "tool_choice": "required",
+        "include": ["web_search_call.action.sources", "web_search_call.results"],
+        "input": (
+            f"Find the official brand product page and reputable retailer product pages for: {identity}. "
+            "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles."
+        ),
+    }
+    response = None
+    last_error = None
+    for _attempt in range(2):
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=request, timeout=75,
+            )
+            break
+        except requests.Timeout as exc:
+            last_error = exc
+    if response is None:
+        raise SearchProviderUnavailable(
+            f"OpenAI live web search timed out after two attempts: {last_error}"
+        )
     if response.status_code != 200:
         raise SearchProviderUnavailable(
             f"OpenAI live web search returned HTTP {response.status_code}. Check model access and API quota."
