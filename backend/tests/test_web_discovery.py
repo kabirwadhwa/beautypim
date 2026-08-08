@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from app.config import settings
+from app.scraping.url_safety import UnsafeUrl
 from app.services.web_discovery import SearchProviderUnavailable, discover_product_sources
 
 
@@ -11,6 +12,17 @@ def test_discovery_requires_licensed_provider_key(monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     with pytest.raises(SearchProviderUnavailable):
         discover_product_sources(brand="Example", product_name="Moon Serum")
+
+
+def test_configured_domain_allowlist_restricts_requested_domains(monkeypatch):
+    monkeypatch.setattr(settings, "WEB_RESEARCH_ALLOWED_DOMAINS", "brand.example, retailer.example")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "key")
+    with patch("app.services.web_discovery._discover_with_openai", return_value=[]) as discover:
+        discover_product_sources(
+            brand="Example", product_name="Moon Serum",
+            approved_domains=["brand.example", "unapproved.example"],
+        )
+    assert discover.call_args.args[1] == ["brand.example"]
 
 
 @patch("app.services.web_discovery.validate_public_url")
@@ -62,3 +74,36 @@ def test_openai_web_search_sources_and_images_are_candidates(post, validate, mon
     request_json = post.call_args.kwargs["json"]
     assert request_json["tools"][0]["external_web_access"] is True
     assert request_json["tools"][0]["filters"]["allowed_domains"] == ["brand.example"]
+
+
+@patch("app.services.web_discovery.validate_public_url")
+@patch("app.services.web_discovery.requests.post")
+def test_openai_citations_are_discovered_and_unsafe_urls_are_rejected(post, validate, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", None)
+    monkeypatch.setattr(settings, "WEB_RESEARCH_ALLOWED_DOMAINS", None)
+    post.return_value = Mock(status_code=200)
+    post.return_value.json.return_value = {"output": [{
+        "type": "message", "content": [{"annotations": [
+            {"type": "url_citation", "url": "https://brand.example/product/moon", "title": "Moon"},
+            {"type": "other"},
+            {"type": "url_citation", "url": "http://127.0.0.1/private", "title": "Unsafe"},
+        ]}],
+    }]}
+    validate.side_effect = [None, UnsafeUrl("private address")]
+
+    results = discover_product_sources(brand="Example", product_name="Moon Serum")
+
+    assert [item["url"] for item in results] == ["https://brand.example/product/moon"]
+    assert results[0]["title"] == "Moon"
+
+
+@pytest.mark.parametrize("provider", ["openai", "brave"])
+def test_discovery_reports_provider_http_errors(provider, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "key" if provider == "openai" else None)
+    monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", "key" if provider == "brave" else None)
+    monkeypatch.setattr(settings, "WEB_RESEARCH_ALLOWED_DOMAINS", None)
+    request_target = "app.services.web_discovery.requests.post" if provider == "openai" else "app.services.web_discovery.requests.get"
+    with patch(request_target, return_value=Mock(status_code=429)):
+        with pytest.raises(SearchProviderUnavailable, match="HTTP 429"):
+            discover_product_sources(brand="Example", product_name="Moon Serum")

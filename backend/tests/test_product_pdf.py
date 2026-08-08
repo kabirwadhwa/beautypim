@@ -1,8 +1,10 @@
 import uuid
 
+import pytest
+
 from app.auth import create_access_token
 from app.models import Brand, CanonicalProduct, FieldValue, Formulation, ProductVariant, ImportJob, SourceListing
-from app.services.image_urls import normalize_public_image_url
+from app.services.image_urls import _assert_public_host, fetch_public_image, normalize_public_image_url
 
 
 def auth_headers(email: str = "admin@test.com") -> dict[str, str]:
@@ -64,6 +66,16 @@ def test_image_url_normalization_rejects_non_http_protocols():
     assert normalize_public_image_url("https://user:pass@example.com/product.jpg") is None
     assert normalize_public_image_url("http://127.0.0.1/product.jpg") is None
     assert normalize_public_image_url("http://metadata.railway.internal/product.jpg") is None
+
+
+def test_image_fetch_skips_invalid_urls_without_network_access():
+    assert fetch_public_image(None) is None
+    assert fetch_public_image("file:///etc/passwd") is None
+
+
+def test_image_host_validation_requires_a_hostname():
+    with pytest.raises(ValueError, match="no host"):
+        _assert_public_host("https:///missing-host.png")
 
 
 def test_admin_can_set_and_clear_product_image_url(client, db):
