@@ -45,6 +45,121 @@ def inferred_category_name(product_type: str, application_area: str = "") -> str
             return category
     return "Beauty & Personal Care"
 
+
+def compact_enrichment_value(value: Any, *, depth: int = 0) -> Any:
+    """Bound prompt context without discarding attributable product facts."""
+    if depth >= 3:
+        return str(value)[:500]
+    if isinstance(value, str):
+        return value[:3000]
+    if isinstance(value, list):
+        return [compact_enrichment_value(item, depth=depth + 1) for item in value[:10]]
+    if isinstance(value, dict):
+        return {
+            str(key): compact_enrichment_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:30]
+            if item not in (None, "", [], {})
+        }
+    return value
+
+
+def collect_structured_evidence(value: Any) -> list[dict[str, Any]]:
+    """Promote evidence nested inside benefits/ingredients into field provenance."""
+    collected: list[dict[str, Any]] = []
+
+    def visit(item: Any):
+        if isinstance(item, dict):
+            evidence = item.get("evidence")
+            if isinstance(evidence, str) and evidence.strip():
+                collected.append({
+                    "source_field": "structured_enrichment",
+                    "supporting_text": evidence.strip(),
+                    "evidence_type": "provider_summary",
+                })
+            elif isinstance(evidence, list):
+                for entry in evidence:
+                    if isinstance(entry, dict) and entry.get("supporting_text"):
+                        collected.append(entry)
+                    elif isinstance(entry, str) and entry.strip():
+                        collected.append({
+                            "source_field": "structured_enrichment",
+                            "supporting_text": entry.strip(),
+                            "evidence_type": "provider_summary",
+                        })
+            for key, child in item.items():
+                if key != "evidence" and isinstance(child, (dict, list)):
+                    visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    unique = []
+    seen = set()
+    for item in collected:
+        marker = (str(item.get("source_field")), str(item.get("supporting_text")))
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(item)
+    return unique[:20]
+
+
+def apply_category_specific_enrichment(
+    enrichment_result: Dict[str, Any], identity_text: str, raw_ingredients: str,
+) -> Dict[str, Any]:
+    """Replace universal-schema artefacts with useful category semantics."""
+    text = identity_text.lower()
+    is_fragrance = any(token in text for token in ("perfume", "parfum", "fragrance", "eau de"))
+    if not is_fragrance:
+        return enrichment_result
+
+    def inferred_field(value: str, confidence: float = 0.8):
+        return {
+            "value": value, "value_status": "inferred", "confidence": confidence,
+            "evidence": [], "reasoning_summary": "Category-specific personal fragrance normalization.",
+        }
+
+    enrichment_result["application_area"] = inferred_field("Pulse points and skin", 0.9)
+    enrichment_result["absorption_profile"] = inferred_field("Evaporative fragrance", 0.9)
+    enrichment_result["finish"] = inferred_field("Fragrance dry-down", 0.9)
+    enrichment_result["texture"] = inferred_field("Liquid fragrance", 0.9)
+    gender = str((enrichment_result.get("gender_target") or {}).get("value") or "").lower()
+    if any(token in gender for token in ("women", "woman", "female")):
+        enrichment_result["gender_target"] = inferred_field("Women", 0.85)
+    elif any(token in gender for token in ("men", "man", "male")):
+        enrichment_result["gender_target"] = inferred_field("Men", 0.85)
+    elif any(token in gender for token in ("unisex", "gender-neutral", "gender neutral")):
+        enrichment_result["gender_target"] = inferred_field("Unisex", 0.85)
+
+    fragrance = enrichment_result.get("fragrance_intelligence") or {}
+    concentration = next((label for token, label in (
+        ("eau de toilette", "Eau de Toilette"), ("eau de parfum", "Eau de Parfum"),
+        ("extrait", "Extrait de Parfum"), ("parfum", "Parfum"), ("cologne", "Eau de Cologne"),
+    ) if token in text), None)
+    fragrance["applicable"] = True
+    fragrance["concentration"] = fragrance.get("concentration") or concentration
+    fragrance["longevity_profile"] = fragrance.get("longevity_profile") or (
+        "Moderate" if concentration in {"Eau de Toilette", "Eau de Cologne"} else
+        "Moderate to long-lasting" if concentration == "Eau de Parfum" else "Long-lasting"
+    )
+    fragrance["sillage_projection"] = fragrance.get("sillage_projection") or "Moderate"
+    fragrance.setdefault("seasonal_fit", [])
+    fragrance.setdefault("occasion_fit", [])
+    enrichment_result["fragrance_intelligence"] = fragrance
+
+    if not raw_ingredients.strip():
+        unavailable = {
+            "observation_domain": "ingredients", "review_required": True,
+            "observation_type": "ingredient_list_unavailable", "observed_items": [],
+            "evidence": [],
+            "review_message": "Cannot assess ingredient, allergen or sensitivity signals until a source INCI list is available.",
+            "confidence": 1.0,
+        }
+        enrichment_result["allergen_warning_observation"] = dict(unavailable)
+        enrichment_result["sensitivity_warning_observation"] = dict(unavailable)
+        enrichment_result["pregnancy_warning_observation"] = dict(unavailable)
+    return enrichment_result
+
 def record_audit(
     db: Session,
     entity_type: str,
@@ -295,6 +410,8 @@ def process_item_enrichment(
 
     raw_desc = raw_desc or str(first_researched("description", "subtitle") or "")
     raw_ingr = raw_ingr or str(first_researched("ingredient_text_raw") or "")
+    raw_ean = raw_ean or first_researched("gtin", "ean", "upc")
+    raw_size = raw_size or first_researched("size")
     researched_claims = first_researched("claims") or []
     raw_claims = raw_claims or "; ".join(researched_claims)
     raw_directions = raw_directions or str(first_researched("usage_instructions") or "")
@@ -312,6 +429,23 @@ def process_item_enrichment(
             if product:
                 product.image_url = normalized_image_url
 
+    variant = db.query(ProductVariant).filter(ProductVariant.id == item.product_variant_id).first()
+    if variant:
+        if raw_ean and not variant.gtin:
+            duplicate = db.query(ProductVariant).filter(
+                ProductVariant.gtin == str(raw_ean), ProductVariant.id != variant.id,
+            ).first()
+            if not duplicate:
+                variant.gtin = str(raw_ean)
+        if raw_size and not variant.size:
+            variant.size = str(raw_size)
+        researched_unit = first_researched("unit")
+        if researched_unit and not variant.unit:
+            variant.unit = str(researched_unit)
+        researched_variant = first_researched("variant_name", "shade")
+        if researched_variant and not variant.variant_name:
+            variant.variant_name = str(researched_variant)
+
     # Start Enrichment Run
     item.enrichment_status = "processing"
     item.started_at = datetime.utcnow()
@@ -319,9 +453,18 @@ def process_item_enrichment(
 
     # Ground enrichment with attributable observations already matched to this
     # exact canonical product. Similar-but-unmatched products are never included.
-    enrichment_source_context = dict(raw_data)
+    enrichment_source_context = {
+        "imported_product": {
+            "gtin": raw_ean, "size": raw_size,
+            "category": raw_category, "product_family": raw_product_family,
+            "claims": raw_claims, "directions": raw_directions,
+            "market": raw_market, "language": raw_language, "image_url": raw_image_url,
+        }
+    }
     if research_payloads:
-        enrichment_source_context["_exact_product_web_observations"] = research_payloads
+        enrichment_source_context["_exact_product_web_observations"] = [
+            compact_enrichment_value(payload) for payload in research_payloads[:5]
+        ]
     catalogue_context = build_catalogue_knowledge_context(
         db, item.canonical_product_id,
         product_name=raw_name,
@@ -332,7 +475,7 @@ def process_item_enrichment(
         description=raw_desc,
     )
     if catalogue_context:
-        enrichment_source_context["_beautypim_catalogue_knowledge"] = catalogue_context
+        enrichment_source_context["_beautypim_catalogue_knowledge"] = compact_enrichment_value(catalogue_context)
 
     # Trigger LLM/Rule Engine
     enrichment_result, run_id = run_ai_enrichment(
@@ -425,6 +568,9 @@ def process_item_enrichment(
                 "evidence": [],
                 "reasoning_summary": "Not applicable to a personal fragrance product.",
             }
+    enrichment_result = apply_category_specific_enrichment(
+        enrichment_result, product_identity_text, raw_ingr,
+    )
 
     # Materialize a useful category even when the incoming feed has no taxonomy.
     # Explicit source hierarchy wins; otherwise transparent AI classification is used.
@@ -573,7 +719,7 @@ def process_item_enrichment(
             confidence=confidence,
             status="inferred",
             run_id=run_id,
-            evidence=field_data.get("evidence", []) if isinstance(field_data, dict) else [],
+            evidence=collect_structured_evidence(field_data),
             reasoning_summary=f"Structured {field.replace('_', ' ')} enrichment.",
             semantic_status="inferred",
             semantic_status_type="structured_enrichment",
@@ -628,8 +774,8 @@ def process_item_enrichment(
     )
     formulation = None
     # Save formulation
-    content_hash = hashlib.sha256(raw_ingr.encode('utf-8')).hexdigest()
-    if refresh_formulation:
+    content_hash = hashlib.sha256(raw_ingr.encode('utf-8')).hexdigest() if raw_ingr.strip() else None
+    if refresh_formulation and content_hash:
         formulation = db.query(Formulation).filter(
             Formulation.canonical_product_id == item.canonical_product_id,
             Formulation.product_variant_id == item.product_variant_id,
@@ -643,7 +789,7 @@ def process_item_enrichment(
         formulation.source_listing_id = listing.id
         formulation.market = raw_market
         formulation.language = raw_language
-    elif refresh_formulation:
+    elif refresh_formulation and content_hash:
         formulation = Formulation(
             id=uuid.uuid4(),
             canonical_product_id=item.canonical_product_id,
@@ -658,7 +804,7 @@ def process_item_enrichment(
         db.flush()
 
     # Save formulation ingredients
-    ai_ingredients = enrichment_result.get("ingredients_intelligence", []) if refresh_formulation else []
+    ai_ingredients = enrichment_result.get("ingredients_intelligence", []) if refresh_formulation and formulation else []
     for pos, ing in enumerate(ai_ingredients):
         # Check if in glossary
         norm_name = normalize_text(ing.get("ingredient_name", ""))
@@ -863,18 +1009,22 @@ def process_item_enrichment(
         )
         db.add(issue)
 
-    # 9. Sparse row
-    is_sparse = False
-    if not raw_name or raw_name.strip() == "":
-        is_sparse = True
-    else:
-        empty_count = 0
-        if not raw_desc or raw_desc.strip() == "": empty_count += 1
-        if not raw_ingr or raw_ingr.strip() == "": empty_count += 1
-        if not raw_ean or raw_ean.strip() == "": empty_count += 1
-        if not raw_size or raw_size.strip() == "": empty_count += 1
-        if empty_count >= 3:
-            is_sparse = True
+    # 9. Sparse row: validate the completed canonical record, not only the
+    # original import row. A legitimate product can lack GTIN or online INCI
+    # while still having strong identity, description, taxonomy and evidence.
+    prod = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
+    current_source_fields = {
+        row.field_name for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == item.canonical_product_id,
+            FieldValue.is_current == True,
+        ).all() if row.value not in (None, "", [], {})
+    }
+    completion_signals = [
+        bool(raw_desc.strip()), bool(raw_ingr.strip()), bool(raw_ean), bool(raw_size),
+        bool(prod and prod.image_url), bool(prod and prod.category_id),
+        "rating" in current_source_fields, "availability" in current_source_fields,
+    ]
+    is_sparse = not raw_name.strip() or sum(completion_signals) < 2
             
     if is_sparse:
         severity = "blocking" if "product_name" in settings.MANDATORY_FIELDS else "warning"
@@ -890,7 +1040,6 @@ def process_item_enrichment(
         db.add(issue)
 
     # 10. Missing required Category check
-    prod = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
     if prod and prod.category_id is None:
         severity = "blocking" if settings.CATEGORY_MANDATORY else "warning"
         issue = ValidationIssue(

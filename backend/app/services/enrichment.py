@@ -39,6 +39,11 @@ BALANCED_INFERENCE_GUIDANCE = (
     "fields. Infer merchandising and sensory values at moderate confidence where comparable retail knowledge "
     "supports them. Testing, origin, launch year, regulatory and free-from claims require explicit evidence; "
     "return unverified rather than inventing them. Never invent technology image URLs. "
+    "Apply category-specific semantics. For personal fragrance prioritize concentration, fragrance family, "
+    "top/heart/base notes, longevity, sillage/projection, seasonal fit, occasion fit and pulse-point usage; "
+    "do not describe fragrance as skincare absorption, skin-type suitability or a cosmetic finish. "
+    "For skin care prioritize skin fit, routine step, texture and concerns; for hair care prioritize hair/scalp fit; "
+    "for makeup prioritize shade, coverage, finish and wear occasion. "
 )
 
 DOSSIER_CATEGORICAL_FIELDS = (
@@ -826,6 +831,15 @@ def generate_deterministic_fallback(
             "top_notes": [],
             "middle_notes": [],
             "base_notes": [],
+            "concentration": next((label for token, label in (
+                ("eau de toilette", "Eau de Toilette"), ("eau de parfum", "Eau de Parfum"),
+                ("extrait", "Extrait de Parfum"), ("parfum", "Parfum"),
+                ("cologne", "Eau de Cologne"),
+            ) if token in source_text), None),
+            "longevity_profile": None,
+            "sillage_projection": None,
+            "seasonal_fit": [],
+            "occasion_fit": [],
             "evidence": [],
             "confidence": 0.95 if inferred_type in fragrance_types else None
         },
@@ -1157,7 +1171,7 @@ def run_ai_enrichment(
                     
                     "skin_type_fit": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "not_recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "unknown_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "recommended_for", "not_recommended_for", "unknown_for", "confidence", "evidence"]},
                     "hair_type_fit": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "not_recommended_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "unknown_for": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "recommended_for", "not_recommended_for", "unknown_for", "confidence", "evidence"]},
-                    "fragrance_intelligence": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "fragrance_presence_status": {"type": "STRING"}, "fragrance_family": {"type": "STRING"}, "top_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "middle_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "base_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "fragrance_presence_status", "fragrance_family", "top_notes", "middle_notes", "base_notes", "confidence", "evidence"]},
+                    "fragrance_intelligence": {"type": "OBJECT", "properties": {"applicable": {"type": "BOOLEAN"}, "fragrance_presence_status": {"type": "STRING"}, "fragrance_family": {"type": "STRING"}, "top_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "middle_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "base_notes": {"type": "ARRAY", "items": {"type": "STRING"}}, "concentration": {"type": "STRING"}, "longevity_profile": {"type": "STRING"}, "sillage_projection": {"type": "STRING"}, "seasonal_fit": {"type": "ARRAY", "items": {"type": "STRING"}}, "occasion_fit": {"type": "ARRAY", "items": {"type": "STRING"}}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["applicable", "fragrance_presence_status", "fragrance_family", "top_notes", "middle_notes", "base_notes", "confidence", "evidence"]},
                     
                     "pregnancy_warning_observation": {"type": "OBJECT", "properties": {"observation_domain": {"type": "STRING"}, "review_required": {"type": "BOOLEAN"}, "observation_type": {"type": "STRING"}, "observed_items": {"type": "ARRAY", "items": {"type": "STRING"}}, "review_message": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["observation_domain", "review_required", "observation_type", "observed_items", "review_message", "confidence", "evidence"]},
                     "allergen_warning_observation": {"type": "OBJECT", "properties": {"observation_domain": {"type": "STRING"}, "review_required": {"type": "BOOLEAN"}, "observation_type": {"type": "STRING"}, "observed_items": {"type": "ARRAY", "items": {"type": "STRING"}}, "review_message": {"type": "STRING"}, "confidence": {"type": "NUMBER"}, "evidence": evidence_schema}, "required": ["observation_domain", "review_required", "observation_type", "observed_items", "review_message", "confidence", "evidence"]},

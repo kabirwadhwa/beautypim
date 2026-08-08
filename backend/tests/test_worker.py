@@ -3,9 +3,53 @@ from sqlalchemy.orm import Session
 import uuid
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
-from app.worker import create_field_value_version, run_job_worker
+from app.worker import (
+    apply_category_specific_enrichment, collect_structured_evidence,
+    compact_enrichment_value, create_field_value_version, run_job_worker,
+)
 from app.models import FieldValue, CanonicalProduct, Brand, ValidationIssue, User
 from app.routes.products import approve_product
+
+
+def test_premium_fragrance_normalization_and_missing_inci_message():
+    result = apply_category_specific_enrichment({
+        "gender_target": {"value": "Men seeking an evening fragrance"},
+        "fragrance_intelligence": {
+            "applicable": True, "fragrance_presence_status": "yes",
+            "fragrance_family": "Woody", "top_notes": ["Bergamot"],
+            "middle_notes": [], "base_notes": ["Amber"], "evidence": [],
+            "confidence": 0.8,
+        },
+    }, "Dior Sauvage Eau de Toilette perfume", "")
+    assert result["gender_target"]["value"] == "Men"
+    assert result["application_area"]["value"] == "Pulse points and skin"
+    assert result["absorption_profile"]["value"] == "Evaporative fragrance"
+    assert result["fragrance_intelligence"]["concentration"] == "Eau de Toilette"
+    assert result["fragrance_intelligence"]["longevity_profile"] == "Moderate"
+    assert result["allergen_warning_observation"]["review_required"] is True
+    assert "Cannot assess" in result["allergen_warning_observation"]["review_message"]
+
+
+def test_premium_helpers_bound_context_and_promote_nested_evidence():
+    compacted = compact_enrichment_value({"description": "x" * 5000, "rows": list(range(30))})
+    assert len(compacted["description"]) == 3000
+    assert len(compacted["rows"]) == 10
+    evidence = collect_structured_evidence([
+        {"statement": "Hydrates", "evidence": "Contains glycerin."},
+        {"evidence": [{"source_field": "description", "supporting_text": "Fresh citrus.", "evidence_type": "explicit"}]},
+    ])
+    assert [item["supporting_text"] for item in evidence] == ["Contains glycerin.", "Fresh citrus."]
+
+
+def test_category_specific_normalization_does_not_leak_into_skincare():
+    original = {
+        "application_area": {"value": "Face"},
+        "absorption_profile": {"value": "Fast-absorbing"},
+    }
+    result = apply_category_specific_enrichment(original, "Vitamin C face serum skincare", "Aqua")
+    assert result["application_area"]["value"] == "Face"
+    assert result["absorption_profile"]["value"] == "Fast-absorbing"
+    assert "fragrance_intelligence" not in result
 
 def test_override_preservation_locked(db: Session):
     brand = Brand(id=uuid.uuid4(), name="The Ordinary", normalized_name="theordinary")

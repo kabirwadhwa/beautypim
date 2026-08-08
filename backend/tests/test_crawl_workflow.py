@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app.models import (
     Brand, CanonicalProduct, CrawlConflict, CrawlJob, CrawlUrl, FieldValue,
-    RawPageObservation, ScrapedProductObservation,
+    Formulation, ProductVariant, RawPageObservation, ScrapedProductObservation,
 )
 from app.scraping.adapters.generic import GenericJsonLdAdapter
 from app.scraping.persistence import persist_product
@@ -161,6 +161,7 @@ def test_product_research_attaches_observation_and_image_to_requested_product(db
         scraped_at=datetime.now(timezone.utc), brand="BURBERRY",
         product_name="Goddess Eau de Parfum for Women",
         description="A vanilla-led eau de parfum.",
+        gtin="3614226905018", variant_name="100 ml", size="100", unit="ml",
         image_urls=["https://cdn.brand.example/goddess.jpg"],
         parser_version="1.0.0",
     )
@@ -170,6 +171,12 @@ def test_product_research_attaches_observation_and_image_to_requested_product(db
     assert observation.canonical_product_id == canonical.id
     assert observation.match_status == "matched"
     assert canonical.image_url == "https://cdn.brand.example/goddess.jpg"
+    variant = db.query(ProductVariant).filter(ProductVariant.canonical_product_id == canonical.id).one()
+    assert variant.gtin == "3614226905018"
+    assert variant.variant_name == "100 ml"
+    assert variant.size == "100"
+    assert variant.unit == "ml"
+    assert db.query(Formulation).filter(Formulation.canonical_product_id == canonical.id).count() == 0
     assert db.query(CanonicalProduct).filter(CanonicalProduct.product_name.like("Goddess Eau%")).count() == 0
 
 

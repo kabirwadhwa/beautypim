@@ -71,6 +71,7 @@ def test_generic_jsonld_product_parsing():
     assert product.review_count == 128
     assert product.review_summary["average_rating"] == 4.7
     assert product.review_summary["review_count"] == 128
+    assert product.review_summary["review_sample_count"] == 0
     assert "review text retained" in product.review_summary["summary_method"]
     assert product.canonical_url == "https://shop.example.com/product/moon-serum"
     assert product.fields["product_name"].method == "json_ld"

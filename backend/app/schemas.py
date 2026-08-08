@@ -200,6 +200,11 @@ class FragranceIntelligenceSchema(BaseModel):
     top_notes: List[str] = []
     middle_notes: List[str] = []
     base_notes: List[str] = []
+    concentration: Optional[str] = None
+    longevity_profile: Optional[str] = None
+    sillage_projection: Optional[str] = None
+    seasonal_fit: List[str] = []
+    occasion_fit: List[str] = []
     evidence: List[EvidenceItemSchema] = []
     confidence: Optional[float] = None
 

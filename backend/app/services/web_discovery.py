@@ -56,7 +56,8 @@ def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
             f"Find the official brand product page and reputable retailer product pages for: {identity}. "
             "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
             "Include results from multiple distinct domains when available: the official page for identity and imagery, "
-            "plus public retailer product pages that visibly expose aggregate rating or review-count evidence."
+            "plus public retailer product pages that visibly expose aggregate rating or review-count evidence. "
+            "Prioritize exact pages that also expose size, GTIN and a full ingredients/INCI section."
         ),
     }
     response = None

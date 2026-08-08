@@ -203,6 +203,30 @@ def persist_product(
         ))
 
     if canonical_id:
+        variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id).first() if variant_id else None
+        if not variant:
+            variant = ProductVariant(id=uuid.uuid4(), canonical_product_id=canonical_id)
+            db.add(variant)
+            db.flush()
+            variant_id = variant.id
+            listing.product_variant_id = variant.id
+            observation.product_variant_id = variant.id
+        # Research observations may resolve identity details that were absent
+        # from the import. Fill blanks only; never silently replace an accepted
+        # variant identity with a retailer's conflicting representation.
+        observed_gtin = product.gtin or product.ean or product.upc
+        if observed_gtin and not variant.gtin:
+            duplicate = db.query(ProductVariant).filter(
+                ProductVariant.gtin == observed_gtin, ProductVariant.id != variant.id,
+            ).first()
+            if not duplicate:
+                variant.gtin = observed_gtin
+        if not variant.variant_name and (product.variant_name or product.shade or product.size):
+            variant.variant_name = product.variant_name or product.shade or product.size
+        if not variant.size and product.size:
+            variant.size = product.size
+        if not variant.unit and product.unit:
+            variant.unit = product.unit
         _persist_values_and_conflicts(db, job, observation, product, match_status)
         _persist_formulation(db, listing, canonical_id, variant_id, product)
         canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == canonical_id).first()
@@ -256,16 +280,19 @@ def _persist_values_and_conflicts(db, job, observation, product, match_status):
                 field_name=field, value=value, source_type="source_data",
                 source_reference=product.source_url, confidence_score=1,
                 review_status="inferred",
-                is_current=True, evidence={
+                is_current=True, evidence=[{
+                    "source_reference": product.source_url,
+                    "source_field": field,
+                    "supporting_text": str(value)[:1000],
+                    "evidence_type": "scraped_product_observation",
                     "scraped_product_observation_id": str(observation.id),
                     "source_domain": product.source_domain,
-                    "source_url": product.source_url,
-                },
+                }],
             ))
 
 
 def _persist_formulation(db, listing, product_id, variant_id, product):
-    raw = product.ingredient_text_raw
+    raw = (product.ingredient_text_raw or "").strip()
     if not raw:
         return
     content_hash = hashlib.sha256(raw.encode()).hexdigest()

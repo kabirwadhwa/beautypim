@@ -93,6 +93,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
     return {
         "average_rating": float(_decimal(aggregate.get("ratingValue"))) if _decimal(aggregate.get("ratingValue")) is not None else None,
         "review_count": int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else len(reviews) or None,
+        "review_sample_count": len(reviews),
         "rating_distribution": distribution,
         "frequently_praised_topics": praised,
         "frequent_complaint_topics": complaints,
@@ -100,7 +101,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
         "sillage_mentions": {"positive": positive["sillage"], "negative": negative["sillage"]},
         "packaging_mentions": {"positive": positive["packaging"], "negative": negative["packaging"]},
         "source_urls": [source_url],
-        "summary_method": "deterministic topic aggregation; no customer review text retained",
+        "summary_method": "deterministic topic aggregation over visible review samples; no customer review text retained",
     }
 
 

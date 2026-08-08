@@ -579,8 +579,15 @@ export default function ProductDetailPage() {
       if (value.scores && typeof value.scores === 'object') return Object.entries(value.scores)
         .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}/5`);
       return Object.entries(value)
-        .filter(([, val]) => val !== null && val !== "" && !Array.isArray(val) && typeof val !== "object")
-        .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}`);
+        .filter(([, val]) => val !== null && val !== "" && !(Array.isArray(val) && val.length === 0))
+        .flatMap(([key, val]) => {
+          if (Array.isArray(val)) {
+            const printable = val.filter(item => typeof item !== 'object').map(item => String(item));
+            return printable.length ? [`${key.replaceAll("_", " ")}: ${printable.join(', ')}`] : [];
+          }
+          if (typeof val === "object") return [];
+          return [`${key.replaceAll("_", " ")}: ${String(val)}`];
+        });
     }
     return [String(value)];
   };
@@ -821,6 +828,7 @@ export default function ProductDetailPage() {
               const count = result.data?.review_count ?? summary.review_count;
               const praised = summary.frequently_praised_topics || [];
               const complaints = summary.frequent_complaint_topics || [];
+              const sampleCount = summary.review_sample_count;
               return (
                 <div key={result.id} style={{ padding: 14, borderRadius: 8, border: '1px solid #334155', background: '#10192c' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
@@ -834,6 +842,7 @@ export default function ProductDetailPage() {
                   </a>
                   {praised.length > 0 && <div style={{ color: '#86efac', fontSize: 11, marginTop: 10 }}>Frequently praised: {praised.join(', ')}</div>}
                   {complaints.length > 0 && <div style={{ color: '#fda4af', fontSize: 11, marginTop: 5 }}>Frequent complaints: {complaints.join(', ')}</div>}
+                  {sampleCount != null && <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 7 }}>Topic analysis used {Number(sampleCount).toLocaleString()} visible review samples from the aggregate count above.</div>}
                   <div style={{ color: '#64748b', fontSize: 10, marginTop: 9 }}>Observed {new Date(result.observed_at).toLocaleString()} · source-specific, not combined or fabricated</div>
                 </div>
               );

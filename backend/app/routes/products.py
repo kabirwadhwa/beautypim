@@ -399,6 +399,28 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
                 return True
         return False
 
+    def has_official_evidence() -> bool:
+        if not brand_token:
+            return False
+        rows = db.query(ScrapedProductObservation.source_domain).filter(
+            ScrapedProductObservation.canonical_product_id == product.id,
+        ).all()
+        return any(brand_token in str(domain or "").replace("-", "").replace(".", "") for (domain,) in rows)
+
+    def has_formulation_evidence() -> bool:
+        return db.query(Formulation).filter(
+            Formulation.canonical_product_id == product.id,
+            Formulation.is_deleted == False,
+            func.length(func.trim(Formulation.raw_inci_text)) > 0,
+        ).first() is not None
+
+    def has_variant_identity() -> bool:
+        row = db.query(ProductVariant).filter(
+            ProductVariant.canonical_product_id == product.id,
+            ProductVariant.is_deleted == False,
+        ).order_by(ProductVariant.created_at.asc()).first()
+        return bool(row and (row.gtin or row.size or row.variant_name))
+
     for url, domain in selected:
         configuration = {
             "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
@@ -431,7 +453,11 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
                 # Official pages commonly provide imagery but no customer-review
                 # aggregate. Continue across distinct sources until both evidence
                 # needs are met, while retaining every source independently.
-                if product.image_url and has_review_evidence():
+                if (
+                    product.image_url and has_review_evidence()
+                    and (has_official_evidence() or has_formulation_evidence())
+                    and has_variant_identity()
+                ):
                     break
             elif job.error_summary:
                 errors.append(f"{domain}: {job.error_summary}")
@@ -442,6 +468,9 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
     return {
         "candidates": len(candidates), "sources_ingested": completed,
         "image_found": bool(product.image_url), "review_evidence_found": has_review_evidence(),
+        "official_evidence_found": has_official_evidence(),
+        "formulation_evidence_found": has_formulation_evidence(),
+        "variant_identity_found": has_variant_identity(),
         "errors": errors,
     }
 
