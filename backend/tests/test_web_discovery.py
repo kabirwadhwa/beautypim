@@ -100,21 +100,44 @@ def test_openai_citations_are_discovered_and_unsafe_urls_are_rejected(post, vali
 
 @patch("app.services.web_discovery.validate_public_url")
 @patch("app.services.web_discovery.requests.post")
-def test_openai_discovery_retries_one_timeout(post, validate, monkeypatch):
+def test_openai_discovery_does_not_duplicate_a_timed_out_request(post, validate, monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
     monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", None)
-    response = Mock(status_code=200)
-    response.json.return_value = {"output": [{
-        "type": "web_search_call",
-        "action": {"sources": [{"url": "https://brand.example/product/moon", "title": "Official"}]},
-    }]}
     import requests
-    post.side_effect = [requests.Timeout("slow provider"), response]
+    post.side_effect = requests.Timeout("slow provider")
+
+    with pytest.raises(SearchProviderUnavailable, match="not retried"):
+        discover_product_sources(brand="Example", product_name="Moon Serum")
+
+    assert post.call_count == 1
+
+
+@patch("app.services.web_discovery.time.sleep")
+@patch("app.services.web_discovery.validate_public_url")
+@patch("app.services.web_discovery.requests.get")
+@patch("app.services.web_discovery.requests.post")
+def test_openai_background_search_polls_one_response(post, get, validate, sleep, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", None)
+    post.return_value = Mock(status_code=200)
+    post.return_value.json.return_value = {"id": "resp_123", "status": "queued", "output": []}
+    get.return_value = Mock(status_code=200)
+    get.return_value.json.return_value = {
+        "id": "resp_123", "status": "completed", "output": [{
+            "type": "web_search_call",
+            "action": {"sources": [{"url": "https://brand.example/product/moon", "title": "Official"}]},
+        }],
+    }
 
     results = discover_product_sources(brand="Example", product_name="Moon Serum")
 
     assert len(results) == 1
-    assert post.call_count == 2
+    assert post.call_count == 1
+    get.assert_called_once_with(
+        "https://api.openai.com/v1/responses/resp_123",
+        headers=post.call_args.kwargs["headers"], timeout=(10, 20),
+    )
+    assert post.call_args.kwargs["json"]["background"] is True
 
 
 @pytest.mark.parametrize("provider", ["openai", "brave"])

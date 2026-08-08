@@ -1,6 +1,8 @@
 """Licensed web-search discovery for product research candidates."""
 from __future__ import annotations
 
+import time
+import uuid
 from urllib.parse import urlparse
 
 import requests
@@ -41,22 +43,12 @@ def discover_product_sources(
 
 
 def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
-    models = [settings.OPENAI_WEB_SEARCH_MODEL]
-    fallback = settings.OPENAI_WEB_SEARCH_FALLBACK_MODEL
-    if fallback and fallback not in models:
-        models.append(fallback)
-    errors = []
-    for model in models:
-        try:
-            return _discover_with_openai_model(identity, domains, model)
-        except SearchProviderUnavailable as exc:
-            errors.append(f"{model}: {exc}")
-    if settings.BRAVE_SEARCH_API_KEY:
-        try:
-            return _discover_with_brave(identity, domains)
-        except SearchProviderUnavailable as exc:
-            errors.append(f"Brave: {exc}")
-    raise SearchProviderUnavailable("; ".join(errors))
+    # Use one economical request only. A timed-out synchronous request may
+    # continue running provider-side, so launching a fallback can double bill
+    # the same user action. Background mode returns an ID quickly and lets us
+    # poll that one response to completion instead.
+    model = settings.OPENAI_WEB_SEARCH_FALLBACK_MODEL or settings.OPENAI_WEB_SEARCH_MODEL
+    return _discover_with_openai_model(identity, domains, model)
 
 
 def _discover_with_openai_model(identity: str, domains: list[str], model: str) -> list[dict]:
@@ -69,6 +61,7 @@ def _discover_with_openai_model(identity: str, domains: list[str], model: str) -
         tool["filters"] = {"allowed_domains": domains[:100]}
     request = {
         "model": model,
+        "background": True,
         "tools": [tool], "tool_choice": "required",
         "include": ["web_search_call.action.sources", "web_search_call.results"],
         "input": (
@@ -79,22 +72,51 @@ def _discover_with_openai_model(identity: str, domains: list[str], model: str) -
             "Prioritize exact pages that also expose size, GTIN and a full ingredients/INCI section."
         ),
     }
+    request_id = str(uuid.uuid4())
+    headers = {
+        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+        "X-Client-Request-Id": request_id,
+    }
     try:
         response = requests.post(
             "https://api.openai.com/v1/responses",
-            headers={
-                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=request, timeout=40,
+            headers=headers, json=request, timeout=(10, 20),
         )
     except requests.Timeout as exc:
-        raise SearchProviderUnavailable(f"live web search timed out: {exc}") from exc
+        raise SearchProviderUnavailable(
+            "Live search could not be started in time. It was not retried, to avoid duplicate API usage."
+        ) from exc
     if response.status_code != 200:
         raise SearchProviderUnavailable(
             f"OpenAI live web search returned HTTP {response.status_code}. Check model access and API quota."
         )
     payload = response.json()
+    response_id = payload.get("id")
+    status = payload.get("status")
+    started = time.monotonic()
+    while response_id and status in {"queued", "in_progress"}:
+        if time.monotonic() - started >= 120:
+            raise SearchProviderUnavailable(
+                "Live search is still processing after two minutes. No second request was launched."
+            )
+        time.sleep(2)
+        try:
+            poll = requests.get(
+                f"https://api.openai.com/v1/responses/{response_id}",
+                headers=headers, timeout=(10, 20),
+            )
+        except requests.Timeout:
+            continue
+        if poll.status_code != 200:
+            raise SearchProviderUnavailable(
+                f"OpenAI live-search status returned HTTP {poll.status_code}."
+            )
+        payload = poll.json()
+        status = payload.get("status")
+    if status in {"failed", "cancelled", "incomplete"}:
+        detail = (payload.get("error") or {}).get("message") or status
+        raise SearchProviderUnavailable(f"OpenAI live search ended with status {status}: {detail}")
     candidates: dict[str, dict] = {}
     for output in payload.get("output", []):
         if output.get("type") == "web_search_call":
