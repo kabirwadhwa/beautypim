@@ -66,9 +66,10 @@ def _product_expected_format(db: Session, product: CanonicalProduct) -> str:
             FieldValue.is_current == True,
         ).all()
     }
+    category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
     return " ".join(filter(None, (
         values.get("product_type"), values.get("subcategory"),
-        product.category.path if product.category else "",
+        category.path if category else "",
     )))
 
 def product_internal_code(product_id: uuid.UUID) -> str:
