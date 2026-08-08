@@ -483,6 +483,7 @@ class ProductDetailOut(ProductOut):
     enrichment_metadata: Optional[EnrichmentMetadataSchema] = None
     key_ingredients: list[KeyIngredientOut] = Field(default_factory=list)
     dynamic_concerns: list[DynamicConcernOut] = Field(default_factory=list)
+    improvement_result: Optional[dict] = None
 
     class Config:
         from_attributes = True

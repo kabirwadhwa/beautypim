@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from app.worker import (
     apply_category_specific_enrichment, collect_structured_evidence,
     compact_enrichment_value, create_field_value_version, normalize_claim_value,
-    normalize_gtin_value, run_job_worker,
+    normalize_gtin_value, run_job_worker, source_alias_value,
 )
 from app.models import FieldValue, CanonicalProduct, Brand, ValidationIssue, User
 from app.routes.products import approve_product
@@ -65,6 +65,10 @@ def test_spreadsheet_gtin_decimal_suffix_is_removed_safely():
     assert normalize_gtin_value("3605970360757.0") == "3605970360757"
     assert normalize_gtin_value(" 769915190540 ") == "769915190540"
     assert normalize_gtin_value("not-an-id") is None
+
+
+def test_unmapped_type_column_is_still_available_as_product_identity():
+    assert source_alias_value({"Type": "Eau de Toilette"}, "product type", "type") == "Eau de Toilette"
 
 
 def test_category_specific_normalization_does_not_leak_into_skincare():

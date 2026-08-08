@@ -395,12 +395,13 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
         score -= 3 if any(part in url for part in ("/c/", "/category", "/collection")) else 0
         return score
 
-    from app.services.product_identity import product_version_compatible
+    from app.services.product_identity import research_identity_compatible
     candidates = [
         candidate for candidate in candidates
-        if product_version_compatible(
+        if research_identity_compatible(
             expected_format,
             " ".join(str(candidate.get(key) or "") for key in ("title", "url", "snippet")),
+            product.product_name,
         )
     ]
     candidates = sorted(candidates, key=candidate_score, reverse=True)
@@ -483,6 +484,7 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
             configuration={
                 **configuration, "research_product_id": str(product.id),
                 "research_expected_format": expected_format,
+                "research_product_name": product.product_name,
             },
             requested_by_id=user.id,
         )
@@ -568,7 +570,9 @@ def improve_product(
     except Exception as exc:
         db.rollback()
         raise HTTPException(500, f"Product improvement failed: {exc}") from exc
-    return get_product_detail(product_id, db, current_user)
+    detail = get_product_detail(product_id, db, current_user)
+    detail.improvement_result = research_summary
+    return detail
 
 
 @router.put("/{product_id}/identity")
@@ -670,6 +674,7 @@ def research_product(
         configuration={
             **configuration, "research_product_id": str(product.id),
             "research_expected_format": _product_expected_format(db, product),
+            "research_product_name": product.product_name,
         },
         requested_by_id=current_user.id,
     )
@@ -712,13 +717,14 @@ def discover_product_source_candidates(
             gtin=variant.gtin if variant and variant.gtin else "",
             approved_domains=request.approved_domains,
         )
-        from app.services.product_identity import product_version_compatible
+        from app.services.product_identity import research_identity_compatible
         expected_format = _product_expected_format(db, product)
         results = [
             result for result in results
-            if product_version_compatible(
+            if research_identity_compatible(
                 expected_format,
                 " ".join(str(result.get(key) or "") for key in ("title", "url", "snippet")),
+                product.product_name,
             )
         ]
     except SearchProviderUnavailable as exc:

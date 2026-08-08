@@ -208,7 +208,7 @@ def suggest_mapping(headers: List[str]) -> Dict[str, str]:
         "description": ["description", "desc", "details", "info", "marketing_copy", "marketing_description"],
         "ingredients": ["ingredients", "inci", "composition", "ingredients_list"],
         "category": ["category", "department", "rayon", "classification"],
-        "product_family": ["product_family", "family", "subcategory", "product_type"],
+        "product_family": ["product_family", "family", "subcategory", "product_type", "product type", "type", "format", "concentration"],
         "claims": ["claims", "product_claims", "marketing_claims"],
         "directions": ["directions", "usage_instructions", "how_to_use"],
         "market": ["market", "country", "sales_market"],

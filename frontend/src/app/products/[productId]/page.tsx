@@ -313,12 +313,25 @@ export default function ProductDetailPage() {
       setProduct(data);
       setImageUrlDraft(data.image_url || '');
       setImageLoadFailed(false);
-      setNotice('Live source research and product enrichment completed. Source-backed details and imagery were applied where available.');
+      const research = data.improvement_result || {};
+      const researchErrors = Array.isArray(research.errors) ? research.errors.filter(Boolean) : [];
+      if (research.identity_required) {
+        setError(researchErrors[0] || 'Confirm the product identity before live source research.');
+      } else if (!research.sources_ingested) {
+        setError(`Catalogue fields were enriched, but live source research did not complete${researchErrors.length ? `: ${researchErrors.join(' ')}` : '. No exact product pages were found.'} No image or review evidence was added.`);
+      } else {
+        const evidence = [
+          research.image_found ? 'image' : null,
+          research.review_evidence_found ? 'reviews' : null,
+          research.formulation_evidence_found ? 'ingredients' : null,
+        ].filter(Boolean).join(', ');
+        setNotice(`Product improved from ${research.sources_ingested} verified source${research.sources_ingested === 1 ? '' : 's'}${evidence ? `; added ${evidence}` : ''}.`);
+      }
       const resultsResp = await fetch(`${API_URL}/products/${productId}/research-results`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (resultsResp.ok) setResearchResults(await resultsResp.json());
-      setShowImprove(false);
+      if (research.sources_ingested) setShowImprove(false);
     } catch (e: any) {
       setError(e.message || 'Product improvement failed.');
     } finally {

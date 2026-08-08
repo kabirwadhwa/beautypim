@@ -32,6 +32,25 @@ def product_version_compatible(expected: Any, observed: Any) -> bool:
     return not (expected_label and observed_label and expected_label != observed_label)
 
 
+def research_identity_compatible(expected: Any, observed: Any, product_name: Any) -> bool:
+    """Allow a version conflict only for an unmistakable full-name match.
+
+    Feeds frequently mislabel EDT/EDP while retaining the exact commercial
+    product name. Two distinctive name tokens must match, so a generic family
+    name such as "Sauvage" cannot silently cross editions.
+    """
+    if product_version_compatible(expected, observed):
+        return True
+    stopwords = {"with", "you", "the", "for", "and", "eau", "parfum", "toilette", "spray"}
+    tokens = [
+        token for token in re.findall(r"[a-z0-9]+", str(product_name or "").lower())
+        if len(token) >= 3 and token not in stopwords
+    ]
+    observed_text = re.sub(r"[^a-z0-9]+", " ", str(observed or "").lower())
+    distinctive = list(dict.fromkeys(tokens))
+    return len(distinctive) >= 2 and all(re.search(rf"\b{re.escape(token)}\b", observed_text) for token in distinctive)
+
+
 def trusted_product_version(db, product) -> str | None:
     """Return a fragrance edition only when source data or a human supplied it."""
     from app.models import FieldValue, SourceListing

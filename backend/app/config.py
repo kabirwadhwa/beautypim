@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", None)
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     OPENAI_WEB_SEARCH_MODEL: str = os.getenv("OPENAI_WEB_SEARCH_MODEL", "gpt-5.6")
+    OPENAI_WEB_SEARCH_FALLBACK_MODEL: str = os.getenv("OPENAI_WEB_SEARCH_FALLBACK_MODEL", "gpt-5-mini")
     ENRICHMENT_CUSTOM_INSTRUCTIONS: str = os.getenv(
         "ENRICHMENT_CUSTOM_INSTRUCTIONS",
         (

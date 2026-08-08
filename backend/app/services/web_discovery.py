@@ -41,6 +41,25 @@ def discover_product_sources(
 
 
 def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
+    models = [settings.OPENAI_WEB_SEARCH_MODEL]
+    fallback = settings.OPENAI_WEB_SEARCH_FALLBACK_MODEL
+    if fallback and fallback not in models:
+        models.append(fallback)
+    errors = []
+    for model in models:
+        try:
+            return _discover_with_openai_model(identity, domains, model)
+        except SearchProviderUnavailable as exc:
+            errors.append(f"{model}: {exc}")
+    if settings.BRAVE_SEARCH_API_KEY:
+        try:
+            return _discover_with_brave(identity, domains)
+        except SearchProviderUnavailable as exc:
+            errors.append(f"Brave: {exc}")
+    raise SearchProviderUnavailable("; ".join(errors))
+
+
+def _discover_with_openai_model(identity: str, domains: list[str], model: str) -> list[dict]:
     tool: dict = {
         "type": "web_search", "external_web_access": True,
         "search_context_size": "low", "search_content_types": ["text", "image"],
@@ -49,7 +68,7 @@ def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
     if domains:
         tool["filters"] = {"allowed_domains": domains[:100]}
     request = {
-        "model": settings.OPENAI_WEB_SEARCH_MODEL,
+        "model": model,
         "tools": [tool], "tool_choice": "required",
         "include": ["web_search_call.action.sources", "web_search_call.results"],
         "input": (
@@ -60,25 +79,17 @@ def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
             "Prioritize exact pages that also expose size, GTIN and a full ingredients/INCI section."
         ),
     }
-    response = None
-    last_error = None
-    for _attempt in range(2):
-        try:
-            response = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=request, timeout=75,
-            )
-            break
-        except requests.Timeout as exc:
-            last_error = exc
-    if response is None:
-        raise SearchProviderUnavailable(
-            f"OpenAI live web search timed out after two attempts: {last_error}"
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=request, timeout=40,
         )
+    except requests.Timeout as exc:
+        raise SearchProviderUnavailable(f"live web search timed out: {exc}") from exc
     if response.status_code != 200:
         raise SearchProviderUnavailable(
             f"OpenAI live web search returned HTTP {response.status_code}. Check model access and API quota."
@@ -114,7 +125,7 @@ def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
                             "title": annotation.get("title"), "url": url,
                             "snippet": None, "image_url": None,
                         })
-    return _validate_candidates(candidates.values(), domains, "OpenAI Responses web_search")
+    return _validate_candidates(candidates.values(), domains, f"OpenAI Responses web_search ({model})")
 
 
 def _validate_candidates(values, domains: list[str], provider: str) -> list[dict]:

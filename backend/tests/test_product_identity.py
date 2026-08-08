@@ -4,6 +4,7 @@ from app.models import Brand, CanonicalProduct, Category, FieldValue
 from app.routes.products import _product_expected_format
 from app.services.product_identity import (
     product_is_fragrance, product_version_compatible, product_version_label,
+    research_identity_compatible,
     trusted_product_version,
 )
 
@@ -23,6 +24,16 @@ def test_product_version_guard_rejects_cross_edition_evidence():
 def test_product_version_guard_allows_missing_edition_signal():
     assert product_version_compatible("Eau de Toilette", "Sauvage fragrance collection")
     assert product_version_compatible("Serum", "Niacinamide serum")
+
+
+def test_exact_distinctive_product_name_can_correct_a_feed_version_label():
+    assert research_identity_compatible(
+        "Eau de Toilette", "Armani Stronger With You Amber Eau de Parfum",
+        "Stronger With You Amber",
+    )
+    assert not research_identity_compatible(
+        "Eau de Toilette", "Dior Sauvage Parfum", "Sauvage",
+    )
 
 
 def test_expected_format_reads_category_without_product_relationship(db):

@@ -30,6 +30,19 @@ def source_value(raw_data: Dict[str, Any], mapping: Dict[str, str], field_name: 
     return str(value).strip()
 
 
+def source_alias_value(raw_data: Dict[str, Any], *aliases: str) -> str:
+    """Read common identity columns even when an optional field was not mapped."""
+    normalized = {
+        "".join(char for char in str(key).lower() if char.isalnum()): value
+        for key, value in (raw_data or {}).items()
+    }
+    for alias in aliases:
+        value = normalized.get("".join(char for char in alias.lower() if char.isalnum()))
+        if value is not None and str(value).strip().lower() not in {"", "none", "nan", "null"}:
+            return str(value).strip()
+    return ""
+
+
 def normalize_gtin_value(value: Any) -> Optional[str]:
     """Normalize CSV/Excel identifiers without turning a decimal suffix into a digit."""
     import re
@@ -413,6 +426,9 @@ def process_item_enrichment(
     raw_size = source_value(raw_data, mapping, "size") or None
     raw_category = source_value(raw_data, mapping, "category")
     raw_product_family = source_value(raw_data, mapping, "product_family")
+    raw_product_type = source_value(raw_data, mapping, "product_type") or source_alias_value(
+        raw_data, "product_type", "product type", "type", "format", "concentration",
+    )
     raw_claims = source_value(raw_data, mapping, "claims")
     raw_directions = source_value(raw_data, mapping, "directions")
     raw_market = source_value(raw_data, mapping, "market") or "global"
@@ -493,6 +509,7 @@ def process_item_enrichment(
         "imported_product": {
             "gtin": raw_ean, "size": raw_size,
             "category": raw_category, "product_family": raw_product_family,
+            "product_type": raw_product_type,
             "claims": raw_claims, "directions": raw_directions,
             "market": raw_market, "language": raw_language, "image_url": raw_image_url,
         }
@@ -538,15 +555,16 @@ def process_item_enrichment(
     source_ref = f"source_listing_id:{listing.id}"
 
     # Explicit source hierarchy and instructions outrank model inference.
-    if raw_product_family:
-        explicit_family = raw_product_family.strip()
+    explicit_classification = raw_product_type or raw_product_family
+    if explicit_classification:
+        explicit_family = explicit_classification.strip()
         for field_name in ("subcategory", "product_type"):
             enrichment_result[field_name] = {
                 "value": explicit_family,
                 "value_status": "explicit_source",
                 "confidence": 1.0,
                 "evidence": [{
-                    "source_field": mapping.get("product_family", "product_family"),
+                    "source_field": mapping.get("product_type") or mapping.get("product_family", "product_family"),
                     "supporting_text": explicit_family,
                     "evidence_type": "explicit",
                 }],
@@ -609,7 +627,7 @@ def process_item_enrichment(
         enrichment_result, product_identity_text, raw_ingr,
     )
     from app.services.product_identity import product_version_label
-    raw_identity_text = f"{raw_name} {raw_category} {raw_product_family}"
+    raw_identity_text = f"{raw_name} {raw_category} {raw_product_family} {raw_product_type}"
     if any(token in raw_identity_text.lower() for token in ("perfume", "parfum", "fragrance", "eau de")) \
             and not product_version_label(raw_identity_text):
         enrichment_result["product_type"] = {
@@ -673,7 +691,7 @@ def process_item_enrichment(
             product_variant_id=None,
             field_name=field,
             value=field_data.get("value"),
-            source_type="ai_inference",
+            source_type="source_data" if status in {"explicit_source", "normalized_source"} else "ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),
             status=status,

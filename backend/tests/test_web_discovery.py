@@ -69,7 +69,7 @@ def test_openai_web_search_sources_and_images_are_candidates(post, validate, mon
         brand="Example", product_name="Moon Serum", approved_domains=["brand.example"],
     )
 
-    assert results[0]["provider"] == "OpenAI Responses web_search"
+    assert results[0]["provider"].startswith("OpenAI Responses web_search")
     assert results[0]["image_url"] == "https://cdn.brand.example/moon.jpg"
     request_json = post.call_args.kwargs["json"]
     assert request_json["tools"][0]["external_web_access"] is True
