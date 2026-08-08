@@ -66,10 +66,18 @@ def _product_expected_format(db: Session, product: CanonicalProduct) -> str:
             FieldValue.is_current == True,
         ).all()
     }
+    from app.services.product_identity import product_version_label, trusted_product_version
     category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
+    trusted_version = trusted_product_version(db, product)
+    controlled = {
+        key: value for key, value in values.items()
+        if not product_version_label(value) or product_version_label(value) == trusted_version
+    }
+    category_path = category.path if category else ""
+    if product_version_label(category_path) and product_version_label(category_path) != trusted_version:
+        category_path = category.name if category and not product_version_label(category.name) else "Fragrance"
     return " ".join(filter(None, (
-        values.get("product_type"), values.get("subcategory"),
-        category.path if category else "",
+        controlled.get("product_type"), controlled.get("subcategory"), category_path,
     )))
 
 def product_internal_code(product_id: uuid.UUID) -> str:
@@ -350,6 +358,18 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
         ProductVariant.is_deleted == False,
     ).order_by(ProductVariant.created_at.asc()).first()
     expected_format = _product_expected_format(db, product)
+    from app.services.product_identity import product_is_fragrance, trusted_product_version
+    if product_is_fragrance(db, product) and not trusted_product_version(db, product):
+        return {
+            "candidates": 0, "sources_ingested": 0,
+            "image_found": bool(product.image_url), "review_evidence_found": False,
+            "official_evidence_found": False, "formulation_evidence_found": False,
+            "variant_identity_found": False, "identity_required": True,
+            "errors": [
+                "Confirm the fragrance concentration (for example EDT, EDP, Parfum or Elixir) "
+                "before exact-page research so editions are not mixed."
+            ],
+        }
     candidates = discover_product_sources(
         brand=product.brand.name if product.brand else "",
         product_name=product.product_name,
@@ -612,6 +632,12 @@ def research_product(
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
+    from app.services.product_identity import product_is_fragrance, trusted_product_version
+    if product_is_fragrance(db, product) and not trusted_product_version(db, product):
+        raise HTTPException(
+            409,
+            "Confirm the fragrance concentration in Product Identity before attaching research pages.",
+        )
     urls = [url.strip() for url in request.urls if url.strip()]
     if not urls:
         raise HTTPException(422, "Add at least one official or approved retailer URL")
@@ -667,6 +693,12 @@ def discover_product_source_candidates(
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
+    from app.services.product_identity import product_is_fragrance, trusted_product_version
+    if product_is_fragrance(db, product) and not trusted_product_version(db, product):
+        raise HTTPException(
+            409,
+            "Confirm the fragrance concentration in Product Identity before discovering exact pages.",
+        )
     variant = db.query(ProductVariant).filter(
         ProductVariant.canonical_product_id == product.id,
         ProductVariant.is_deleted == False,

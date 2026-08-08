@@ -2,7 +2,10 @@ import uuid
 
 from app.models import Brand, CanonicalProduct, Category, FieldValue
 from app.routes.products import _product_expected_format
-from app.services.product_identity import product_version_compatible, product_version_label
+from app.services.product_identity import (
+    product_is_fragrance, product_version_compatible, product_version_label,
+    trusted_product_version,
+)
 
 
 def test_product_version_label_prefers_specific_fragrance_concentrations():
@@ -41,3 +44,23 @@ def test_expected_format_reads_category_without_product_relationship(db):
 
     assert "Perfume" in expected
     assert "Eau de Toilette" in expected
+
+
+def test_ai_inferred_fragrance_concentration_is_not_trusted_identity(db):
+    brand = Brand(id=uuid.uuid4(), name="Dior", normalized_name="dior")
+    category = Category(id=uuid.uuid4(), name="Fragrance", level=1, path="Perfume > Fragrance")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, category_id=category.id,
+        product_name="Dior Sauvage", normalized_name="dior sauvage", review_status="imported",
+    )
+    db.add_all([brand, category, product]); db.flush()
+    db.add(FieldValue(
+        id=uuid.uuid4(), canonical_product_id=product.id, field_name="product_type",
+        value="Eau de Parfum", source_type="ai_inference", confidence_score=.8,
+        review_status="inferred", is_current=True,
+    ))
+    db.flush()
+
+    assert product_is_fragrance(db, product)
+    assert trusted_product_version(db, product) is None
+    assert "Eau de Parfum" not in _product_expected_format(db, product)

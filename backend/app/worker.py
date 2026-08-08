@@ -132,17 +132,22 @@ def apply_category_specific_enrichment(
         enrichment_result["gender_target"] = inferred_field("Unisex", 0.85)
 
     fragrance = enrichment_result.get("fragrance_intelligence") or {}
+    source_identity_text = identity_text.rsplit(" __model_type__ ", 1)[0]
     concentration = next((label for token, label in (
         ("eau de toilette", "Eau de Toilette"), ("eau de parfum", "Eau de Parfum"),
         ("extrait", "Extrait de Parfum"), ("parfum", "Parfum"), ("cologne", "Eau de Cologne"),
-    ) if token in text), None)
+    ) if token in source_identity_text), None)
     fragrance["applicable"] = True
-    fragrance["concentration"] = fragrance.get("concentration") or concentration
-    fragrance["longevity_profile"] = fragrance.get("longevity_profile") or (
-        "Moderate" if concentration in {"Eau de Toilette", "Eau de Cologne"} else
-        "Moderate to long-lasting" if concentration == "Eau de Parfum" else "Long-lasting"
-    )
-    fragrance["sillage_projection"] = fragrance.get("sillage_projection") or "Moderate"
+    fragrance["concentration"] = concentration or "Not specified in source"
+    if not concentration:
+        fragrance["longevity_profile"] = "Varies by concentration and application"
+        fragrance["sillage_projection"] = "Varies by concentration and application"
+    else:
+        fragrance["longevity_profile"] = fragrance.get("longevity_profile") or (
+            "Moderate" if concentration in {"Eau de Toilette", "Eau de Cologne"} else
+            "Moderate to long-lasting" if concentration == "Eau de Parfum" else "Long-lasting"
+        )
+        fragrance["sillage_projection"] = fragrance.get("sillage_projection") or "Moderate"
     fragrance.setdefault("seasonal_fit", [])
     fragrance.setdefault("occasion_fit", [])
     enrichment_result["fragrance_intelligence"] = fragrance
@@ -561,8 +566,9 @@ def process_item_enrichment(
     # Do not manufacture skincare/hair suitability for personal fragrance.
     # These fields are structurally present in the universal schema, but their
     # honest product-specific value is not-applicable.
+    model_product_type = (enrichment_result.get('product_type') or {}).get('value', '')
     product_identity_text = f"{raw_name} {raw_category} {raw_product_family} " \
-        f"{(enrichment_result.get('product_type') or {}).get('value', '')}".lower()
+        f"__model_type__ {model_product_type}".lower()
     if any(token in product_identity_text for token in ("perfume", "parfum", "fragrance", "eau de")):
         not_applicable_fit = {
             "applicable": False, "recommended_for": [], "not_recommended_for": [],
@@ -580,6 +586,15 @@ def process_item_enrichment(
     enrichment_result = apply_category_specific_enrichment(
         enrichment_result, product_identity_text, raw_ingr,
     )
+    from app.services.product_identity import product_version_label
+    raw_identity_text = f"{raw_name} {raw_category} {raw_product_family}"
+    if any(token in raw_identity_text.lower() for token in ("perfume", "parfum", "fragrance", "eau de")) \
+            and not product_version_label(raw_identity_text):
+        enrichment_result["product_type"] = {
+            "value": "Perfume (concentration not specified)",
+            "value_status": "explicit_source", "confidence": 1.0, "evidence": [],
+            "reasoning_summary": "The source identifies a perfume but does not specify EDT, EDP, Parfum or Elixir.",
+        }
 
     # Materialize a useful category even when the incoming feed has no taxonomy.
     # Explicit source hierarchy wins; otherwise transparent AI classification is used.

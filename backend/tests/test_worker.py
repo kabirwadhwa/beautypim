@@ -41,6 +41,18 @@ def test_premium_helpers_bound_context_and_promote_nested_evidence():
     assert [item["supporting_text"] for item in evidence] == ["Contains glycerin.", "Fresh citrus."]
 
 
+def test_fragrance_does_not_promote_model_guessed_concentration():
+    result = apply_category_specific_enrichment({
+        "fragrance_intelligence": {
+            "applicable": True, "concentration": "Eau de Parfum",
+            "longevity_profile": "Long-lasting", "sillage_projection": "Strong",
+        },
+    }, "Dior Sauvage Perfume __model_type__ Eau de Parfum", "")
+
+    assert result["fragrance_intelligence"]["concentration"] == "Not specified in source"
+    assert result["fragrance_intelligence"]["longevity_profile"] == "Varies by concentration and application"
+
+
 def test_category_specific_normalization_does_not_leak_into_skincare():
     original = {
         "application_area": {"value": "Face"},

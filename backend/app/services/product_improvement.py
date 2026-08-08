@@ -17,6 +17,7 @@ from app.models import (
     ScrapedProductObservation, SourceListing,
 )
 from app.services.deduplication import normalize_text
+from app.services.product_identity import product_is_fragrance, trusted_product_version
 
 
 IDENTITY_FIELDS = ("brand", "product_name", "format", "variant", "size", "gtin", "market")
@@ -67,10 +68,14 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     }
     raw = _latest_source(db, product.id)
     category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
+    format_row = current.get("product_type")
     format_value = (
-        (current.get("product_type").value if current.get("product_type") else None)
-        or _find_value(raw, "type", "format", "concentration", "product_type")
+        format_row.value
+        if format_row and format_row.source_type in {"source_data", "human_edit"}
+        else _find_value(raw, "type", "format", "concentration", "product_type")
     )
+    if product_is_fragrance(db, product) and not trusted_product_version(db, product):
+        format_value = None
     market = _find_value(raw, "market", "country", "locale")
     identity = {
         "brand": product.brand.name if product.brand else None,
@@ -137,9 +142,9 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     candidates.sort(key=lambda item: item["match_score"], reverse=True)
     candidates = candidates[:8]
 
-    ambiguous = bool(candidates and (
+    ambiguous = bool((product_is_fragrance(db, product) and not trusted_product_version(db, product)) or (candidates and (
         not identity["gtin"] or len({(c.get("format"), c.get("size")) for c in candidates}) > 1
-    ))
+    )))
     completeness = round(100 * (len(IDENTITY_FIELDS) - len(missing_identity)) / len(IDENTITY_FIELDS))
     status = "complete" if completeness >= 85 and not ambiguous else "ambiguous" if ambiguous else "incomplete"
     return {
