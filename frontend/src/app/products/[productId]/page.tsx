@@ -8,7 +8,7 @@ import {
   ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle, 
   History, Settings, Sparkles, BookOpen, User,
   ChevronDown, ChevronUp, Info, ExternalLink, RefreshCw, AlertCircle
-  , Download, Image as ImageIcon, WandSparkles, Search, X
+  , Download, Image as ImageIcon, WandSparkles, Search, X, Star
 } from 'lucide-react';
 import styles from '../../page.module.css';
 
@@ -172,6 +172,13 @@ export default function ProductDetailPage() {
       setCategoryDraft(data.product_category || '');
       setSubcategoryDraft(data.subcategory || '');
       setImageLoadFailed(false);
+      try {
+        const researchResp = await fetch(`${API_URL}/products/${productId}/research-results`, { headers });
+        if (researchResp.ok) setResearchResults(await researchResp.json());
+      } catch {
+        // Product details remain usable if optional research evidence is temporarily unavailable.
+        setResearchResults([]);
+      }
     } catch (e: any) {
       setError(e.message || "Failed to load.");
     } finally {
@@ -307,6 +314,10 @@ export default function ProductDetailPage() {
       setImageUrlDraft(data.image_url || '');
       setImageLoadFailed(false);
       setNotice('Live source research and product enrichment completed. Source-backed details and imagery were applied where available.');
+      const resultsResp = await fetch(`${API_URL}/products/${productId}/research-results`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (resultsResp.ok) setResearchResults(await resultsResp.json());
       setShowImprove(false);
     } catch (e: any) {
       setError(e.message || 'Product improvement failed.');
@@ -585,6 +596,12 @@ export default function ProductDetailPage() {
     return String(value).toUpperCase();
   };
 
+  const reviewObservations = researchResults.filter(result => {
+    const summary = result.data?.review_summary || {};
+    return result.data?.rating != null || result.data?.review_count != null ||
+      summary.average_rating != null || summary.review_count != null;
+  });
+
   return (
     <Shell>
       <div className={styles.pageHeader}>
@@ -790,6 +807,44 @@ export default function ProductDetailPage() {
           </div>
         </div>
       )}
+
+      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+        <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
+          <Star size={18} color="#fbbf24" />
+          <span>Retail Rating & Review Evidence</span>
+        </div>
+        {reviewObservations.length ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginTop: 12 }}>
+            {reviewObservations.map(result => {
+              const summary = result.data?.review_summary || {};
+              const rating = result.data?.rating ?? summary.average_rating;
+              const count = result.data?.review_count ?? summary.review_count;
+              const praised = summary.frequently_praised_topics || [];
+              const complaints = summary.frequent_complaint_topics || [];
+              return (
+                <div key={result.id} style={{ padding: 14, borderRadius: 8, border: '1px solid #334155', background: '#10192c' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+                    <div style={{ color: '#f8fafc', fontSize: 20, fontWeight: 800 }}>
+                      {rating != null ? `${Number(rating).toFixed(1)} / 5` : 'Rating unavailable'}
+                    </div>
+                    <div style={{ color: '#94a3b8', fontSize: 12 }}>{count != null ? `${Number(count).toLocaleString()} reviews` : 'Count unavailable'}</div>
+                  </div>
+                  <a href={result.source_url} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', gap: 5, alignItems: 'center', color: '#93c5fd', fontSize: 12, marginTop: 7 }}>
+                    {result.source_domain} <ExternalLink size={11} />
+                  </a>
+                  {praised.length > 0 && <div style={{ color: '#86efac', fontSize: 11, marginTop: 10 }}>Frequently praised: {praised.join(', ')}</div>}
+                  {complaints.length > 0 && <div style={{ color: '#fda4af', fontSize: 11, marginTop: 5 }}>Frequent complaints: {complaints.join(', ')}</div>}
+                  <div style={{ color: '#64748b', fontSize: 10, marginTop: 9 }}>Observed {new Date(result.observed_at).toLocaleString()} · source-specific, not combined or fabricated</div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ marginTop: 12, padding: 14, borderRadius: 8, border: '1px dashed #334155', color: '#94a3b8', fontSize: 13 }}>
+            No public retailer rating or review count has been observed for this exact product yet. Research & Improve will check multiple distinct product-page sources; BeautyPIM will not manufacture review data when sources do not publish it.
+          </div>
+        )}
+      </div>
 
       <div className={styles.detailGrid}>
         <div>

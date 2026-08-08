@@ -54,7 +54,9 @@ def _discover_with_openai(identity: str, domains: list[str]) -> list[dict]:
         "include": ["web_search_call.action.sources", "web_search_call.results"],
         "input": (
             f"Find the official brand product page and reputable retailer product pages for: {identity}. "
-            "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles."
+            "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
+            "Include results from multiple distinct domains when available: the official page for identity and imagery, "
+            "plus public retailer product pages that visibly expose aggregate rating or review-count evidence."
         ),
     }
     response = None

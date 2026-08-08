@@ -261,6 +261,7 @@ def run_crawl_job(db: Session, job_id):
             job = db.query(CrawlJob).filter(CrawlJob.id == job_id).first()
             item.error_reason = str(exc)
             job.consecutive_blocks += 1
+            job.error_summary = str(exc)
             if job.consecutive_blocks >= 3:
                 item.state, item.page_type = "failed", "blocked"
                 job.status, job.error_summary = "blocked", str(exc)

@@ -321,8 +321,8 @@ def product_improvement(
 def _automatic_product_research(db: Session, product: CanonicalProduct, user: User) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
-    This is deliberately bounded: one best product-page candidate and no
-    category traversal. Failure to access a retailer does not
+    This is deliberately bounded: up to three exact product-page candidates
+    across distinct domains and no category traversal. Failure to access one source does not
     prevent the normal enrichment fallback from running.
     """
     from app.services.web_discovery import discover_product_sources
@@ -380,11 +380,25 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
             continue
         seen_domains.add(domain)
         selected.append((url, domain))
-        if len(selected) == 1:
+        if len(selected) == 3:
             break
 
     completed = 0
     errors = []
+
+    def has_review_evidence() -> bool:
+        observations = db.query(ScrapedProductObservation.normalized_payload).filter(
+            ScrapedProductObservation.canonical_product_id == product.id,
+        ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(50).all()
+        for (payload,) in observations:
+            payload = payload or {}
+            summary = payload.get("review_summary") or {}
+            if payload.get("rating") is not None or payload.get("review_count") is not None:
+                return True
+            if summary.get("average_rating") is not None or summary.get("review_count") is not None:
+                return True
+        return False
+
     for url, domain in selected:
         configuration = {
             "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
@@ -413,13 +427,23 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
             db.refresh(job)
             if job.products_persisted:
                 completed += 1
+                db.refresh(product)
+                # Official pages commonly provide imagery but no customer-review
+                # aggregate. Continue across distinct sources until both evidence
+                # needs are met, while retaining every source independently.
+                if product.image_url and has_review_evidence():
+                    break
             elif job.error_summary:
                 errors.append(f"{domain}: {job.error_summary}")
         except Exception as exc:
             db.rollback()
             errors.append(f"{domain}: {exc}")
     db.commit()
-    return {"candidates": len(candidates), "sources_ingested": completed, "errors": errors}
+    return {
+        "candidates": len(candidates), "sources_ingested": completed,
+        "image_found": bool(product.image_url), "review_evidence_found": has_review_evidence(),
+        "errors": errors,
+    }
 
 
 @router.post("/{product_id}/improve", response_model=ProductDetailOut)
