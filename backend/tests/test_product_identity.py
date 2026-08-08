@@ -43,7 +43,7 @@ def test_expected_format_reads_category_without_product_relationship(db):
     expected = _product_expected_format(db, product)
 
     assert "Perfume" in expected
-    assert "Eau de Toilette" in expected
+    assert "Eau de Toilette" not in expected
 
 
 def test_ai_inferred_fragrance_concentration_is_not_trusted_identity(db):

@@ -104,6 +104,18 @@ def collect_structured_evidence(value: Any) -> list[dict[str, Any]]:
     return unique[:20]
 
 
+def normalize_claim_value(value: Any) -> str:
+    """Keep binary product claims consistent across model providers."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text = str(value or "").strip().lower()
+    if text in {"true", "yes", "y", "1"}:
+        return "yes"
+    if text in {"false", "no", "n", "0"}:
+        return "no"
+    return text or "unverified"
+
+
 def apply_category_specific_enrichment(
     enrichment_result: Dict[str, Any], identity_text: str, raw_ingredients: str,
 ) -> Dict[str, Any]:
@@ -132,7 +144,7 @@ def apply_category_specific_enrichment(
         enrichment_result["gender_target"] = inferred_field("Unisex", 0.85)
 
     fragrance = enrichment_result.get("fragrance_intelligence") or {}
-    source_identity_text = identity_text.rsplit(" __model_type__ ", 1)[0]
+    source_identity_text = identity_text.rsplit(" __model_type__ ", 1)[0].lower()
     concentration = next((label for token, label in (
         ("eau de toilette", "Eau de Toilette"), ("eau de parfum", "Eau de Parfum"),
         ("extrait", "Extrait de Parfum"), ("parfum", "Parfum"), ("cologne", "Eau de Cologne"),
@@ -677,7 +689,7 @@ def process_item_enrichment(
             canonical_product_id=item.canonical_product_id,
             product_variant_id=None,
             field_name=field,
-            value=field_data.get("value"),
+            value=normalize_claim_value(field_data.get("value")),
             source_type="ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),

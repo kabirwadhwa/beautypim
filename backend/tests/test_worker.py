@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from app.worker import (
     apply_category_specific_enrichment, collect_structured_evidence,
-    compact_enrichment_value, create_field_value_version, run_job_worker,
+    compact_enrichment_value, create_field_value_version, normalize_claim_value, run_job_worker,
 )
 from app.models import FieldValue, CanonicalProduct, Brand, ValidationIssue, User
 from app.routes.products import approve_product
@@ -51,6 +51,13 @@ def test_fragrance_does_not_promote_model_guessed_concentration():
 
     assert result["fragrance_intelligence"]["concentration"] == "Not specified in source"
     assert result["fragrance_intelligence"]["longevity_profile"] == "Varies by concentration and application"
+
+
+def test_binary_claim_values_are_normalized_across_providers():
+    assert normalize_claim_value(True) == "yes"
+    assert normalize_claim_value("TRUE") == "yes"
+    assert normalize_claim_value(False) == "no"
+    assert normalize_claim_value(None) == "unverified"
 
 
 def test_category_specific_normalization_does_not_leak_into_skincare():
