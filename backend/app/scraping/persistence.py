@@ -100,6 +100,23 @@ def persist_product(
         return existing
 
     match_status, score, canonical_id, variant_id = _match(db, product)
+    # Research launched from a product detail page belongs to that product.
+    # This avoids creating a duplicate merely because a retailer uses a title
+    # or size variation that does not satisfy the generic matcher.
+    research_product_id = (job.configuration or {}).get("research_product_id")
+    if research_product_id:
+        target = db.query(CanonicalProduct).filter(
+            CanonicalProduct.id == research_product_id,
+            CanonicalProduct.is_deleted == False,
+        ).first()
+        if target:
+            canonical_id = target.id
+            target_variant = db.query(ProductVariant).filter(
+                ProductVariant.canonical_product_id == target.id,
+                ProductVariant.is_deleted == False,
+            ).order_by(ProductVariant.created_at.asc()).first()
+            variant_id = target_variant.id if target_variant else None
+            match_status, score = "matched", 1.0
     suggested_product_id = canonical_id if match_status == "possible_match" else None
     if match_status in {"unmatched", "possible_match"} and create_unmatched_draft:
         brand = _brand(db, product.brand)
@@ -188,6 +205,10 @@ def persist_product(
     if canonical_id:
         _persist_values_and_conflicts(db, job, observation, product, match_status)
         _persist_formulation(db, listing, canonical_id, variant_id, product)
+        canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == canonical_id).first()
+        if canonical and not canonical.image_url and product.image_urls:
+            from app.services.image_urls import normalize_public_image_url
+            canonical.image_url = normalize_public_image_url(product.image_urls[0])
     if product.price is not None and variant_id:
         db.add(SourcePrice(
             id=uuid.uuid4(), source_listing_id=listing.id,

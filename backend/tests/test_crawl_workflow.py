@@ -126,6 +126,53 @@ def test_persistence_is_idempotent_and_preserves_approved_conflict(db):
     ).one().value == "Approved description"
 
 
+def test_product_research_attaches_observation_and_image_to_requested_product(db):
+    brand = Brand(id=uuid.uuid4(), name="Burberry", normalized_name="burberry")
+    db.add(brand); db.flush()
+    canonical = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Burberry Goddess",
+        normalized_name="burberry goddess", review_status="imported",
+    )
+    db.add(canonical); db.flush()
+    config = CrawlConfiguration(
+        domain="brand.example", crawl_mode="single_url",
+        starting_urls=["https://brand.example/products/goddess"],
+    ).model_dump(mode="json")
+    config["research_product_id"] = str(canonical.id)
+    job = CrawlJob(
+        id=uuid.uuid4(), domain="brand.example",
+        starting_urls=config["starting_urls"], crawl_mode="single_url",
+        status="parsing", configuration=config,
+    )
+    url = CrawlUrl(
+        id=uuid.uuid4(), crawl_job_id=job.id, url=config["starting_urls"][0],
+        normalized_url=config["starting_urls"][0], state="fetching", depth=0,
+    )
+    db.add_all([job, url]); db.flush()
+    raw = RawPageObservation(
+        id=uuid.uuid4(), crawl_job_id=job.id, crawl_url_id=url.id,
+        source_url=url.url, final_url=url.url, http_status=200,
+        content_hash="b" * 64, response_size=100, parser_version="1.0.0",
+    )
+    db.add(raw); db.flush()
+    scraped = ScrapedProduct(
+        source_name="Official Brand", source_domain="brand.example",
+        source_url=url.url, canonical_url=url.url,
+        scraped_at=datetime.now(timezone.utc), brand="BURBERRY",
+        product_name="Goddess Eau de Parfum for Women",
+        description="A vanilla-led eau de parfum.",
+        image_urls=["https://cdn.brand.example/goddess.jpg"],
+        parser_version="1.0.0",
+    )
+    observation = persist_product(db, job, raw, scraped, GenericJsonLdAdapter())
+    db.commit(); db.refresh(canonical)
+
+    assert observation.canonical_product_id == canonical.id
+    assert observation.match_status == "matched"
+    assert canonical.image_url == "https://cdn.brand.example/goddess.jpg"
+    assert db.query(CanonicalProduct).filter(CanonicalProduct.product_name.like("Goddess Eau%")).count() == 0
+
+
 def test_worker_recovers_interrupted_frontier(db):
     config = CrawlConfiguration(domain="shop.example.com", crawl_mode="full_domain")
     job = CrawlJob(

@@ -10,7 +10,7 @@ from app.models import (
     ImportJob, ImportJobItem, SourceListing, CanonicalProduct, 
     ProductVariant, Brand, Category, FieldValue, Formulation, 
     FormulationIngredient, IngredientDefinition, ValidationIssue, 
-    AuditLog, SourcePrice, EnrichmentRun
+    AuditLog, SourcePrice, EnrichmentRun, ScrapedProductObservation
 )
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.enrichment import run_ai_enrichment
@@ -278,6 +278,30 @@ def process_item_enrichment(
     raw_language = source_value(raw_data, mapping, "language") or "en"
     raw_image_url = source_value(raw_data, mapping, "image_url") or None
 
+    # Exact-product web observations outrank a sparse import row. They supply
+    # attributable copy, INCI and imagery to the enrichment prompt.
+    research_rows = db.query(ScrapedProductObservation).filter(
+        ScrapedProductObservation.canonical_product_id == item.canonical_product_id,
+    ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(10).all()
+    research_payloads = [row.normalized_payload or {} for row in research_rows]
+
+    def first_researched(*keys):
+        for payload in research_payloads:
+            for key in keys:
+                value = payload.get(key)
+                if value not in (None, "", [], {}):
+                    return value
+        return None
+
+    raw_desc = raw_desc or str(first_researched("description", "subtitle") or "")
+    raw_ingr = raw_ingr or str(first_researched("ingredient_text_raw") or "")
+    researched_claims = first_researched("claims") or []
+    raw_claims = raw_claims or "; ".join(researched_claims)
+    raw_directions = raw_directions or str(first_researched("usage_instructions") or "")
+    if not raw_image_url:
+        researched_images = first_researched("image_urls") or []
+        raw_image_url = researched_images[0] if researched_images else None
+
     if raw_image_url:
         from app.services.image_urls import normalize_public_image_url
         normalized_image_url = normalize_public_image_url(raw_image_url)
@@ -296,6 +320,8 @@ def process_item_enrichment(
     # Ground enrichment with attributable observations already matched to this
     # exact canonical product. Similar-but-unmatched products are never included.
     enrichment_source_context = dict(raw_data)
+    if research_payloads:
+        enrichment_source_context["_exact_product_web_observations"] = research_payloads
     catalogue_context = build_catalogue_knowledge_context(
         db, item.canonical_product_id,
         product_name=raw_name,
@@ -379,6 +405,26 @@ def process_item_enrichment(
         if not isinstance(existing_benefits, list):
             existing_benefits = []
         enrichment_result["benefits"] = source_claim_entries + existing_benefits
+
+    # Do not manufacture skincare/hair suitability for personal fragrance.
+    # These fields are structurally present in the universal schema, but their
+    # honest product-specific value is not-applicable.
+    product_identity_text = f"{raw_name} {raw_category} {raw_product_family} " \
+        f"{(enrichment_result.get('product_type') or {}).get('value', '')}".lower()
+    if any(token in product_identity_text for token in ("perfume", "parfum", "fragrance", "eau de")):
+        not_applicable_fit = {
+            "applicable": False, "recommended_for": [], "not_recommended_for": [],
+            "unknown_for": [], "confidence": 1.0, "evidence": [],
+        }
+        enrichment_result["skin_type_fit"] = dict(not_applicable_fit)
+        enrichment_result["hair_type_fit"] = dict(not_applicable_fit)
+        for field_name in ("hydration", "anti_ageing", "pigmentation", "acne", "redness",
+                           "sensitivity", "scalp_care", "hair_growth"):
+            enrichment_result[field_name] = {
+                "targeting_status": "not_applicable", "confidence": 1.0,
+                "evidence": [],
+                "reasoning_summary": "Not applicable to a personal fragrance product.",
+            }
 
     # Materialize a useful category even when the incoming feed has no taxonomy.
     # Explicit source hierarchy wins; otherwise transparent AI classification is used.

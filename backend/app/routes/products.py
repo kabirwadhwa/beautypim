@@ -318,6 +318,109 @@ def product_improvement(
     return product_improvement_summary(db, product)
 
 
+def _automatic_product_research(db: Session, product: CanonicalProduct, user: User) -> dict:
+    """Discover and ingest a small exact-product evidence set before enrichment.
+
+    This is deliberately bounded: one best product-page candidate and no
+    category traversal. Failure to access a retailer does not
+    prevent the normal enrichment fallback from running.
+    """
+    from app.services.web_discovery import discover_product_sources
+    from app.services.image_urls import normalize_public_image_url
+    from app.scraping.runner import run_crawl_job
+
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id == product.id,
+        ProductVariant.is_deleted == False,
+    ).order_by(ProductVariant.created_at.asc()).first()
+    product_type = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "product_type", FieldValue.is_current == True,
+    ).first()
+    candidates = discover_product_sources(
+        brand=product.brand.name if product.brand else "",
+        product_name=product.product_name,
+        product_format=str(product_type.value or "") if product_type else "",
+        gtin=variant.gtin if variant and variant.gtin else "",
+        approved_domains=[],
+    )
+
+    brand_token = re.sub(r"[^a-z0-9]", "", (product.brand.name if product.brand else "").lower())
+    product_tokens = [
+        token for token in re.findall(r"[a-z0-9]+", product.product_name.lower())
+        if len(token) > 3
+    ]
+
+    def candidate_score(candidate):
+        domain = str(candidate.get("domain") or "").replace("-", "").replace(".", "")
+        title = str(candidate.get("title") or "").lower()
+        url = str(candidate.get("url") or "").lower()
+        score = 5 if brand_token and brand_token in domain else 0
+        score += sum(1 for token in product_tokens if token in title or token in url)
+        score += 2 if candidate.get("image_url") else 0
+        score -= 5 if any(part in url for part in ("/search", "/blog", "/article", "?q=")) else 0
+        return score
+
+    candidates = sorted(candidates, key=candidate_score, reverse=True)
+    # An image result is tied to its product-page source. Prefer the strongest
+    # identity match, not merely the provider's first arbitrary result.
+    if not product.image_url:
+        for candidate in candidates:
+            image = normalize_public_image_url(candidate.get("image_url"))
+            if image:
+                product.image_url = image
+                break
+    selected = []
+    seen_domains = set()
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        domain = (urlparse(url).hostname or "").lower()
+        if not url or not domain or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        selected.append((url, domain))
+        if len(selected) == 1:
+            break
+
+    completed = 0
+    errors = []
+    for url, domain in selected:
+        configuration = {
+            "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
+            "maximum_crawl_depth": 0, "maximum_pages": 1, "maximum_product_pages": 1,
+            "maximum_runtime_seconds": 45, "maximum_discovered_urls": 1,
+            "use_sitemap": False, "use_category_discovery": False,
+            "use_browser_rendering": False, "respect_robots_txt": True,
+            "allow_subdomains": False, "request_delay_seconds": 0.1,
+            "per_domain_concurrency": 1, "retry_limit": 0,
+            "request_timeout_seconds": 20, "maximum_response_bytes": 8000000,
+            "maximum_redirects": 5, "browser_page_limit": 1,
+            "country": None, "locale": None, "rescrape_interval_hours": None,
+            "recrawl_strategy": "crawl_once", "allowed_url_patterns": [],
+            "denied_url_patterns": [], "include_editorial": False,
+        }
+        job = CrawlJob(
+            id=uuid.uuid4(), domain=domain, starting_urls=[url],
+            crawl_mode="single_url", status="queued",
+            configuration={**configuration, "research_product_id": str(product.id)},
+            requested_by_id=user.id,
+        )
+        db.add(job)
+        db.commit()
+        try:
+            run_crawl_job(db, job.id)
+            db.refresh(job)
+            if job.products_persisted:
+                completed += 1
+            elif job.error_summary:
+                errors.append(f"{domain}: {job.error_summary}")
+        except Exception as exc:
+            db.rollback()
+            errors.append(f"{domain}: {exc}")
+    db.commit()
+    return {"candidates": len(candidates), "sources_ingested": completed, "errors": errors}
+
+
 @router.post("/{product_id}/improve", response_model=ProductDetailOut)
 def improve_product(
     product_id: uuid.UUID,
@@ -342,6 +445,16 @@ def improve_product(
         raise HTTPException(409, "No source record is available for enrichment")
     job = db.query(ImportJob).filter(ImportJob.id == item.import_job_id).first()
     try:
+        # Improve Product is a complete workflow: research first, then let the
+        # enrichment model consume exact-source observations. Search/crawl
+        # failures remain non-fatal so imported data can still be improved.
+        research_summary = None
+        if settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY:
+            try:
+                research_summary = _automatic_product_research(db, product, current_user)
+            except Exception as research_exc:
+                db.rollback()
+                research_summary = {"candidates": 0, "sources_ingested": 0, "errors": [str(research_exc)]}
         process_item_enrichment(
             db, item, job.column_mapping or {}, mode=request.mode,
             selected_fields=request.fields,
@@ -349,8 +462,8 @@ def improve_product(
         record_audit(
             db, "CanonicalProduct", product.id, product.product_name, "update",
             {"enrichment": "existing"},
-            {"enrichment": request.mode, "fields": request.fields},
-            {"enrichment": request.mode}, current_user.id, "user",
+            {"enrichment": request.mode, "fields": request.fields, "research": research_summary},
+            {"enrichment": request.mode, "research": research_summary}, current_user.id, "user",
             "Guided Improve Product workflow",
         )
         db.commit()

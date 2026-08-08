@@ -304,6 +304,9 @@ export default function ProductDetailPage() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || 'Product improvement failed.');
       setProduct(data);
+      setImageUrlDraft(data.image_url || '');
+      setImageLoadFailed(false);
+      setNotice('Live source research and product enrichment completed. Source-backed details and imagery were applied where available.');
       setShowImprove(false);
     } catch (e: any) {
       setError(e.message || 'Product improvement failed.');
@@ -1299,9 +1302,9 @@ export default function ProductDetailPage() {
                     </div>
                   )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: '#7f8da8', fontSize: 11 }}>Human-confirmed and accepted source values are protected from silent replacement.</span>
+                    <span style={{ color: '#7f8da8', fontSize: 11 }}>This searches for exact-product sources first, then enriches. Human-confirmed values remain protected.</span>
                     <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={runGuidedEnrichment} disabled={improveLoading || (improveMode === 'selected' && !selectedImproveFields.length)}>
-                      <WandSparkles size={15} /> {improveLoading ? 'Improving…' : 'Run improvement'}
+                      <WandSparkles size={15} /> {improveLoading ? 'Researching & improving…' : 'Research & improve'}
                     </button>
                   </div>
                 </section>
