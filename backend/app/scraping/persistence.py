@@ -203,10 +203,13 @@ def _persist_values_and_conflicts(db, job, observation, product, match_status):
     product_id = observation.canonical_product_id
     for field in ("description", "product_type", "subtitle", "claims", "benefits",
                   "usage_instructions", "warnings", "skin_types", "hair_types",
-                  "concerns", "availability", "image_urls", "shade"):
+                  "concerns", "availability", "image_urls", "shade", "rating", "review_count",
+                  "review_summary"):
         value = getattr(product, field)
         if value in (None, "", []):
             continue
+        if field == "rating":
+            value = float(value)
         current = db.query(FieldValue).filter(
             FieldValue.canonical_product_id == product_id,
             FieldValue.field_name == field, FieldValue.is_current.is_(True),

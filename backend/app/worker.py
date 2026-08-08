@@ -10,7 +10,7 @@ from app.models import (
     ImportJob, ImportJobItem, SourceListing, CanonicalProduct, 
     ProductVariant, Brand, Category, FieldValue, Formulation, 
     FormulationIngredient, IngredientDefinition, ValidationIssue, 
-    AuditLog, SourcePrice
+    AuditLog, SourcePrice, EnrichmentRun
 )
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.enrichment import run_ai_enrichment
@@ -220,9 +220,45 @@ def create_field_value_version(
     )
     db.add(field_record)
 
-def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str, str]):
+def process_item_enrichment(
+    db: Session,
+    item: ImportJobItem,
+    mapping: Dict[str, str],
+    *,
+    mode: str = "full",
+    selected_fields: Optional[List[str]] = None,
+):
     """Runs AI/rule enrichment on a matched canonical product and variant.
     """
+    if mode not in {"full", "missing_only", "selected"}:
+        raise ValueError(f"Unsupported enrichment mode: {mode}")
+    selected = set(selected_fields or [])
+    if mode == "selected" and not selected:
+        raise ValueError("Select at least one field for selective enrichment")
+
+    current_values = {
+        row.field_name: row
+        for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == item.canonical_product_id,
+            FieldValue.is_current == True,
+        ).all()
+    }
+
+    def should_write(field_name: str) -> bool:
+        if mode == "selected":
+            return field_name in selected
+        if mode == "missing_only":
+            existing = current_values.get(field_name)
+            if not existing:
+                return True
+            value = existing.value
+            if value in (None, "", [], {}):
+                return True
+            return str(value).strip().lower() in {
+                "unknown", "not provided", "not_provided", "unverified", "null", "none"
+            }
+        return True
+
     listing = db.query(SourceListing).filter(SourceListing.id == item.source_listing_id).first()
     if not listing:
         raise ValueError("Source listing not found")
@@ -286,6 +322,13 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         product_variant_id=item.product_variant_id,
         source_context=enrichment_source_context,
     )
+    if run_id:
+        db.query(EnrichmentRun).filter(EnrichmentRun.id == run_id).update({
+            "requested_fields": {
+                "mode": mode,
+                "fields": sorted(selected) if selected else [],
+            }
+        })
 
     source_ref = f"source_listing_id:{listing.id}"
 
@@ -382,6 +425,8 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         "regulatory_notes"
     ]
     for field in core_categorical_fields:
+        if not should_write(field):
+            continue
         field_data = enrichment_result.get(field, {})
         status = field_data.get("value_status", "unknown")
         create_field_value_version(
@@ -407,6 +452,8 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         "dermatologically_tested", "clinically_tested", "ophthalmologically_tested"
     ]
     for field in core_claims_fields:
+        if not should_write(field):
+            continue
         field_data = enrichment_result.get(field, {})
         status = field_data.get("claim_status", "unknown")
         create_field_value_version(
@@ -431,6 +478,8 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         "sensitivity", "scalp_care", "hair_growth", "fragrance", "freshness"
     ]
     for field in core_concerns_fields:
+        if not should_write(field):
+            continue
         field_data = enrichment_result.get(field, {})
         status = field_data.get("targeting_status", "unknown")
         create_field_value_version(
@@ -457,6 +506,8 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         "proprietary_technologies", "skin_type_scores", "inci_stats",
         "ingredients_intelligence",
     ]:
+        if not should_write(field):
+            continue
         field_data = enrichment_result.get(field)
         if field_data is None:
             continue
@@ -492,16 +543,19 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         "category": (enrichment_result.get("subcategory") or {}).get("value"),
         "size": raw_size,
     }
-    create_field_value_version(
-        db=db, canonical_product_id=item.canonical_product_id, product_variant_id=None,
-        field_name="schema_org", value=schema_org_value, source_type="deterministic_rule",
-        source_ref=source_ref, confidence=1.0, status="confirmed", run_id=run_id,
-        evidence=[], reasoning_summary="Generated deterministically from current catalogue values.",
-        semantic_status="confirmed", semantic_status_type="structured_data",
-    )
+    if should_write("schema_org"):
+        create_field_value_version(
+            db=db, canonical_product_id=item.canonical_product_id, product_variant_id=None,
+            field_name="schema_org", value=schema_org_value, source_type="deterministic_rule",
+            source_ref=source_ref, confidence=1.0, status="confirmed", run_id=run_id,
+            evidence=[], reasoning_summary="Generated deterministically from current catalogue values.",
+            semantic_status="confirmed", semantic_status_type="structured_data",
+        )
 
     # Write warning observations
     for field in ["pregnancy_warning_observation", "allergen_warning_observation", "sensitivity_warning_observation"]:
+        if not should_write(field):
+            continue
         field_data = enrichment_result.get(field, {})
         if field_data:
             create_field_value_version(
@@ -521,22 +575,29 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
                 semantic_status_type="observation_status"
             )
 
+    # Save formulation only when the requested operation includes formulation
+    # intelligence. A selective merchandising refresh must not touch INCI data.
+    refresh_formulation = mode != "selected" or bool(
+        selected & {"ingredients", "ingredients_intelligence", "inci_stats"}
+    )
+    formulation = None
     # Save formulation
     content_hash = hashlib.sha256(raw_ingr.encode('utf-8')).hexdigest()
-    formulation = db.query(Formulation).filter(
-        Formulation.canonical_product_id == item.canonical_product_id,
-        Formulation.product_variant_id == item.product_variant_id,
-        Formulation.content_hash == content_hash,
-        Formulation.is_deleted == False,
-    ).order_by(Formulation.created_at.desc()).first()
-    if formulation:
+    if refresh_formulation:
+        formulation = db.query(Formulation).filter(
+            Formulation.canonical_product_id == item.canonical_product_id,
+            Formulation.product_variant_id == item.product_variant_id,
+            Formulation.content_hash == content_hash,
+            Formulation.is_deleted == False,
+        ).order_by(Formulation.created_at.desc()).first()
+    if refresh_formulation and formulation:
         db.query(FormulationIngredient).filter(
             FormulationIngredient.formulation_id == formulation.id
         ).delete(synchronize_session=False)
         formulation.source_listing_id = listing.id
         formulation.market = raw_market
         formulation.language = raw_language
-    else:
+    elif refresh_formulation:
         formulation = Formulation(
             id=uuid.uuid4(),
             canonical_product_id=item.canonical_product_id,
@@ -551,7 +612,7 @@ def process_item_enrichment(db: Session, item: ImportJobItem, mapping: Dict[str,
         db.flush()
 
     # Save formulation ingredients
-    ai_ingredients = enrichment_result.get("ingredients_intelligence", [])
+    ai_ingredients = enrichment_result.get("ingredients_intelligence", []) if refresh_formulation else []
     for pos, ing in enumerate(ai_ingredients):
         # Check if in glossary
         norm_name = normalize_text(ing.get("ingredient_name", ""))

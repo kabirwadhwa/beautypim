@@ -531,7 +531,11 @@ EDITABLE_FIELDS_REGISTRY = {
     "scalp_care": bool,
     "hair_growth": bool,
     "fragrance": bool,
-    "freshness": bool
+    "freshness": bool,
+    "availability": str,
+    "rating": float,
+    "review_count": int,
+    "review_summary": dict,
 }
 
 class ProductEdit(BaseModel):

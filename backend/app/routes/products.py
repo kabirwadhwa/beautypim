@@ -1,4 +1,6 @@
 import uuid
+import re
+from urllib.parse import urlparse
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
@@ -8,7 +10,8 @@ from app.database import get_db
 from app.auth import get_current_user, require_editor_or_admin, require_viewer_or_above
 from app.models import (
     CanonicalProduct, ProductVariant, Brand, Category, FieldValue, 
-    ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem, SourceListing
+    ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem, SourceListing,
+    ScrapedProductObservation, CrawlJob
 )
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
@@ -26,6 +29,30 @@ class BulkActionRequest(BaseModel):
     action: str
     category: Optional[str] = None
     subcategory: Optional[str] = None
+
+
+class ProductImproveRequest(BaseModel):
+    mode: str = "missing_only"
+    fields: List[str] = []
+
+
+class ProductIdentityUpdateRequest(BaseModel):
+    format: Optional[str] = None
+    variant: Optional[str] = None
+    size: Optional[str] = None
+    unit: Optional[str] = None
+    gtin: Optional[str] = None
+    market: Optional[str] = None
+
+
+class ProductResearchRequest(BaseModel):
+    urls: List[str]
+    use_browser_rendering: bool = False
+    refresh_interval_hours: Optional[int] = None
+
+
+class ProductSourceDiscoveryRequest(BaseModel):
+    approved_domains: List[str] = []
 
 router = APIRouter(prefix="/products", tags=["Product PIM Center"])
 
@@ -274,6 +301,218 @@ def re_enrich_product(
         raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {exc}")
 
     return get_product_detail(product_id, db, current_user)
+
+
+@router.get("/{product_id}/improvement")
+def product_improvement(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_viewer_or_above),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    from app.services.product_improvement import product_improvement_summary
+    return product_improvement_summary(db, product)
+
+
+@router.post("/{product_id}/improve", response_model=ProductDetailOut)
+def improve_product(
+    product_id: uuid.UUID,
+    request: ProductImproveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    if request.mode not in {"missing_only", "selected", "full"}:
+        raise HTTPException(422, "Mode must be missing_only, selected or full")
+    if request.mode == "selected" and not request.fields:
+        raise HTTPException(422, "Select at least one field")
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    item = db.query(ImportJobItem).filter(
+        ImportJobItem.canonical_product_id == product_id,
+        ImportJobItem.source_listing_id.isnot(None),
+    ).order_by(ImportJobItem.created_at.desc()).first()
+    if not item:
+        raise HTTPException(409, "No source record is available for enrichment")
+    job = db.query(ImportJob).filter(ImportJob.id == item.import_job_id).first()
+    try:
+        process_item_enrichment(
+            db, item, job.column_mapping or {}, mode=request.mode,
+            selected_fields=request.fields,
+        )
+        record_audit(
+            db, "CanonicalProduct", product.id, product.product_name, "update",
+            {"enrichment": "existing"},
+            {"enrichment": request.mode, "fields": request.fields},
+            {"enrichment": request.mode}, current_user.id, "user",
+            "Guided Improve Product workflow",
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(500, f"Product improvement failed: {exc}") from exc
+    return get_product_detail(product_id, db, current_user)
+
+
+@router.put("/{product_id}/identity")
+def update_product_identity(
+    product_id: uuid.UUID,
+    request: ProductIdentityUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id == product_id,
+        ProductVariant.is_deleted == False,
+    ).order_by(ProductVariant.created_at.asc()).first()
+    if not variant:
+        variant = ProductVariant(id=uuid.uuid4(), canonical_product_id=product.id)
+        db.add(variant)
+    if request.gtin:
+        digits = re.sub(r"\D", "", request.gtin)
+        if len(digits) not in {8, 12, 13, 14}:
+            raise HTTPException(422, "GTIN must contain 8, 12, 13 or 14 digits")
+        duplicate = db.query(ProductVariant).filter(
+            ProductVariant.gtin == digits, ProductVariant.id != variant.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(409, "This GTIN already belongs to another product")
+        variant.gtin = digits
+    if request.variant is not None:
+        variant.variant_name = request.variant.strip() or None
+    if request.size is not None:
+        variant.size = request.size.strip() or None
+    if request.unit is not None:
+        variant.unit = request.unit.strip() or None
+    for field_name, value in (("product_type", request.format), ("market", request.market)):
+        if value and value.strip():
+            create_field_value_version(
+                db, product.id, None, field_name, value.strip(), "human_edit",
+                f"user:{current_user.id}", 1.0, "confirmed", None, [],
+                "Identity supplied through Improve Product.", "confirmed", "identity",
+            )
+    db.commit()
+    return {"updated": True, "product_id": str(product.id)}
+
+
+@router.post(
+    "/{product_id}/research", status_code=201,
+    dependencies=[Depends(rate_limit("product_research", "RATE_LIMIT_CRAWL_CREATE"))],
+)
+def research_product(
+    product_id: uuid.UUID,
+    request: ProductResearchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    urls = [url.strip() for url in request.urls if url.strip()]
+    if not urls:
+        raise HTTPException(422, "Add at least one official or approved retailer URL")
+    if request.refresh_interval_hours is not None and not 1 <= request.refresh_interval_hours <= 8760:
+        raise HTTPException(422, "Refresh interval must be between 1 hour and 1 year")
+    domain = (urlparse(urls[0]).hostname or "").lower()
+    from app.scraping.url_safety import UnsafeUrl, validate_public_url
+    try:
+        for url in urls:
+            validate_public_url(url, expected_domain=domain, allow_subdomains=False)
+    except UnsafeUrl as exc:
+        raise HTTPException(422, str(exc)) from exc
+    configuration = {
+        "domain": domain, "starting_urls": urls, "crawl_mode": "single_url" if len(urls) == 1 else "multiple_urls",
+        "maximum_crawl_depth": 0, "maximum_pages": len(urls), "maximum_product_pages": len(urls),
+        "maximum_runtime_seconds": 300, "maximum_discovered_urls": len(urls),
+        "use_sitemap": False, "use_category_discovery": False,
+        "use_browser_rendering": request.use_browser_rendering, "respect_robots_txt": True,
+        "allow_subdomains": False, "request_delay_seconds": 1.0, "per_domain_concurrency": 1,
+        "retry_limit": 2, "request_timeout_seconds": 20, "maximum_response_bytes": 8000000,
+        "maximum_redirects": 5, "browser_page_limit": len(urls),
+        "country": None, "locale": None, "rescrape_interval_hours": request.refresh_interval_hours,
+        "recrawl_strategy": "prices_and_availability" if request.refresh_interval_hours else "crawl_once",
+        "allowed_url_patterns": [], "denied_url_patterns": [],
+        "include_editorial": False,
+    }
+    job = CrawlJob(
+        id=uuid.uuid4(), domain=domain, starting_urls=urls,
+        crawl_mode=configuration["crawl_mode"], status="queued",
+        configuration={**configuration, "research_product_id": str(product.id)},
+        requested_by_id=current_user.id,
+    )
+    db.add(job)
+    db.commit()
+    return {"crawl_job_id": str(job.id), "status": job.status, "domain": domain}
+
+
+@router.post(
+    "/{product_id}/discover-sources",
+    dependencies=[Depends(rate_limit("product_discovery", "RATE_LIMIT_CRAWL_CREATE"))],
+)
+def discover_product_source_candidates(
+    product_id: uuid.UUID,
+    request: ProductSourceDiscoveryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id == product.id,
+        ProductVariant.is_deleted == False,
+    ).order_by(ProductVariant.created_at.asc()).first()
+    product_type = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "product_type", FieldValue.is_current == True,
+    ).first()
+    from app.services.web_discovery import SearchProviderUnavailable, discover_product_sources
+    try:
+        results = discover_product_sources(
+            brand=product.brand.name if product.brand else "",
+            product_name=product.product_name,
+            product_format=str(product_type.value or "") if product_type else "",
+            gtin=variant.gtin if variant and variant.gtin else "",
+            approved_domains=request.approved_domains,
+        )
+    except SearchProviderUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"query_product_id": str(product.id), "results": results}
+
+
+@router.get("/{product_id}/research-results")
+def product_research_results(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_viewer_or_above),
+):
+    rows = db.query(ScrapedProductObservation).filter(
+        or_(
+            ScrapedProductObservation.canonical_product_id == product_id,
+            ScrapedProductObservation.possible_match_product_id == product_id,
+        )
+    ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(50).all()
+    return [{
+        "id": str(row.id), "source_url": row.source_url,
+        "source_domain": row.source_domain, "observed_at": row.scraped_at,
+        "match_status": row.match_status, "changed_fields": row.changed_fields,
+        "data": row.normalized_payload,
+    } for row in rows]
 
 @router.get("/{product_id}", response_model=ProductDetailOut)
 def get_product_detail(

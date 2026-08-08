@@ -118,6 +118,7 @@ class ScrapedProduct(BaseModel):
     concerns: list[str] = Field(default_factory=list)
     rating: Optional[Decimal] = None
     review_count: Optional[int] = None
+    review_summary: dict[str, Any] = Field(default_factory=dict)
     raw_payload_reference: Optional[str] = None
     parser_version: str
     fields: dict[str, ExtractedField] = Field(default_factory=dict, exclude=True)

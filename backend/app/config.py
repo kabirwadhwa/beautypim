@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     # OpenAI API
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", None)
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_WEB_SEARCH_MODEL: str = os.getenv("OPENAI_WEB_SEARCH_MODEL", "gpt-5.6")
     ENRICHMENT_CUSTOM_INSTRUCTIONS: str = os.getenv(
         "ENRICHMENT_CUSTOM_INSTRUCTIONS",
         (
@@ -90,6 +91,11 @@ class Settings(BaseSettings):
     CRAWL_RAW_STORAGE_PATH: str = os.getenv("CRAWL_RAW_STORAGE_PATH", "/tmp/beautypim-crawl-pages")
     CRAWL_WORKER_POLL_SECONDS: float = float(os.getenv("CRAWL_WORKER_POLL_SECONDS", "2"))
     CRAWL_WORKER_STALE_SECONDS: int = int(os.getenv("CRAWL_WORKER_STALE_SECONDS", "300"))
+    # Optional licensed search provider used only for product-source discovery.
+    # Search results are candidates; the crawler still validates and extracts
+    # every selected page before any value reaches review.
+    BRAVE_SEARCH_API_KEY: Optional[str] = os.getenv("BRAVE_SEARCH_API_KEY", None)
+    WEB_RESEARCH_ALLOWED_DOMAINS: Optional[str] = os.getenv("WEB_RESEARCH_ALLOWED_DOMAINS", None)
 
     # Email & SMTP Settings
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3009")

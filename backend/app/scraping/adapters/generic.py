@@ -54,6 +54,56 @@ def _decimal(value):
         return Decimal(match.group().replace(",", ".")) if match else None
 
 
+def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
+    """Aggregate review signals without copying customer review text."""
+    reviews = node.get("review") or []
+    if isinstance(reviews, dict):
+        reviews = [reviews]
+    topics = {
+        "longevity": ("long lasting", "long-lasting", "longevity", "lasts", "fade"),
+        "sillage": ("sillage", "projection", "projects", "trail"),
+        "packaging": ("packaging", "bottle", "pump", "cap", "box"),
+        "texture": ("texture", "sticky", "greasy", "lightweight", "absorbs"),
+        "scent": ("scent", "fragrance", "smell", "notes", "aroma"),
+        "value": ("price", "expensive", "value", "worth"),
+    }
+    positive = {key: 0 for key in topics}
+    negative = {key: 0 for key in topics}
+    distribution: dict[str, int] = {}
+    for review in reviews[:250]:
+        if not isinstance(review, dict):
+            continue
+        body = str(review.get("reviewBody") or review.get("description") or "").lower()
+        rating_obj = review.get("reviewRating") or {}
+        rating = _decimal(rating_obj.get("ratingValue") if isinstance(rating_obj, dict) else rating_obj)
+        if rating is not None:
+            bucket = str(max(1, min(5, int(round(float(rating))))))
+            distribution[bucket] = distribution.get(bucket, 0) + 1
+        for topic, keywords in topics.items():
+            if not any(keyword in body for keyword in keywords):
+                continue
+            if rating is not None and rating <= 2:
+                negative[topic] += 1
+            elif rating is None or rating >= 4:
+                positive[topic] += 1
+    praised = [key for key, count in sorted(positive.items(), key=lambda item: item[1], reverse=True) if count][:5]
+    complaints = [key for key, count in sorted(negative.items(), key=lambda item: item[1], reverse=True) if count][:5]
+    if not reviews and not aggregate:
+        return {}
+    return {
+        "average_rating": float(_decimal(aggregate.get("ratingValue"))) if _decimal(aggregate.get("ratingValue")) is not None else None,
+        "review_count": int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else len(reviews) or None,
+        "rating_distribution": distribution,
+        "frequently_praised_topics": praised,
+        "frequent_complaint_topics": complaints,
+        "longevity_mentions": {"positive": positive["longevity"], "negative": negative["longevity"]},
+        "sillage_mentions": {"positive": positive["sillage"], "negative": negative["sillage"]},
+        "packaging_mentions": {"positive": positive["packaging"], "negative": negative["packaging"]},
+        "source_urls": [source_url],
+        "summary_method": "deterministic topic aggregation; no customer review text retained",
+    }
+
+
 class GenericJsonLdAdapter(ProductAdapter):
     name = "generic_jsonld"
     version = "1.0.0"
@@ -124,6 +174,7 @@ class GenericJsonLdAdapter(ProductAdapter):
             ],
             rating=_decimal(aggregate.get("ratingValue")),
             review_count=int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else None,
+            review_summary=_review_summary(node, aggregate, url),
             parser_version=PARSER_VERSION,
         )
         for key in product.model_fields:

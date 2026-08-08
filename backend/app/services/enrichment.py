@@ -194,7 +194,17 @@ def ensure_catalogue_coverage(
     inferred. Ethical/free-from claims remain explicitly unverified rather than
     being fabricated.
     """
-    fallback = generate_deterministic_fallback(name, brand, description, raw_ingredients)
+    # A provider may successfully identify the format even when the imported
+    # title is sparse. Feed that classification into the coverage pass so the
+    # fallback does not turn an Eau de Parfum into a generic "beauty product".
+    model_type = str((data.get("product_type") or {}).get("value") or "").strip()
+    model_subcategory = str((data.get("subcategory") or {}).get("value") or "").strip()
+    classification_context = " ".join(
+        value for value in (description, model_type, model_subcategory) if value
+    )
+    fallback = generate_deterministic_fallback(
+        name, brand, classification_context, raw_ingredients
+    )
     categorical_fields = (
         "subcategory", "product_type", "gender_target", "texture",
         "application_area",
@@ -468,12 +478,14 @@ def generate_deterministic_fallback(
         }
 
     product_type = detect_categorical([
+        ("eau de parfum", "eau de parfum"), ("eau de toilette", "eau de toilette"),
+        ("eau de cologne", "eau de cologne"), ("parfum extract", "parfum"),
         ("cleanser", "cleanser"), ("face wash", "cleanser"), ("serum", "serum"),
         ("moisturizer", "moisturizer"), ("moisturiser", "moisturizer"),
         ("cream", "cream"), ("lotion", "lotion"), ("toner", "toner"),
         ("shampoo", "shampoo"), ("conditioner", "conditioner"),
         ("mascara", "mascara"), ("lipstick", "lipstick"), ("fragrance", "fragrance"),
-        ("perfume", "fragrance"), ("eau de parfum", "fragrance"), ("foundation", "foundation"),
+        ("perfume", "fragrance"), ("foundation", "foundation"),
         ("concealer", "concealer"), ("sunscreen", "sunscreen"), ("spf", "sunscreen"),
         ("deodorant", "deodorant"), ("body wash", "body wash"), ("mask", "mask")
     ], "product type")
@@ -493,7 +505,8 @@ def generate_deterministic_fallback(
             "toner": "face", "foundation": "face", "concealer": "face",
             "sunscreen": "face/body", "mascara": "eye area", "lipstick": "lips",
             "shampoo": "hair/scalp", "conditioner": "hair", "deodorant": "underarms",
-            "body wash": "body", "fragrance": "body",
+            "body wash": "body", "fragrance": "body", "eau de parfum": "body",
+            "eau de toilette": "body", "eau de cologne": "body", "parfum": "body",
         }
         inferred_area = area_by_type.get(inferred_type)
         if inferred_area:
@@ -531,7 +544,14 @@ def generate_deterministic_fallback(
         0.62,
     )
 
-    if texture.get("value") == "beauty product" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
+    fragrance_types = {"fragrance", "eau de parfum", "eau de toilette", "eau de cologne", "parfum"}
+    if texture.get("value") == "beauty product" and inferred_type in fragrance_types:
+        texture = make_inferred_categorical(
+            "liquid fragrance",
+            f"Liquid fragrance format inferred from product type '{inferred_type}'.",
+            0.72,
+        )
+    elif texture.get("value") == "beauty product" and inferred_type in {"serum", "toner", "shampoo", "conditioner"}:
         texture_defaults = {
             "serum": "serum/liquid", "toner": "liquid",
             "shampoo": "liquid/gel", "conditioner": "cream"
@@ -596,6 +616,10 @@ def generate_deterministic_fallback(
             "concealer": "Helps visually reduce the appearance of uneven tone",
             "sunscreen": "Supports daily sun-care application",
             "fragrance": "Provides a personal fragrance experience",
+            "eau de parfum": "Provides a concentrated personal fragrance experience",
+            "eau de toilette": "Provides a lighter personal fragrance experience",
+            "eau de cologne": "Provides a fresh personal fragrance experience",
+            "parfum": "Provides an intensive personal fragrance experience",
             "deodorant": "Supports everyday freshness",
             "body wash": "Helps cleanse the body",
             "mask": "Supports a focused beauty-care step",
@@ -616,6 +640,11 @@ def generate_deterministic_fallback(
         "shampoo": "Apply to wet hair and scalp, massage, then rinse.",
         "conditioner": "Apply to hair lengths after shampooing, then rinse.",
         "sunscreen": "Apply evenly before sun exposure and reapply as needed.",
+        "fragrance": "Spray lightly onto pulse points; avoid rubbing after application.",
+        "eau de parfum": "Spray lightly onto pulse points; avoid rubbing after application.",
+        "eau de toilette": "Spray lightly onto pulse points; avoid rubbing after application.",
+        "eau de cologne": "Spray lightly onto pulse points as desired.",
+        "parfum": "Apply sparingly to pulse points.",
     }
     inferred_directions = directions_by_type.get(
         inferred_type,
@@ -626,7 +655,9 @@ def generate_deterministic_fallback(
         "foundation": "natural cosmetic finish", "concealer": "natural cosmetic finish",
         "lipstick": "colour finish", "serum": "lightweight finish",
         "moisturizer": "comfortable moisturised finish", "cream": "comfortable moisturised finish",
-        "sunscreen": "protective skincare finish", "fragrance": "fragranced finish",
+        "sunscreen": "protective skincare finish", "fragrance": "fragrant dry-down",
+        "eau de parfum": "fragrant dry-down", "eau de toilette": "fragrant dry-down",
+        "eau de cologne": "fresh fragrant dry-down", "parfum": "intensive fragrant dry-down",
     }
     absorption_by_type = {
         "serum": "designed to layer within a skincare routine",
@@ -639,6 +670,9 @@ def generate_deterministic_fallback(
         "cleanser": "cleanse", "toner": "tone and prepare", "serum": "targeted treatment",
         "moisturizer": "moisturise", "cream": "moisturise", "sunscreen": "daytime protection",
         "shampoo": "cleanse hair", "conditioner": "condition after shampooing",
+        "fragrance": "final fragrance step", "eau de parfum": "final fragrance step",
+        "eau de toilette": "final fragrance step", "eau de cologne": "final fragrance step",
+        "parfum": "final fragrance step",
     }
     routine_step = routine_step_by_type.get(inferred_type, "product-specific routine step")
     targeted_labels = [label for label, concern in (
@@ -649,7 +683,11 @@ def generate_deterministic_fallback(
         ("Freshness", freshness),
     ) if concern["targeting_status"] in {"explicit", "inferred"}]
     if not targeted_labels:
-        targeted_labels = [f"Everyday {audience_type} maintenance"]
+        targeted_labels = (
+            ["Personal scent expression", "Fragrance wardrobe and occasion dressing"]
+            if inferred_type in fragrance_types
+            else [f"Everyday {audience_type} maintenance"]
+        )
 
     ingredient_names_lower = [str(item["ingredient_name"]).lower() for item in ingredients_list]
     def count_terms(*terms: str) -> int:
@@ -716,8 +754,16 @@ def generate_deterministic_fallback(
         },
         "proprietary_technologies": {"items": [], "evidence": [], "confidence": 0.5},
         "skin_type_scores": {
-            "scores": {name: 3 for name in ("normal", "dry", "very_dry", "combination", "oily", "sensitive")},
-            "evidence": [], "reasoning_summary": "Neutral fit scores pending product-specific evidence.", "confidence": 0.5,
+            "scores": {} if inferred_type in fragrance_types else {
+                name: 3 for name in ("normal", "dry", "very_dry", "combination", "oily", "sensitive")
+            },
+            "evidence": [],
+            "reasoning_summary": (
+                "Skin-type scoring is not applicable to personal fragrance."
+                if inferred_type in fragrance_types
+                else "Neutral fit scores pending product-specific evidence."
+            ),
+            "confidence": 1.0 if inferred_type in fragrance_types else 0.5,
         },
         "inci_stats": inci_stats,
         
@@ -774,14 +820,14 @@ def generate_deterministic_fallback(
             "confidence": None
         },
         "fragrance_intelligence": {
-            "applicable": False,
-            "fragrance_presence_status": "not_detected_from_supplied_data",
+            "applicable": inferred_type in fragrance_types,
+            "fragrance_presence_status": "present_by_product_type" if inferred_type in fragrance_types else "not_detected_from_supplied_data",
             "fragrance_family": None,
             "top_notes": [],
             "middle_notes": [],
             "base_notes": [],
             "evidence": [],
-            "confidence": None
+            "confidence": 0.95 if inferred_type in fragrance_types else None
         },
         "pregnancy_warning_observation": {
             "observation_domain": "pregnancy",

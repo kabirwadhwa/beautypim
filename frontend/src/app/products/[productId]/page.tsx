@@ -8,7 +8,7 @@ import {
   ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle, 
   History, Settings, Sparkles, BookOpen, User,
   ChevronDown, ChevronUp, Info, ExternalLink, RefreshCw, AlertCircle
-  , Download, Image as ImageIcon
+  , Download, Image as ImageIcon, WandSparkles, Search, X
 } from 'lucide-react';
 import styles from '../../page.module.css';
 
@@ -104,6 +104,18 @@ interface ProductDetail {
   }>;
 }
 
+interface ImprovementSummary {
+  identity_status: 'complete' | 'ambiguous' | 'incomplete';
+  identity_completeness: number;
+  identity: Record<string, string | null>;
+  missing_identity_fields: string[];
+  knowledge_coverage: number;
+  fields_recommended_for_research: string[];
+  evidence_required_fields: string[];
+  inference_eligible_fields: string[];
+  candidate_products: Array<Record<string, any>>;
+}
+
 export default function ProductDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -112,6 +124,7 @@ export default function ProductDetailPage() {
   const [product, setProduct] = useState<ProductDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   
   // Collapse states for issues
   const [collapseBlocking, setCollapseBlocking] = useState(false);
@@ -135,6 +148,17 @@ export default function ProductDetailPage() {
   const [categoryDraft, setCategoryDraft] = useState('');
   const [subcategoryDraft, setSubcategoryDraft] = useState('');
   const [classificationSaving, setClassificationSaving] = useState(false);
+  const [showImprove, setShowImprove] = useState(false);
+  const [improvement, setImprovement] = useState<ImprovementSummary | null>(null);
+  const [improveLoading, setImproveLoading] = useState(false);
+  const [improveMode, setImproveMode] = useState<'missing_only' | 'selected' | 'full'>('missing_only');
+  const [selectedImproveFields, setSelectedImproveFields] = useState<string[]>([]);
+  const [researchUrls, setResearchUrls] = useState('');
+  const [researchInterval, setResearchInterval] = useState('');
+  const [approvedResearchDomains, setApprovedResearchDomains] = useState('');
+  const [discoveredSources, setDiscoveredSources] = useState<Array<Record<string, any>>>([]);
+  const [researchResults, setResearchResults] = useState<Array<Record<string, any>>>([]);
+  const [identityDraft, setIdentityDraft] = useState<Record<string, string>>({});
 
   const fetchDetail = async () => {
     try {
@@ -199,6 +223,122 @@ export default function ProductDetailPage() {
     }
   };
 
+  const openImproveProduct = async () => {
+    setShowImprove(true);
+    setImproveLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/products/${productId}/improvement`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Could not analyse this product.');
+      setImprovement(data);
+      setSelectedImproveFields(data.fields_recommended_for_research || []);
+      setIdentityDraft(Object.fromEntries(
+        Object.entries(data.identity || {}).map(([key, value]) => [key, value == null ? '' : String(value)])
+      ) as Record<string, string>);
+      const resultsResp = await fetch(`${API_URL}/products/${productId}/research-results`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (resultsResp.ok) setResearchResults(await resultsResp.json());
+    } catch (e: any) {
+      setError(e.message || 'Could not analyse this product.');
+    } finally {
+      setImproveLoading(false);
+    }
+  };
+
+  const discoverSources = async () => {
+    setImproveLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const approved_domains = approvedResearchDomains.split(/\n|,/).map(value => value.trim()).filter(Boolean);
+      const resp = await fetch(`${API_URL}/products/${productId}/discover-sources`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved_domains })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Live source discovery failed.');
+      setDiscoveredSources(data.results || []);
+      if (!(data.results || []).length) setNotice('No suitable product-page candidates were found. Try approved retailer domains or add a direct URL.');
+    } catch (e: any) {
+      setError(e.message || 'Live source discovery failed.');
+    } finally {
+      setImproveLoading(false);
+    }
+  };
+
+  const saveIdentity = async () => {
+    setImproveLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/products/${productId}/identity`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(identityDraft)
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Identity could not be saved.');
+      await openImproveProduct();
+      await fetchDetail();
+    } catch (e: any) {
+      setError(e.message || 'Identity could not be saved.');
+      setImproveLoading(false);
+    }
+  };
+
+  const runGuidedEnrichment = async () => {
+    setImproveLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/products/${productId}/improve`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: improveMode, fields: improveMode === 'selected' ? selectedImproveFields : [] })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Product improvement failed.');
+      setProduct(data);
+      setShowImprove(false);
+    } catch (e: any) {
+      setError(e.message || 'Product improvement failed.');
+    } finally {
+      setImproveLoading(false);
+    }
+  };
+
+  const startResearch = async () => {
+    const urls = researchUrls.split(/\n|,/).map(value => value.trim()).filter(Boolean);
+    if (!urls.length) return;
+    setImproveLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/products/${productId}/research`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          urls,
+          use_browser_rendering: false,
+          refresh_interval_hours: researchInterval ? Number(researchInterval) : null,
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Research could not be started.');
+      setResearchUrls('');
+      setNotice(`Research queued for ${data.domain}. Results will be retained as evidence and reviewed before replacing accepted values.`);
+    } catch (e: any) {
+      setError(e.message || 'Research could not be started.');
+    } finally {
+      setImproveLoading(false);
+    }
+  };
+
   const handleDownloadPdf = async () => {
     setPdfLoading(true);
     setError(null);
@@ -251,6 +391,28 @@ export default function ProductDetailPage() {
       setError(e.message || "Image URL could not be saved.");
     } finally {
       setImageSaving(false);
+    }
+  };
+
+  const saveDiscoveredImage = async (url: string) => {
+    setImproveLoading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/products/${productId}/image`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_url: url })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Discovered image could not be accepted.');
+      setProduct(data);
+      setImageUrlDraft(data.image_url || '');
+      setNotice('The selected source image URL was accepted for this product.');
+    } catch (e: any) {
+      setError(e.message || 'Discovered image could not be accepted.');
+    } finally {
+      setImproveLoading(false);
     }
   };
 
@@ -364,6 +526,7 @@ export default function ProductDetailPage() {
     "brand_origin", "country_of_manufacture", "launch_year", "product_positioning",
     "colour", "finish", "absorption_profile", "sensory_description", "routine_time",
     "routine_step", "application_sequence", "regulatory_notes",
+    "availability", "rating", "review_count", "review_summary",
     "vegan", "cruelty_free", "paraben_free", "sulfate_free",
     "silicone_free", "alcohol_free", "fragrance_present", "phthalate_free",
     "dermatologically_tested", "clinically_tested", "ophthalmologically_tested"
@@ -452,6 +615,14 @@ export default function ProductDetailPage() {
           </button>
 
           <button
+            onClick={openImproveProduct}
+            className={`${styles.btn} ${styles.btnPrimary}`}
+            title="Resolve identity, research missing evidence and selectively enrich this product"
+          >
+            <WandSparkles size={16} /> Improve Product
+          </button>
+
+          <button
             onClick={handleReEnrich}
             className={`${styles.btn} ${styles.btnSecondary}`}
             disabled={reEnrichLoading}
@@ -482,6 +653,11 @@ export default function ProductDetailPage() {
       {error && (
         <div style={{ padding: 12, backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', borderRadius: 6, color: '#ef4444', fontSize: 13, marginBottom: 20 }}>
           {error}
+        </div>
+      )}
+      {notice && (
+        <div style={{ padding: 12, backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid #10b981', borderRadius: 6, color: '#6ee7b7', fontSize: 13, marginBottom: 20 }}>
+          {notice}
         </div>
       )}
 
@@ -971,6 +1147,169 @@ export default function ProductDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Guided product improvement modal */}
+      {showImprove && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.78)', zIndex: 1100, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+          <div style={{ width: 'min(920px, 96vw)', maxHeight: '92vh', overflowY: 'auto', background: '#0d1325', border: '1px solid #3b82f666', borderRadius: 12, padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'start' }}>
+              <div>
+                <h2 style={{ fontSize: 21, marginBottom: 5 }}>Improve Product</h2>
+                <p style={{ color: '#94a3b8', fontSize: 13 }}>Resolve identity first, then research or enrich only what needs improvement.</p>
+              </div>
+              <button className={styles.btnSecondary} onClick={() => setShowImprove(false)} aria-label="Close improve product"><X size={17} /></button>
+            </div>
+
+            {improveLoading && !improvement ? <p style={{ padding: '40px 0', color: '#94a3b8' }}>Analysing identity and knowledge coverage…</p> : improvement && (
+              <div style={{ display: 'grid', gap: 18, marginTop: 20 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                  {[
+                    ['Identity', improvement.identity_status, improvement.identity_completeness],
+                    ['Knowledge coverage', `${improvement.knowledge_coverage}%`, improvement.knowledge_coverage],
+                    ['Research opportunities', `${improvement.fields_recommended_for_research.length} fields`, null],
+                  ].map(([label, value, score]) => (
+                    <div key={String(label)} style={{ padding: 14, border: '1px solid #283756', borderRadius: 8, background: '#111a30' }}>
+                      <div style={{ color: '#7f8da8', fontSize: 11, textTransform: 'uppercase' }}>{label}</div>
+                      <div style={{ color: '#f8fafc', fontSize: 17, fontWeight: 700, textTransform: 'capitalize', marginTop: 5 }}>{value}</div>
+                      {score !== null && <div style={{ color: '#60a5fa', fontSize: 11, marginTop: 3 }}>{score}% complete</div>}
+                    </div>
+                  ))}
+                </div>
+
+                <section style={{ border: '1px solid #283756', borderRadius: 8, padding: 16 }}>
+                  <h3 style={{ fontSize: 15, marginBottom: 5 }}>1. Confirm product identity</h3>
+                  <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>Exact format, size, market or GTIN unlocks formulation-specific evidence without mixing variants.</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                    {['format', 'variant', 'size', 'unit', 'gtin', 'market'].map(field => (
+                      <label key={field} style={{ color: '#94a3b8', fontSize: 11, textTransform: 'capitalize' }}>{field.replace('_', ' ')}
+                        <input className={styles.inputField} value={identityDraft[field] || ''} onChange={e => setIdentityDraft(prev => ({ ...prev, [field]: e.target.value }))} style={{ marginTop: 5 }} />
+                      </label>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                    <span style={{ color: improvement.missing_identity_fields.length ? '#fbbf24' : '#6ee7b7', fontSize: 12 }}>
+                      {improvement.missing_identity_fields.length ? `Missing: ${improvement.missing_identity_fields.join(', ')}` : 'Identity is sufficiently complete.'}
+                    </span>
+                    <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={saveIdentity} disabled={improveLoading}>Save identity</button>
+                  </div>
+                  {improvement.candidate_products.length > 0 && (
+                    <div style={{ marginTop: 14 }}>
+                      <div style={{ color: '#cbd5e1', fontSize: 12, fontWeight: 600, marginBottom: 7 }}>Possible catalogue versions — compare before importing formulation facts</div>
+                      <div style={{ display: 'grid', gap: 7 }}>
+                        {improvement.candidate_products.slice(0, 4).map(candidate => (
+                          <div key={candidate.observation_id} style={{ padding: 10, background: '#10192c', borderRadius: 6, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                            <span style={{ fontSize: 12 }}>{candidate.brand} {candidate.product_name} · {candidate.format || 'format unknown'} · {candidate.size || 'size unknown'}</span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ color: '#93c5fd', fontSize: 11 }}>{Math.round(candidate.match_score * 100)}% candidate</span>
+                              <button className={styles.btnSecondary} style={{ padding: '4px 8px', fontSize: 10 }} onClick={() => setIdentityDraft(prev => ({
+                                ...prev,
+                                format: candidate.format || prev.format || '',
+                                size: candidate.size || prev.size || '',
+                                gtin: candidate.gtin || prev.gtin || '',
+                                market: candidate.country || prev.market || '',
+                              }))}>Use version</button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <section style={{ border: '1px solid #283756', borderRadius: 8, padding: 16 }}>
+                  <h3 style={{ fontSize: 15, marginBottom: 5 }}>2. Research official or approved pages</h3>
+                  <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 10 }}>Discover product pages through the configured licensed search provider, or paste an exact URL. Search snippets are never treated as evidence: selected pages are fetched, parsed and identity-checked first.</p>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                    <input className={styles.inputField} value={approvedResearchDomains} onChange={e => setApprovedResearchDomains(e.target.value)} placeholder="Approved domains, e.g. burberry.com, sephora.fr (optional)" />
+                    <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={discoverSources} disabled={improveLoading}><Search size={15} /> Discover live sources</button>
+                  </div>
+                  {discoveredSources.length > 0 && (
+                    <div style={{ display: 'grid', gap: 7, marginBottom: 12 }}>
+                      {discoveredSources.slice(0, 8).map(source => (
+                        <div key={source.url} style={{ padding: 9, border: '1px solid #243451', borderRadius: 6, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 12, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.title}</div>
+                            <div style={{ fontSize: 10, color: '#64748b' }}>{source.domain} · candidate only</div>
+                          </div>
+                          <button className={styles.btnSecondary} style={{ padding: '5px 8px', fontSize: 10 }} onClick={() => setResearchUrls(source.url)}>Select</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <textarea className={styles.inputField} rows={3} value={researchUrls} onChange={e => setResearchUrls(e.target.value)} placeholder="https://brand.example/product-page (one per line)" />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, alignItems: 'center' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#7f8da8', fontSize: 11 }}>
+                      Refresh
+                      <select className={styles.inputField} style={{ width: 165, padding: '6px 8px' }} value={researchInterval} onChange={e => setResearchInterval(e.target.value)}>
+                        <option value="">Once</option>
+                        <option value="24">Daily facts</option>
+                        <option value="168">Weekly facts</option>
+                        <option value="720">Monthly facts</option>
+                      </select>
+                    </span>
+                    <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={startResearch} disabled={improveLoading || !researchUrls.trim()}><Search size={15} /> Start research</button>
+                  </div>
+                  <div style={{ color: '#7f8da8', fontSize: 10, marginTop: 7 }}>HTTP(S), SSRF protection, robots rules and same-domain limits are enforced. Scheduled refreshes prioritize price and availability observations.</div>
+                  {researchResults.length > 0 && (
+                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #243451' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                        <strong style={{ fontSize: 12 }}>Recent evidence candidates</strong>
+                        <button className={styles.btnSecondary} style={{ padding: '5px 8px', fontSize: 10 }} onClick={() => router.push('/knowledge-crawl')}>Review conflicts</button>
+                      </div>
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {researchResults.slice(0, 5).map(result => {
+                          const images = result.data?.image_urls || [];
+                          return (
+                            <div key={result.id} style={{ padding: 10, background: '#10192c', borderRadius: 6, fontSize: 11 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                                <a href={result.source_url} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>{result.source_domain}</a>
+                                <span style={{ color: result.match_status === 'matched' ? '#6ee7b7' : '#fbbf24' }}>{result.match_status}</span>
+                              </div>
+                              <div style={{ color: '#cbd5e1', marginTop: 5 }}>
+                                {result.data?.rating ? `Rating ${result.data.rating}` : 'No rating observed'}
+                                {result.data?.review_count ? ` · ${result.data.review_count} reviews` : ''}
+                                {result.data?.availability ? ` · ${result.data.availability}` : ''}
+                              </div>
+                              {images[0] && <button className={styles.btnSecondary} style={{ padding: '4px 7px', fontSize: 10, marginTop: 6 }} onClick={() => saveDiscoveredImage(images[0])}>Accept discovered image URL</button>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <section style={{ border: '1px solid #283756', borderRadius: 8, padding: 16 }}>
+                  <h3 style={{ fontSize: 15, marginBottom: 10 }}>3. Re-enrich with control</h3>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                    {[
+                      ['missing_only', 'Fill missing fields'], ['selected', 'Refresh selected fields'], ['full', 'Full re-enrichment']
+                    ].map(([value, label]) => (
+                      <button key={value} className={`${styles.btn} ${improveMode === value ? styles.btnPrimary : styles.btnSecondary}`} onClick={() => setImproveMode(value as any)}>{label}</button>
+                    ))}
+                  </div>
+                  {improveMode === 'selected' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 7, marginBottom: 12 }}>
+                      {Array.from(new Set([...improvement.fields_recommended_for_research, ...improvement.inference_eligible_fields])).map(field => (
+                        <label key={field} style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 12, color: '#cbd5e1' }}>
+                          <input type="checkbox" checked={selectedImproveFields.includes(field)} onChange={e => setSelectedImproveFields(prev => e.target.checked ? [...prev, field] : prev.filter(item => item !== field))} />
+                          {field.replaceAll('_', ' ')}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: '#7f8da8', fontSize: 11 }}>Human-confirmed and accepted source values are protected from silent replacement.</span>
+                    <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={runGuidedEnrichment} disabled={improveLoading || (improveMode === 'selected' && !selectedImproveFields.length)}>
+                      <WandSparkles size={15} /> {improveLoading ? 'Improving…' : 'Run improvement'}
+                    </button>
+                  </div>
+                </section>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Override Modal */}
       {showOverride && (

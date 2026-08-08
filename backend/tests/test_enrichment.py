@@ -187,6 +187,30 @@ def test_coverage_replaces_nested_unknown_fragrance_status():
     assert enriched["fragrance_intelligence"]["fragrance_presence_status"] == "not_detected_from_supplied_data"
 
 
+def test_perfume_coverage_uses_provider_identity_instead_of_generic_beauty_defaults():
+    enriched = ensure_catalogue_coverage(
+        {
+            "product_type": {
+                "value": "Eau de parfum", "value_status": "explicit_source",
+                "confidence": 0.95, "evidence": [], "reasoning_summary": "Mapped from feed.",
+            },
+            "subcategory": {
+                "value": "Perfume", "value_status": "explicit_source",
+                "confidence": 0.9, "evidence": [], "reasoning_summary": "Mapped from feed.",
+            },
+        },
+        "Burberry Goddess", "Burberry", "", "",
+    )
+
+    assert enriched["texture"]["value"] == "liquid fragrance"
+    assert enriched["routine_step"]["value"] == "final fragrance step"
+    assert enriched["skin_type_fit"]["applicable"] is False
+    assert enriched["hair_type_fit"]["applicable"] is False
+    assert enriched["skin_type_scores"]["scores"] == {}
+    assert enriched["fragrance_intelligence"]["applicable"] is True
+    assert "Everyday beauty product" not in enriched["targeted_concerns"]["values"]
+
+
 def test_cosing_exact_match_grounds_ingredient_without_inventing_claims(db):
     db.add(
         IngredientDefinition(
