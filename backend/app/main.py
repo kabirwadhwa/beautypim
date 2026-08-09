@@ -88,7 +88,17 @@ async def lifespan(app: FastAPI):
     
     # Recover jobs on startup
     recover_unfinished_jobs()
-    yield
+    research_worker = None
+    if settings.ENVIRONMENT != "testing":
+        from app.services.product_research_worker import start_product_research_worker
+        research_worker = start_product_research_worker()
+    try:
+        yield
+    finally:
+        if research_worker:
+            stop_event, thread = research_worker
+            stop_event.set()
+            thread.join(timeout=5)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

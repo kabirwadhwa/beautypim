@@ -4,7 +4,10 @@ import pytest
 
 from app.config import settings
 from app.scraping.url_safety import UnsafeUrl
-from app.services.web_discovery import SearchProviderUnavailable, discover_product_sources
+from app.services.web_discovery import (
+    SearchProviderUnavailable, discover_product_sources,
+    poll_product_source_discovery, start_product_source_discovery,
+)
 
 
 def test_discovery_requires_licensed_provider_key(monkeypatch):
@@ -135,9 +138,31 @@ def test_openai_background_search_polls_one_response(post, get, validate, sleep,
     assert post.call_count == 1
     get.assert_called_once_with(
         "https://api.openai.com/v1/responses/resp_123",
-        headers=post.call_args.kwargs["headers"], timeout=(10, 20),
+        headers={"Authorization": "Bearer openai-test-key"}, timeout=(10, 20),
     )
     assert post.call_args.kwargs["json"]["background"] is True
+
+
+@patch("app.services.web_discovery.requests.get")
+@patch("app.services.web_discovery.requests.post")
+def test_durable_discovery_persists_and_polls_the_same_response(post, get, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", None)
+    post.return_value = Mock(status_code=200)
+    post.return_value.json.return_value = {"id": "resp_durable", "status": "queued", "output": []}
+    get.return_value = Mock(status_code=200)
+    get.return_value.json.return_value = {
+        "id": "resp_durable", "status": "completed", "output": [],
+    }
+
+    state = start_product_source_discovery(brand="YSL", product_name="Y", product_format="Eau de Toilette")
+    assert state["response_id"] == "resp_durable"
+    assert state["status"] == "queued"
+
+    completed = poll_product_source_discovery(state)
+    assert completed["status"] == "completed"
+    assert post.call_count == 1
+    get.assert_called_once()
 
 
 @pytest.mark.parametrize("provider", ["openai", "brave"])

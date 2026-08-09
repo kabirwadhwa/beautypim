@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.schemas import BeautyProductEnrichmentSchema
 from app.models import EnrichmentRun
+from app.services.category_completeness import quality_gate
 from app.services.ingredient_knowledge import (
     build_ingredient_grounding_context,
     ground_fallback_ingredients,
@@ -29,17 +30,21 @@ BALANCED_INFERENCE_GUIDANCE = (
     "support. The presence of Parfum/Fragrance may support fragrance_present=yes, but ingredient "
     "absence alone does not prove a free-from claim. For an unsupported ethical or free-from "
     "claim return value=unverified and claim_status=unverified, never a guessed yes/no. "
-    "For target_audience return exactly three distinct customer-profile sentences. Each must combine "
-    "a concrete need, routine, preference or usage occasion with the relevant product characteristic, "
+    "For target_audience return exactly three distinct customer-profile sentences in this order: "
+    "(1) need/benefit driven, (2) taste/preference driven, and (3) lifestyle/occasion driven. Each must combine "
+    "a concrete need, routine, preference or usage occasion with a product-specific characteristic, "
     "so it can guide advertising or in-store recommendations. Never use generic labels such as adults, "
     "beauty lovers or everyone, and never infer sensitive personal traits. "
-    "Generate positioning, benefits, targeted concerns, directions and a sensory profile. Claims are an extensible "
+    "Generate concise positioning that explains why a shopper would choose the product, plus a small set of "
+    "non-duplicative product-specific benefits, applicable concerns, directions and a sensory profile. Claims are an extensible "
     "list and must be verified/source-supported, unverified, conflicting or unknown; never guess a positive claim. "
     "Warnings are factual observations, not medical advice. Do not generate origin, manufacture country, launch year, "
     "gender, ingredient counts, skin scores, credentials, absorption or application sequence as separate attributes. "
+    "Descriptive phrases such as fresh, clean, luxurious or invigorating are sensory/positioning language, not verified claims. "
     "Apply category-specific semantics. For personal fragrance prioritize concentration, fragrance family, "
     "top/heart/base notes, longevity, sillage/projection, seasonal fit, occasion fit and pulse-point usage; "
-    "do not describe fragrance as skincare absorption, skin-type suitability or a cosmetic finish. "
+    "do not describe fragrance as skincare absorption, skin-type suitability or a cosmetic finish; targeted concerns are not applicable. "
+    "Fragrance directions must be a single pulse-point instruction, never morning/evening skincare routine instructions. "
     "For skin care prioritize skin fit, routine step, texture and concerns; for hair care prioritize hair/scalp fit; "
     "for makeup prioritize shade, coverage, finish and wear occasion. "
 )
@@ -244,6 +249,9 @@ def normalize_and_validate_enrichment(data: Dict[str, Any], raw_ingredients: str
         warnings.append({"type": "pregnancy", "observation": f"Contains {', '.join(verified)}; factual review required. No medical conclusion is made.",
                          "evidence": [], "source_status": "source_supported", "confidence": 1.0})
     data["warnings_considerations"] = warnings
+    data, rejected = quality_gate(data)
+    if rejected:
+        data["_quality_rejections"] = rejected
     return data
 
 def calculate_token_count_rough(text: str) -> int:
@@ -286,11 +294,30 @@ def generate_deterministic_fallback(name: str, brand: str, description: str, raw
             concerns.append(label)
     if not concerns:
         concerns = ["Personal scent expression"] if is_fragrance else [f"Everyday {category.lower()} care"]
-    audience = [
-        f"Shoppers looking for {concerns[0].lower()} support from an easy-to-understand {lower_type}.",
-        f"Customers who prefer a {texture.lower()} product suited to an everyday {area} routine.",
-        f"Beauty shoppers comparing {lower_type} options and wanting clear benefits and straightforward use.",
-    ]
+    if is_fragrance:
+        audience = [
+            f"Shoppers seeking a polished {lower_type} that can serve as a dependable personal signature.",
+            f"Fragrance buyers who prefer the specific scent character described for {name} over unrelated sweet or cosmetic profiles.",
+            f"Consumers wanting a versatile scent for regular wear and product-appropriate social occasions.",
+        ]
+    elif is_hair:
+        audience = [
+            f"Haircare shoppers seeking {concerns[0].lower()} support from a straightforward {lower_type}.",
+            f"Consumers who prefer a {texture.lower()} format compatible with their hair or scalp routine.",
+            f"Busy users wanting an easy-to-integrate {lower_type} with clear application guidance.",
+        ]
+    elif is_makeup:
+        audience = [
+            f"Makeup shoppers seeking reliable {lower_type} performance for their desired look.",
+            f"Consumers drawn to the documented {texture.lower()} texture, finish or colour characteristics of {name}.",
+            f"Users wanting a buildable product that fits both routine application and relevant occasions.",
+        ]
+    else:
+        audience = [
+            f"Skincare shoppers seeking {concerns[0].lower()} support from a focused {lower_type}.",
+            f"Consumers who prefer the documented {texture.lower()} texture and product-specific skin experience of {name}.",
+            f"Routine-focused users wanting an easy-to-layer {lower_type} with straightforward directions.",
+        ]
     benefit = ("Creates a personal fragrance signature" if is_fragrance else
                "Helps cleanse and care for hair and scalp" if is_hair else
                "Supports colour, definition or complexion enhancement" if is_makeup else
@@ -424,6 +451,9 @@ def run_ai_enrichment(
             "ingredients, claims, identifiers, price, availability, testing, regulatory facts or variant identity "
             "from a family or comparable match. When exact observations disagree, mark the field conflicting. "
             "Never transfer attributes from a different product. "
+            "When _beautypim_gap_plan is supplied, concentrate on its unresolved applicable fields. Preserve "
+            "not_found for unsupported product facts; do not invent facts to raise completeness. Commercial fields "
+            "may be inferred only from the supplied product evidence and must be labelled inferred. "
             "Only report a pregnancy ingredient observation when a named retinoid is explicitly present as an INCI item. Never infer retinol from product type, benefits, marketing language, or unrelated oils. Keep any observation factual and make no medical safety conclusion."
             f"\n\nJSON Schema to match:\n{json.dumps(BeautyProductEnrichmentSchema.model_json_schema())}"
         )
@@ -589,6 +619,7 @@ def run_ai_enrichment(
         "to normalize INCI names and report declared cosmetic functions. It is informative and "
         "does not establish safety, legal compliance, product benefits, or brand claims. "
         "When _beautypim_catalogue_knowledge is supplied, exact retail_reference_matches and internal_corpus.exact_matches are direct evidence. "
+        "When _beautypim_gap_plan is supplied, address its unresolved applicable fields and leave unsupported factual fields unknown. "
         "Ranked retail_knowledge_examples are broad industry intelligence: use recurring patterns to infer "
         "classification, positioning, likely benefits/concerns, texture, usage and audiences at moderate "
         "confidence. Explain that these are comparative inferences. Never copy another product's exact INCI, "

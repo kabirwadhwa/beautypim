@@ -501,6 +501,21 @@ def process_item_enrichment(
             "market": raw_market, "language": raw_language, "image_url": raw_image_url,
         }
     }
+    from app.services.category_completeness import build_gap_plan
+    gap_snapshot = {
+        "brand": raw_brand, "product_name": raw_name, "gtin": raw_ean,
+        "size": f"{raw_size or ''} {raw_unit or ''}".strip(), "category": raw_category,
+        "product_type": raw_product_type, "description": raw_desc, "image_url": raw_image_url,
+        "inci": raw_ingr,
+    }
+    gap_metadata = {}
+    for field_name, row in current_values.items():
+        gap_snapshot[field_name] = row.value
+        gap_metadata[field_name] = {
+            "source_type": row.source_type, "semantic_status": row.semantic_status,
+            "evidence": row.evidence or [], "researched": bool(row.enrichment_run_id),
+        }
+    enrichment_source_context["_beautypim_gap_plan"] = build_gap_plan(gap_snapshot, gap_metadata)
     if research_payloads:
         enrichment_source_context["_exact_product_web_observations"] = [
             compact_enrichment_value(payload) for payload in research_payloads[:5]
@@ -604,6 +619,10 @@ def process_item_enrichment(
     enrichment_result = apply_category_specific_enrichment(
         enrichment_result, product_identity_text, raw_ingr,
     )
+    from app.services.category_completeness import quality_gate
+    enrichment_result, quality_rejections = quality_gate(enrichment_result)
+    if quality_rejections:
+        enrichment_result["_quality_rejections"] = quality_rejections
     from app.services.enrichment import consolidate_enrichment_payload
     enrichment_result = consolidate_enrichment_payload(enrichment_result)
     from app.services.product_identity import product_version_label

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 import json
 import uuid
 from unittest.mock import patch
+from app.config import settings
 from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing
 
 def test_database_dialect_matches_environment(db):
@@ -153,7 +154,7 @@ def test_product_classification_button_persists_and_writes_valid_audit(client: T
     assert response.json()["subcategory"] == "Body Oil"
 
 
-def test_guided_improvement_identity_research_discovery_and_selected_enrichment(client: TestClient, db):
+def test_guided_improvement_identity_research_discovery_and_selected_enrichment(client: TestClient, db, monkeypatch):
     token = get_admin_token(client)
     headers = {"Authorization": f"Bearer {token}"}
     brand = Brand(id=uuid.uuid4(), name="Guided Test", normalized_name=f"guidedtest{uuid.uuid4().hex}")
@@ -210,6 +211,7 @@ def test_guided_improvement_identity_research_discovery_and_selected_enrichment(
     assert research.status_code == 201, research.text
     assert research.json()["status"] == "queued"
 
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
     with patch("app.routes.products.process_item_enrichment") as process:
         improved = client.post(
             f"/api/products/{product.id}/improve", headers=headers,
@@ -218,6 +220,14 @@ def test_guided_improvement_identity_research_discovery_and_selected_enrichment(
     assert improved.status_code == 200, improved.text
     assert process.call_args.kwargs["mode"] == "selected"
     assert process.call_args.kwargs["selected_fields"] == ["benefits", "directions"]
+    assert improved.json()["improvement_result"]["research_pending"] is True
+    assert improved.json()["improvement_result"]["research_status"] == "queued"
+
+    research_status = client.get(
+        f"/api/products/{product.id}/research-status", headers=headers,
+    )
+    assert research_status.status_code == 200
+    assert research_status.json()["research_pending"] is True
 
     results = client.get(f"/api/products/{product.id}/research-results", headers=headers)
     assert results.status_code == 200

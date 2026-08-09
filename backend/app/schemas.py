@@ -427,6 +427,7 @@ class ProductDetailOut(ProductOut):
     dynamic_concerns: list[DynamicConcernOut] = Field(default_factory=list)
     market_observations: list[MarketObservationOut] = Field(default_factory=list)
     corpus_evidence: Optional[dict] = None
+    completeness: Optional[dict] = None
     improvement_result: Optional[dict] = None
 
     class Config:

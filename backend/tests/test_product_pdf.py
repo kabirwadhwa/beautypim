@@ -1,10 +1,12 @@
 import uuid
+from io import BytesIO
 
 import pytest
 
 from app.auth import create_access_token
 from app.models import Brand, CanonicalProduct, FieldValue, Formulation, ProductVariant, ImportJob, SourceListing
 from app.services.image_urls import _assert_public_host, fetch_public_image, normalize_public_image_url
+from app.services.product_pdf import build_product_pdf
 
 
 def auth_headers(email: str = "admin@test.com") -> dict[str, str]:
@@ -125,6 +127,30 @@ def test_pdf_requires_authentication(client, db):
     product = make_product(db)
     response = client.get(f"/api/products/{product.id}/pdf")
     assert response.status_code == 401
+
+
+def test_fragrance_pdf_prioritizes_pyramid_and_compacts_missing_inci():
+    pdf = build_product_pdf({
+        "product_name": "Y", "brand_name": "YSL", "product_category": "Perfume",
+        "gtin": "3614271716026", "image_url": None, "variants": [{"size": "100", "unit": "ml", "gtin": "3614271716026"}],
+        "formulations": [], "field_values": [
+            {"field_name": "product_type", "value": "Eau de Toilette", "is_current": True},
+            {"field_name": "fragrance", "value": {"concentration": "Eau de Toilette", "fragrance_family": "Woody Aromatic",
+                "top_notes": ["Bergamot"], "heart_notes": ["Sage"], "base_notes": ["Cedar"],
+                "longevity": "Moderate", "sillage_projection": "Moderate", "seasonal_fit": ["Spring"], "occasion_fit": ["Office"]}, "is_current": True},
+            {"field_name": "target_audience", "value": {"value": ["Need-led profile", "Taste-led profile", "Occasion-led profile"]}, "is_current": True},
+            {"field_name": "directions", "value": {"text": "Spray onto pulse points."}, "is_current": True},
+            {"field_name": "claims", "value": [{"name": "Fresh and clean fragrance", "status": "unverified"}], "is_current": True},
+        ],
+    })
+    assert pdf.startswith(b"%PDF")
+    from pypdf import PdfReader
+    document = PdfReader(BytesIO(pdf))
+    text = "\n".join(page.extract_text() or "" for page in document.pages)
+    assert "TOP NOTES" in text and "HEART NOTES" in text and "BASE NOTES" in text
+    assert "Ingredient list not available from current evidence" in text
+    assert "Morning:" not in text and "Evening:" not in text
+    assert "Fresh and clean fragrance" not in text
 
 
 def test_dossier_catalogue_fields_are_editable(client, db):

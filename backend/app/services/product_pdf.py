@@ -190,6 +190,168 @@ def _grid_table(rows: list[list[Any]], widths: list[float], *, pale_first: bool 
                  repeatRows=1 if pale_first else 0, style=TableStyle(commands))
 
 
+def _build_fragrance_pdf(data: dict[str, Any], current: dict[str, Any]) -> bytes:
+    """Single-page fragrance dossier: pyramid and commercial intelligence first."""
+    field = lambda name, fallback=None: current.get(name, fallback)
+    module = field("fragrance") if isinstance(field("fragrance"), dict) else {}
+    brand = _clean(data.get("brand_name"), "Beauty PIM")
+    name = _clean(data.get("product_name"), "Fragrance")
+    variants = data.get("variants") or []
+    variant = variants[0] if variants else {}
+    size = " ".join(filter(None, (_clean(variant.get("size")), _clean(variant.get("unit"))))) or "Not supplied"
+    gtin = _clean(variant.get("gtin") or data.get("gtin"), "Not supplied")
+    concentration = _clean(module.get("concentration") or field("product_type"), "Not established")
+    family = _clean(module.get("fragrance_family"), "Not established")
+    benefits = _items(field("benefits"))[:5]
+    audience_value = field("target_audience") or {}
+    audience = _items(audience_value.get("value") if isinstance(audience_value, dict) else audience_value)[:3]
+    directions = _clean(field("directions"), "Spray onto pulse points such as the wrists and neck. Reapply as desired.")
+    formulation = (data.get("formulations") or [{}])[0]
+    inci = _clean(formulation.get("raw_inci_text"))
+    claims = [str(item.get("name")) for item in (field("claims") or []) if isinstance(item, dict)
+              and item.get("status") in {"verified", "source_supported"}
+              and str(item.get("value", "")).lower() not in {"no", "false"}]
+
+    buffer = BytesIO(); pdf = canvas.Canvas(buffer, pagesize=A4, pageCompression=1)
+    pdf.setTitle(f"{name} - Fragrance Dossier"); pdf.setAuthor("Beauty PIM")
+    pw, ph = A4; margin, gap = 7 * mm, 2.2 * mm; width = pw - 2 * margin
+    hero_h, hero_y = 55 * mm, ph - margin - 55 * mm
+    image_w = 55 * mm
+    image_data = None
+    try: image_data = fetch_public_image(data.get("image_url"))
+    except Exception: pass
+    if image_data:
+        image = Image(image_data); image._restrictSize(image_w - 4 * mm, hero_h - 4 * mm)
+        _draw(pdf, image, margin, hero_y, image_w, hero_h, pad=2 * mm)
+    else:
+        pdf.setFillColor(PALE); pdf.roundRect(margin, hero_y, image_w, hero_h, 2*mm, fill=1, stroke=0)
+        _draw(pdf, _p(brand[:1].upper(), "hero"), margin, hero_y, image_w, hero_h, pad=20*mm)
+    hero_x = margin + image_w + 4 * mm
+    _draw(pdf, Table([
+        [_p(brand.upper(), "hero")], [_p(name.upper(), "hero")],
+        [_p(f"{concentration}  |  {size}", "country")],
+        [_p(field("product_positioning"), "body", "Fragrance positioning not yet established.")],
+    ], colWidths=[width-image_w-4*mm], style=TableStyle([
+        ("LEFTPADDING",(0,0),(-1,-1),0),("RIGHTPADDING",(0,0),(-1,-1),0),
+        ("TOPPADDING",(0,0),(-1,-1),1),("BOTTOMPADDING",(0,0),(-1,-1),2),
+    ])), hero_x, hero_y+16*mm, width-image_w-4*mm, hero_h-16*mm, pad=0)
+    specs = Table([
+        [_p("Fragrance family", "label"), _p(family)], [_p("GTIN / EAN", "label"), _p(gtin)],
+        [_p("Sensory profile", "label"), _p(field("sensory_description"), fallback="Not established")],
+    ], colWidths=[28*mm, width-image_w-32*mm], style=TableStyle([
+        ("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),0),
+        ("TOPPADDING",(0,0),(-1,-1),1),("BOTTOMPADDING",(0,0),(-1,-1),1),
+    ]))
+    _draw(pdf, specs, hero_x, hero_y, width-image_w-4*mm, 18*mm, pad=0)
+
+    y = hero_y - gap - 52*mm
+    col = (width - 2*gap)/3
+    pyramid = (("Top Notes", module.get("top_notes")), ("Heart Notes", module.get("heart_notes")), ("Base Notes", module.get("base_notes")))
+    for idx, (title, values) in enumerate(pyramid):
+        x = margin + idx*(col+gap); _box(pdf, x, y, col, 52*mm, title)
+        items = _items(values)
+        copy = "\n".join(f"• {item}" for item in items) if items else "Not established from current evidence."
+        _draw(pdf, _p(copy, "body"), x, y, col, 47.3*mm, pad=3*mm)
+
+    y -= gap + 39*mm
+    profile = [
+        ("Longevity", _clean(module.get("longevity"), "Not established")),
+        ("Sillage / projection", _clean(module.get("sillage_projection"), "Not established")),
+        ("Seasonal fit", _clean(module.get("seasonal_fit"), "Not established")),
+        ("Occasion fit", _clean(module.get("occasion_fit"), "Not established")),
+    ]
+    _box(pdf, margin, y, col, 39*mm, "Fragrance Profile")
+    _draw(pdf, Table([[_p(k,"label"),_p(v)] for k,v in profile], colWidths=[25*mm,col-29*mm],
+                     style=TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),0),
+                                       ("TOPPADDING",(0,0),(-1,-1),1),("BOTTOMPADDING",(0,0),(-1,-1),1)])),
+          margin, y, col, 34.3*mm, pad=2*mm)
+    _box(pdf, margin+col+gap, y, col, 39*mm, "Key Benefits")
+    _draw(pdf, _bullets(benefits or ["No evidence-grounded benefits recorded."], col, limit=4), margin+col+gap, y, col, 34.3*mm)
+    _box(pdf, margin+2*(col+gap), y, col, 39*mm, "How to Use")
+    _draw(pdf, _p(directions), margin+2*(col+gap), y, col, 34.3*mm, pad=3*mm)
+
+    y -= gap + 47*mm
+    aud_w = width*.62; right_w = width-aud_w-gap
+    _box(pdf, margin, y, aud_w, 47*mm, "Three Consumer Profiles")
+    _draw(pdf, _bullets(audience or ["Audience profiles require stronger product evidence."], aud_w, limit=3), margin, y, aud_w, 42.3*mm)
+    _box(pdf, margin+aud_w+gap, y, right_w, 47*mm, "Supported Claims")
+    _draw(pdf, _bullets(claims or ["No meaningful source-supported claims recorded."], right_w, limit=4), margin+aud_w+gap, y, right_w, 42.3*mm)
+
+    bottom_h = 18*mm if not inci else max(20*mm, y-gap-10*mm)
+    bottom_y = y-gap-bottom_h if not inci else 10*mm
+    _box(pdf, margin, bottom_y, width, bottom_h, "Ingredients (INCI)", dark_header=False)
+    _draw(pdf, _p(inci or "Ingredient list not available from current evidence.", "small"), margin, bottom_y, width, bottom_h-4.7*mm, pad=3*mm)
+    pdf.setFillColor(MUTED); pdf.setFont("Helvetica", 5.2)
+    pdf.drawCentredString(pw/2, 5.5*mm, "Evidence-backed product intelligence. Unknown facts are not invented.")
+    pdf.showPage(); pdf.save(); return buffer.getvalue()
+
+
+def _build_compact_category_pdf(data: dict[str, Any], current: dict[str, Any], module_name: str) -> bytes:
+    """Category-first haircare/makeup sheet without empty skincare tables."""
+    field = lambda name, fallback=None: current.get(name, fallback)
+    module = field(module_name) if isinstance(field(module_name), dict) else {}
+    brand, name = _clean(data.get("brand_name"), "Beauty PIM"), _clean(data.get("product_name"), "Beauty Product")
+    variants = data.get("variants") or []; variant = variants[0] if variants else {}
+    size = " ".join(filter(None, (_clean(variant.get("size")), _clean(variant.get("unit"))))) or "Not supplied"
+    gtin = _clean(variant.get("gtin") or data.get("gtin"), "Not supplied")
+    benefits = _items(field("benefits"))[:5]
+    concerns_value = field("targeted_concerns") or {}
+    concerns = _items(concerns_value.get("values") if isinstance(concerns_value, dict) else concerns_value)
+    audience_value = field("target_audience") or {}
+    audience = _items(audience_value.get("value") if isinstance(audience_value, dict) else audience_value)[:3]
+    claims = [str(item.get("name")) for item in (field("claims") or []) if isinstance(item, dict)
+              and item.get("status") in {"verified", "source_supported"} and str(item.get("value", "")).lower() not in {"no", "false"}]
+    inci = _clean(((data.get("formulations") or [{}])[0]).get("raw_inci_text"))
+    if module_name == "haircare":
+        profile = [
+            ("Hair types", _clean((module.get("hair_types") or {}).get("recommended_for"), "Not established")),
+            ("Texture / format", _clean(module.get("texture_format"), "Not established")),
+            ("Targeted concerns", _clean(concerns, "Not established")),
+        ]
+        module_title = "Haircare Profile"
+    else:
+        profile = [
+            ("Shade / colour", _clean(module.get("shade_colour"), "Not established")),
+            ("Coverage", _clean(module.get("coverage"), "Not established")),
+            ("Finish", _clean(module.get("finish"), "Not established")),
+            ("Texture / format", _clean(module.get("texture_format"), "Not established")),
+        ]
+        module_title = "Makeup Profile"
+    buffer=BytesIO(); pdf=canvas.Canvas(buffer,pagesize=A4,pageCompression=1); pw,ph=A4
+    margin,gap=7*mm,2.2*mm; width=pw-2*margin; hero_y=ph-margin-48*mm
+    pdf.setTitle(f"{name} - {module_title}"); pdf.setAuthor("Beauty PIM")
+    pdf.setFillColor(PALE); pdf.roundRect(margin,hero_y,48*mm,48*mm,2*mm,fill=1,stroke=0)
+    _draw(pdf,_p(brand[:1].upper(),"hero"),margin,hero_y,48*mm,48*mm,pad=17*mm)
+    hx=margin+52*mm
+    _draw(pdf,Table([[_p(brand.upper(),"hero")],[_p(name.upper(),"hero")],[_p(f"{module_title.upper()}  |  {size}","country")],
+                     [_p(field("product_positioning"),"body","Positioning not yet established.")]],colWidths=[width-52*mm],
+                    style=TableStyle([("LEFTPADDING",(0,0),(-1,-1),0),("TOPPADDING",(0,0),(-1,-1),1),("BOTTOMPADDING",(0,0),(-1,-1),2)])),
+          hx,hero_y+12*mm,width-52*mm,36*mm,pad=0)
+    _draw(pdf,Table([[_p("Product type","label"),_p(field("product_type"),fallback="Not established")],
+                     [_p("GTIN / EAN","label"),_p(gtin)],[_p("Sensory","label"),_p(field("sensory_description"),fallback="Not established")]],
+                    colWidths=[24*mm,width-80*mm],style=TableStyle([("LEFTPADDING",(0,0),(-1,-1),0),("TOPPADDING",(0,0),(-1,-1),1)])),
+          hx,hero_y,width-52*mm,14*mm,pad=0)
+    col=(width-2*gap)/3; y=hero_y-gap-52*mm
+    for idx,(title,content) in enumerate(((module_title,profile),("Key Benefits",benefits),("Targeted Concerns",concerns))):
+        x=margin+idx*(col+gap); _box(pdf,x,y,col,52*mm,title)
+        if idx==0:
+            flow=Table([[_p(k,"label"),_p(v)] for k,v in content],colWidths=[25*mm,col-29*mm],style=TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),0),("TOPPADDING",(0,0),(-1,-1),2)]))
+        else: flow=_bullets(content or ["Not established from current evidence."],col,limit=5)
+        _draw(pdf,flow,x,y,col,47.3*mm,pad=3*mm)
+    y-=gap+39*mm
+    half=(width-gap)/2
+    _box(pdf,margin,y,half,39*mm,"How to Use"); _draw(pdf,_p(field("directions"),fallback="Directions not established."),margin,y,half,34.3*mm,pad=3*mm)
+    _box(pdf,margin+half+gap,y,half,39*mm,"Three Consumer Profiles"); _draw(pdf,_bullets(audience or ["Audience profiles require stronger evidence."],half,limit=3),margin+half+gap,y,half,34.3*mm)
+    y-=gap+34*mm
+    _box(pdf,margin,y,width,34*mm,"Supported Claims"); _draw(pdf,_bullets(claims or ["No meaningful source-supported claims recorded."],width,limit=4),margin,y,width,29.3*mm)
+    bottom_h=22*mm if not inci else max(30*mm,y-gap-10*mm)
+    bottom_y=y-gap-bottom_h if not inci else 10*mm
+    _box(pdf,margin,bottom_y,width,bottom_h,"Ingredients (INCI)",dark_header=False)
+    _draw(pdf,_p(inci or "Ingredient list not available from current evidence.","small"),margin,bottom_y,width,bottom_h-4.7*mm,pad=3*mm)
+    pdf.setFillColor(MUTED); pdf.setFont("Helvetica",5.2); pdf.drawCentredString(pw/2,5.5*mm,"Evidence-backed product intelligence. Unknown facts are not invented.")
+    pdf.showPage(); pdf.save(); return buffer.getvalue()
+
+
 def build_product_pdf(product: Any) -> bytes:
     data = product.model_dump(mode="json") if hasattr(product, "model_dump") else dict(product)
     current = {item["field_name"]: item.get("value") for item in data.get("field_values", [])
@@ -211,6 +373,10 @@ def build_product_pdf(product: Any) -> bytes:
     gtin = _clean(data.get("gtin")) or _clean(variant.get("gtin"), "Not supplied")
     modules = {name: field(name) for name in ("skincare", "haircare", "makeup", "fragrance")}
     module_name = next((name for name, value in modules.items() if isinstance(value, dict)), "")
+    if module_name == "fragrance":
+        return _build_fragrance_pdf(data, current)
+    if module_name in {"haircare", "makeup"}:
+        return _build_compact_category_pdf(data, current, module_name)
     module = modules.get(module_name) or {}
     texture = _clean(module.get("texture") or module.get("texture_format"), "Not enriched")
     fragrance_data = modules.get("fragrance") or {}

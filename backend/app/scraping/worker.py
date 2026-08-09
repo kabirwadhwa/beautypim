@@ -14,6 +14,7 @@ logger = logging.getLogger("app.scraping.worker")
 def recover_stale_jobs(db):
     cutoff = datetime.utcnow() - timedelta(seconds=settings.CRAWL_WORKER_STALE_SECONDS)
     jobs = db.query(CrawlJob).filter(
+        CrawlJob.domain != "product-research.internal",
         CrawlJob.status.in_(["discovering", "crawling", "parsing"]),
         CrawlJob.heartbeat_at < cutoff,
     ).all()
@@ -32,6 +33,7 @@ def claim_job(db):
         CrawlJob.status.in_(["discovering", "crawling", "parsing"]),
     )
     query = db.query(CrawlJob).filter(
+        CrawlJob.domain != "product-research.internal",
         CrawlJob.status == "queued",
         ~CrawlJob.domain.in_(active_domains),
     ).order_by(CrawlJob.created_at)
