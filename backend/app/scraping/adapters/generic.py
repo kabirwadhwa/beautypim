@@ -206,10 +206,36 @@ class GenericJsonLdAdapter(ProductAdapter):
                     path=(f"jsonld.Product.{key}" if extraction_method == "json_ld" else f"meta.og:{key}"),
                     method=extraction_method,
                 )
+
+        # Prefer substantial source-stated PDP copy over a short JSON-LD/OG
+        # teaser. Reject navigation and INCI-looking paragraphs.
+        description_candidates = []
+        for selector in (
+            "[itemprop=description]", "[data-testid*=description]",
+            "[class*=description] p", ".pdp_description_content",
+            ".c-accordion__content p",
+        ):
+            for element in soup.select(selector):
+                value = element.get_text(" ", strip=True)
+                if len(value) < 120 or len(value) > 6000:
+                    continue
+                ingredient_count = len(split_inci(value.replace("●", ",")))
+                if ingredient_count >= 8 or value.count(",") >= 12:
+                    continue
+                description_candidates.append((len(value), selector, value))
+        if description_candidates:
+            _, selector, richer_description = max(description_candidates)
+            if len(richer_description) > len(product.description or ""):
+                product.description = richer_description
+                product.fields["description"] = ExtractedField(
+                    value=richer_description, raw_value=richer_description,
+                    path=selector, method="semantic_html",
+                )
         semantic_selectors = {
             "ingredient_text_raw": (
                 "[itemprop=ingredients]", "[data-testid*=ingredient]",
                 "#ingredients", ".ingredients", "[class*=ingredient]",
+                ".pdp_description_content",
             ),
             "usage_instructions": (
                 "[itemprop=usageInfo]", "#directions", ".directions",
@@ -219,6 +245,23 @@ class GenericJsonLdAdapter(ProductAdapter):
         }
         for field_name, selectors in semantic_selectors.items():
             if getattr(product, field_name):
+                continue
+            if field_name == "ingredient_text_raw":
+                candidates = []
+                for selector in selectors:
+                    for element in soup.select(selector):
+                        value = element.get_text(" ", strip=True)
+                        normalized = value.replace("●", ",")
+                        count = len(split_inci(normalized))
+                        if count >= 4:
+                            candidates.append((count, selector, normalized))
+                if candidates:
+                    _, selector, value = max(candidates)
+                    product.ingredient_text_raw = value
+                    product.fields[field_name] = ExtractedField(
+                        value=value, raw_value=value, path=selector,
+                        method="semantic_html",
+                    )
                 continue
             for selector in selectors:
                 element = soup.select_one(selector)
