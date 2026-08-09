@@ -22,8 +22,9 @@ def test_fragrance_completeness_activates_fragrance_fields_and_not_applicable_co
     assert "top_notes" in result["missing_high_priority_fields"]
     assert "heart_notes" in result["missing_high_priority_fields"]
     assert "base_notes" in result["missing_high_priority_fields"]
+    assert "inci" in result["missing_high_priority_fields"]
     assert result["field_states"]["targeted_concerns"]["state"] == "not_applicable"
-    assert "inci" not in result["field_states"]
+    assert result["field_states"]["inci"]["state"] == "not_researched"
 
 
 def test_research_completion_is_distinct_from_information_completeness():
@@ -31,7 +32,7 @@ def test_research_completion_is_distinct_from_information_completeness():
     product["fragrance"] = {"concentration": "Eau de Toilette"}
     metadata = {name: {"researched": True} for name in (
         "fragrance_family", "top_notes", "heart_notes", "base_notes", "longevity", "sillage_projection",
-        "seasonal_fit", "occasion_fit", "claims",
+        "seasonal_fit", "occasion_fit", "inci", "claims",
     )}
     result = evaluate_completeness(product, metadata)
     assert result["research_completeness"] == 100
@@ -45,6 +46,7 @@ def test_gap_plan_is_targeted_and_fact_fields_require_direct_evidence():
     plan = build_gap_plan(product)
     objectives = {item["field"]: item for item in plan["research_objectives"]}
     assert objectives["top_notes"]["requires_direct_evidence"] is True
+    assert objectives["inci"]["requires_direct_evidence"] is True
     assert objectives["longevity"]["requires_direct_evidence"] is False
 
 
@@ -92,5 +94,5 @@ def test_ysl_y_acceptance_gap_plan_is_fragrance_specific():
     assert {"top_notes", "heart_notes", "base_notes", "longevity", "sillage_projection"}.issubset(
         set(plan["missing_high_priority_fields"])
     )
-    assert "inci" not in plan["field_states"]
+    assert "inci" in plan["missing_high_priority_fields"]
     assert plan["field_states"]["targeted_concerns"]["state"] == "not_applicable"

@@ -28,6 +28,12 @@ CATEGORY_RULES = {
         "concentration": "critical", "fragrance_family": "high", "top_notes": "high",
         "heart_notes": "high", "base_notes": "high", "longevity": "high",
         "sillage_projection": "high", "seasonal_fit": "medium", "occasion_fit": "medium",
+        # A fragrance formulation is still a product-specific fact.  It is
+        # frequently absent from retail JSON-LD, but once the concentration and
+        # variant are trusted we should actively research it rather than omit it
+        # from the gap plan.  ``not_found`` remains valid; the model must never
+        # invent an INCI merely to improve completeness.
+        "inci": "high",
     },
 }
 UNIVERSAL = {

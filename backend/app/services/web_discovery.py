@@ -157,6 +157,8 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
             "Include results from multiple distinct domains when available: the official page for identity and imagery, "
             "plus public retailer product pages that visibly expose aggregate rating or review-count evidence. "
+            "When ingredients or INCI is unresolved, prioritize an exact concentration/variant page that visibly exposes "
+            "the complete ingredient list; never substitute a sibling EDT, EDP, Parfum, Elixir, shade or size formulation. "
             "Prioritize exact pages that also expose size, GTIN and a full ingredients/INCI section."
         ),
     }

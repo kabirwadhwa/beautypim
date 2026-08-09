@@ -306,6 +306,20 @@ def re_enrich_product(
 
     try:
         process_item_enrichment(db, item, job.column_mapping or {})
+        # Re-enrichment must use the same evidence-gap orchestration as Improve
+        # Product.  Previously it stopped after the catalogue/LLM pass, so an
+        # exact, trusted EDT could remain without INCI forever even though the
+        # missing formulation was researchable.
+        from app.services.product_improvement import product_improvement_summary
+        from app.services.product_identity import product_is_fragrance, trusted_product_version
+        quality = product_improvement_summary(db, product)
+        objectives = [entry["field"] for entry in quality.get("research_objectives") or []]
+        research_job = None
+        identity_is_safe = not product_is_fragrance(db, product) or trusted_product_version(db, product)
+        if objectives and identity_is_safe and (settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY):
+            research_job = _enqueue_product_research(
+                db, product, item, ProductImproveRequest(mode="missing_only"), current_user, objectives,
+            )
         record_audit(
             db=db,
             entity_type="CanonicalProduct",
@@ -313,8 +327,12 @@ def re_enrich_product(
             display_label=product.product_name,
             action="update",
             before={"enrichment_status": "existing"},
-            after={"enrichment_status": "completed"},
-            changed={"enrichment": ["existing", "regenerated"]},
+            after={
+                "enrichment_status": "completed",
+                "research_job_id": str(research_job.id) if research_job else None,
+                "research_objectives": objectives,
+            },
+            changed={"enrichment": ["existing", "regenerated"], "research_objectives": objectives},
             user_id=current_user.id,
             actor_type="user",
             reason="Manual re-enrichment from the latest source record.",
@@ -324,7 +342,14 @@ def re_enrich_product(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {exc}")
 
-    return get_product_detail(product_id, db, current_user)
+    detail = get_product_detail(product_id, db, current_user)
+    if research_job:
+        detail.improvement_result = {
+            **_research_job_payload(research_job),
+            "message": "Re-enrichment completed; exact-product evidence research is continuing in the background.",
+            "still_unavailable": objectives,
+        }
+    return detail
 
 
 @router.get("/{product_id}/improvement")

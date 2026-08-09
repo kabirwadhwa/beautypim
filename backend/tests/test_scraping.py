@@ -120,6 +120,24 @@ def test_generic_parser_prefers_rich_pdp_copy_and_extracts_bulleted_inci():
     assert len(product.ingredients) >= 7
 
 
+def test_generic_parser_extracts_inci_from_embedded_application_json():
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+        {"@type":"Product","name":"Exact Eau de Toilette","brand":{"name":"Maison Test"}}
+      </script>
+      <script id="__NEXT_DATA__" type="application/json">
+        {"props":{"pageProps":{"product":{"fullIngredients":"Alcohol, Parfum, Aqua, Limonene, Linalool"}}}}
+      </script>
+    </head><body><h1>Exact Eau de Toilette</h1></body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://example.com/exact-edt")
+    assert product.ingredient_text_raw == "Alcohol, Parfum, Aqua, Limonene, Linalool"
+    assert product.ingredients == ["Alcohol", "Parfum", "Aqua", "Limonene", "Linalool"]
+    assert product.fields["ingredient_text_raw"].method == "embedded_application_json"
+    assert product.fields["ingredient_text_raw"].path.endswith("fullIngredients")
+
+
 def test_retail_site_adapter_and_inci_order():
     product = RetailSiteAdapter().parse(
         (FIXTURES / "retail-product.html").read_text(),

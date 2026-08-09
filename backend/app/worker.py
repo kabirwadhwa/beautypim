@@ -10,7 +10,7 @@ from app.models import (
     ImportJob, ImportJobItem, SourceListing, CanonicalProduct, 
     ProductVariant, Brand, Category, FieldValue, Formulation, 
     FormulationIngredient, IngredientDefinition, ValidationIssue, 
-    AuditLog, SourcePrice, EnrichmentRun, ScrapedProductObservation
+    AuditLog, SourcePrice, EnrichmentRun, ScrapedProductObservation, CrawlJob
 )
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.enrichment import run_ai_enrichment
@@ -65,6 +65,55 @@ def merge_structured_module(existing: Any, candidate: Any) -> Any:
         elif not _structured_value_present(existing_value) and _structured_value_present(candidate_value):
             merged[key] = candidate_value
     return merged
+
+
+def queue_exact_formulation_research(db: Session, item: ImportJobItem, job: ImportJob) -> CrawlJob | None:
+    """Queue one evidence search when an exact fragrance variant lacks INCI.
+
+    Initial feed enrichment previously had no bridge to the durable research
+    worker.  Keep this deliberately narrow (trusted fragrance version + GTIN +
+    missing formulation) so a large feed does not launch generic web searches
+    for every sparse row.
+    """
+    if not job.created_by_id or not (settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY):
+        return None
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == item.canonical_product_id,
+        CanonicalProduct.is_deleted == False,
+    ).first()
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.id == item.product_variant_id,
+        ProductVariant.is_deleted == False,
+    ).first()
+    if not product or not variant or not variant.gtin:
+        return None
+    from app.services.product_identity import product_is_fragrance, trusted_product_version
+    if not product_is_fragrance(db, product) or not trusted_product_version(db, product):
+        return None
+    existing = db.query(Formulation).filter(
+        Formulation.canonical_product_id == product.id,
+        Formulation.is_deleted == False,
+    ).all()
+    if any((row.raw_inci_text or "").strip() for row in existing):
+        return None
+    active = db.query(CrawlJob).filter(
+        CrawlJob.domain == "product-research.internal",
+        CrawlJob.status.in_(["queued", "discovering", "crawling", "parsing"]),
+    ).all()
+    if any(str((row.configuration or {}).get("research_product_id")) == str(product.id) for row in active):
+        return None
+    research = CrawlJob(
+        id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
+        crawl_mode="single_url", status="queued", requested_by_id=job.created_by_id,
+        configuration={
+            "product_research_job": True, "research_product_id": str(product.id),
+            "research_item_id": str(item.id), "requested_mode": "missing_only",
+            "selected_fields": [], "research_objectives": ["inci"],
+            "discovery": None, "result": None,
+        },
+    )
+    db.add(research)
+    return research
 
 def source_value(raw_data: Dict[str, Any], mapping: Dict[str, str], field_name: str) -> str:
     """Return a clean mapped source value without leaking Python sentinel strings."""
@@ -1309,6 +1358,7 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
 
             # Step 2: Enqueue for AI Enrichment
             process_item_enrichment(db, item, mapping)
+            queue_exact_formulation_research(db, item, job)
             
             # Update Listing link
             listing.canonical_product_id = item.canonical_product_id

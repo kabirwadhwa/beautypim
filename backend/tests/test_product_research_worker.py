@@ -64,7 +64,8 @@ def test_background_research_persists_provider_id_and_completes(tmp_path):
         configuration={
             "product_research_job": True, "research_product_id": str(product.id),
             "research_item_id": str(item.id), "requested_mode": "missing_only",
-            "selected_fields": [], "discovery": None, "result": None,
+            "selected_fields": [], "research_objectives": ["inci"],
+            "discovery": None, "result": None,
         },
     )
     db.add_all([brand, user, import_job])
@@ -106,6 +107,7 @@ def test_background_research_persists_provider_id_and_completes(tmp_path):
     assert saved.configuration["result"]["image_found"] is True
     assert saved.configuration["result"]["review_evidence_found"] is True
     start.assert_called_once()
+    assert start.call_args.kwargs["research_objectives"] == ["inci"]
     poll.assert_called_once()
     enrich.assert_called_once()
     verify.close()

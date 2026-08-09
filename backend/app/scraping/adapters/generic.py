@@ -54,6 +54,61 @@ def _decimal(value):
         return Decimal(match.group().replace(",", ".")) if match else None
 
 
+_INGREDIENT_KEYS = {
+    "ingredient", "ingredients", "ingredientlist", "ingredient_list",
+    "ingredienttext", "ingredient_text", "inci", "incilist", "inci_list",
+    "composition", "fullingredients", "full_ingredients",
+}
+
+
+def _ingredient_candidate(value):
+    """Return a credible INCI string from embedded public product state.
+
+    Retailers often render the ingredient accordion client-side while keeping
+    the exact value in Next/Nuxt/application JSON.  JSON-LD therefore has no
+    ingredients even though the public page visibly does.  This deliberately
+    accepts only list-like values with at least four parsed ingredients so a
+    marketing paragraph cannot become a formulation.
+    """
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            value = ", ".join(item.strip() for item in value if item.strip())
+        else:
+            return None
+    if not isinstance(value, str):
+        return None
+    normalized = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+    normalized = re.sub(r"^\s*(ingredients?|inci|composition)\s*:?\s*", "", normalized, flags=re.I)
+    normalized = normalized.replace("●", ",").strip()
+    return normalized if len(split_inci(normalized)) >= 4 else None
+
+
+def _embedded_ingredient_text(soup: BeautifulSoup):
+    candidates = []
+
+    def walk(value, path="embedded_json"):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}"
+                if re.sub(r"[^a-z_]", "", str(key).lower()) in _INGREDIENT_KEYS:
+                    candidate = _ingredient_candidate(child)
+                    if candidate:
+                        candidates.append((len(split_inci(candidate)), child_path, candidate))
+                if isinstance(child, (dict, list)):
+                    walk(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                if isinstance(child, (dict, list)):
+                    walk(child, f"{path}[{index}]")
+
+    for script in soup.select('script[type="application/ld+json"], script[type="application/json"], script#__NEXT_DATA__'):
+        try:
+            walk(json.loads(script.string or script.get_text() or "{}"))
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            continue
+    return max(candidates, default=None)
+
+
 def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
     """Aggregate review signals without copying customer review text."""
     reviews = node.get("review") or []
@@ -151,6 +206,11 @@ class GenericJsonLdAdapter(ProductAdapter):
             if isinstance(prop, dict) and prop.get("name"):
                 properties[str(prop["name"]).strip().lower()] = prop.get("value")
         ingredient_text = _text(node.get("ingredients")) or _text(properties.get("ingredients"))
+        ingredient_from_embedded = False
+        embedded_ingredients = _embedded_ingredient_text(soup)
+        if not ingredient_text and embedded_ingredients:
+            _, _, ingredient_text = embedded_ingredients
+            ingredient_from_embedded = True
         claim_value = properties.get("claims") or properties.get("claim")
         benefit_value = properties.get("benefits") or properties.get("benefit")
         claims = [item.strip() for item in re.split(r"[;|]", _text(claim_value) or "") if item.strip()]
@@ -278,5 +338,11 @@ class GenericJsonLdAdapter(ProductAdapter):
                 )
                 break
         if product.ingredient_text_raw:
+            if ingredient_from_embedded and embedded_ingredients:
+                _, path, value = embedded_ingredients
+                product.fields["ingredient_text_raw"] = ExtractedField(
+                    value=value, raw_value=value, path=path,
+                    method="embedded_application_json",
+                )
             product.ingredients = split_inci(product.ingredient_text_raw)
         return product
