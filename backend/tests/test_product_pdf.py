@@ -133,6 +133,8 @@ def test_fragrance_pdf_prioritizes_pyramid_and_compacts_missing_inci():
     pdf = build_product_pdf({
         "product_name": "Y", "brand_name": "YSL", "product_category": "Perfume",
         "gtin": "3614271716026", "image_url": None, "variants": [{"size": "100", "unit": "ml", "gtin": "3614271716026"}],
+        "market_observations": [{"source_name": "Retail Data", "rating": 4.6, "review_count": 218,
+                                 "review_summary": {"summary": "Praised for its versatile fresh woody profile."}}],
         "formulations": [], "field_values": [
             {"field_name": "product_type", "value": "Eau de Toilette", "is_current": True},
             {"field_name": "fragrance", "value": {"concentration": "Eau de Toilette", "fragrance_family": "Woody Aromatic",
@@ -151,6 +153,30 @@ def test_fragrance_pdf_prioritizes_pyramid_and_compacts_missing_inci():
     assert "Ingredient list not available from current evidence" in text
     assert "Morning:" not in text and "Evening:" not in text
     assert "Fresh and clean fragrance" not in text
+    assert "RATINGS, REVIEWS & CLAIMS" in text
+    assert "4.6/5" in text and "218 reviews" in text
+    assert "versatile fresh woody profile" in text
+
+
+@pytest.mark.parametrize(("module_name", "module_value", "expected_heading"), [
+    ("skincare", {"skin_types": {"recommended_for": ["Dry"]}, "texture": "Cream", "finish": "Dewy"}, "RATINGS, REVIEWS & CLAIMS"),
+    ("haircare", {"hair_types": {"recommended_for": ["Dry"]}, "texture_format": "Cream"}, "RATINGS & REVIEWS"),
+    ("makeup", {"shade_colour": "Rose", "coverage": "Medium", "finish": "Satin"}, "RATINGS & REVIEWS"),
+])
+def test_non_fragrance_pdfs_keep_category_layout_and_reviews(module_name, module_value, expected_heading):
+    pdf = build_product_pdf({
+        "product_name": "Category Test", "brand_name": "Beauty Lab", "product_category": module_name,
+        "variants": [{"size": "30", "unit": "ml", "gtin": "1234567890123"}], "formulations": [],
+        "market_observations": [{"source_name": "Retail Data", "rating": 4.4, "review_count": 72}],
+        "field_values": [
+            {"field_name": module_name, "value": module_value, "is_current": True},
+            {"field_name": "target_audience", "value": {"value": ["Profile one", "Profile two", "Profile three"]}, "is_current": True},
+        ],
+    })
+    from pypdf import PdfReader
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
+    assert expected_heading in text
+    assert "4.4/5" in text and "72 reviews" in text
 
 
 def test_dossier_catalogue_fields_are_editable(client, db):

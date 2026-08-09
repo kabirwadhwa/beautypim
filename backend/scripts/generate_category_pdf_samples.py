@@ -15,6 +15,8 @@ base = {
     "brand_name": "Beauty PIM Lab", "gtin": "3614271716026", "image_url": None,
     "variants": [{"size": "100", "unit": "ml", "gtin": "3614271716026"}],
     "formulations": [], "key_ingredients": [],
+    "market_observations": [{"source_name": "Retail Data", "rating": 4.6, "review_count": 218,
+                             "review_summary": {"summary": "Customers praise its performance and easy everyday use."}}],
 }
 profiles = {"value": [
     "Shoppers seeking a clearly defined product benefit for their everyday routine.",

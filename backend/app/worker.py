@@ -679,7 +679,12 @@ def process_item_enrichment(
     for field in core_categorical_fields:
         if not should_write(field):
             continue
-        field_data = enrichment_result.get(field, {})
+        field_data = enrichment_result.get(field)
+        # Category-aware enrichment deliberately returns null for fields that
+        # do not apply (for example routine timing on a fragrance).  Treat
+        # those as absent instead of trying to persist them as mappings.
+        if not isinstance(field_data, dict):
+            continue
         status = field_data.get("value_status", "unknown")
         create_field_value_version(
             db=db,
