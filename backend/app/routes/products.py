@@ -233,10 +233,8 @@ def list_products(
         }
         category_parts = [part.strip() for part in (category_path or "").split(">") if part.strip()]
             
-        variant = db.query(ProductVariant).filter(
-            ProductVariant.canonical_product_id == prod.id,
-            ProductVariant.is_deleted == False,
-        ).order_by(ProductVariant.created_at.asc()).first()
+        from app.services.product_identity import preferred_product_variant
+        variant = preferred_product_variant(db, prod.id)
         issues = (
             db.query(ValidationIssue)
             .outerjoin(ProductVariant, ValidationIssue.product_variant_id == ProductVariant.id)
@@ -370,6 +368,7 @@ def product_improvement(
 def _automatic_product_research(
     db: Session, product: CanonicalProduct, user: User,
     candidates: list[dict] | None = None,
+    research_objectives: list[str] | None = None,
 ) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
@@ -381,10 +380,8 @@ def _automatic_product_research(
     from app.services.image_urls import normalize_public_image_url
     from app.scraping.runner import run_crawl_job
 
-    variant = db.query(ProductVariant).filter(
-        ProductVariant.canonical_product_id == product.id,
-        ProductVariant.is_deleted == False,
-    ).order_by(ProductVariant.created_at.asc()).first()
+    from app.services.product_identity import preferred_product_variant
+    variant = preferred_product_variant(db, product.id)
     expected_format = _product_expected_format(db, product)
     from app.services.product_identity import product_is_fragrance, trusted_product_version
     if product_is_fragrance(db, product) and not trusted_product_version(db, product):
@@ -444,6 +441,7 @@ def _automatic_product_research(
                 break
     selected = []
     seen_domains = set()
+    source_limit = 6 if "inci" in set(research_objectives or []) else 3
     for candidate in candidates:
         url = str(candidate.get("url") or "").strip()
         domain = (urlparse(url).hostname or "").lower()
@@ -451,7 +449,7 @@ def _automatic_product_research(
             continue
         seen_domains.add(domain)
         selected.append((url, domain))
-        if len(selected) == 3:
+        if len(selected) == source_limit:
             break
 
     completed = 0
@@ -486,10 +484,7 @@ def _automatic_product_research(
         ).first() is not None
 
     def has_variant_identity() -> bool:
-        row = db.query(ProductVariant).filter(
-            ProductVariant.canonical_product_id == product.id,
-            ProductVariant.is_deleted == False,
-        ).order_by(ProductVariant.created_at.asc()).first()
+        row = preferred_product_variant(db, product.id)
         return bool(row and (row.gtin or row.size or row.variant_name))
 
     for url, domain in selected:
@@ -638,10 +633,8 @@ def improve_product(
         before_quality = product_improvement_summary(db, product)
         research_summary = None
         from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
-        variant = db.query(ProductVariant).filter(
-            ProductVariant.canonical_product_id == product.id,
-            ProductVariant.is_deleted == False,
-        ).order_by(ProductVariant.created_at.asc()).first()
+        from app.services.product_identity import preferred_product_variant
+        variant = preferred_product_variant(db, product.id)
         category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
         corpus_result = retrieve_corpus_evidence(
             db, gtin=variant.gtin if variant else "", brand=product.brand.name if product.brand else "",
@@ -721,10 +714,8 @@ def update_product_identity(
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
-    variant = db.query(ProductVariant).filter(
-        ProductVariant.canonical_product_id == product_id,
-        ProductVariant.is_deleted == False,
-    ).order_by(ProductVariant.created_at.asc()).first()
+    from app.services.product_identity import preferred_product_variant
+    variant = preferred_product_variant(db, product_id)
     if not variant:
         variant = ProductVariant(id=uuid.uuid4(), canonical_product_id=product.id)
         db.add(variant)
@@ -842,10 +833,8 @@ def discover_product_source_candidates(
             409,
             "Confirm the fragrance concentration in Product Identity before discovering exact pages.",
         )
-    variant = db.query(ProductVariant).filter(
-        ProductVariant.canonical_product_id == product.id,
-        ProductVariant.is_deleted == False,
-    ).order_by(ProductVariant.created_at.asc()).first()
+    from app.services.product_identity import preferred_product_variant
+    variant = preferred_product_variant(db, product.id)
     from app.services.web_discovery import SearchProviderUnavailable, discover_product_sources
     try:
         results = discover_product_sources(

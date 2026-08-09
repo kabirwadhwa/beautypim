@@ -56,10 +56,8 @@ def _find_value(raw: dict[str, Any], *names: str) -> Any:
 
 
 def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[str, Any]:
-    variant = db.query(ProductVariant).filter(
-        ProductVariant.canonical_product_id == product.id,
-        ProductVariant.is_deleted == False,
-    ).order_by(ProductVariant.created_at.asc()).first()
+    from app.services.product_identity import preferred_product_variant
+    variant = preferred_product_variant(db, product.id)
     current = {
         row.field_name: row
         for row in db.query(FieldValue).filter(

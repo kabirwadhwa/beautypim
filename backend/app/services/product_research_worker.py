@@ -82,10 +82,8 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         if not product or not user or not item:
             raise RuntimeError("The product, user or source record for background research no longer exists.")
 
-        variant = db.query(ProductVariant).filter(
-            ProductVariant.canonical_product_id == product.id,
-            ProductVariant.is_deleted == False,
-        ).order_by(ProductVariant.created_at.asc()).first()
+        from app.services.product_identity import preferred_product_variant
+        variant = preferred_product_variant(db, product.id)
         discovery = configuration.get("discovery")
         if not discovery:
             discovery = start_product_source_discovery(
@@ -116,6 +114,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         db.commit()
         result = _automatic_product_research(
             db, product, user, candidates=discovery.get("candidates") or [],
+            research_objectives=configuration.get("research_objectives") or [],
         )
 
         # Re-run enrichment after exact-source observations have been persisted.

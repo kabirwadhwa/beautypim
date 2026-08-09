@@ -125,10 +125,8 @@ def persist_product(
                     f"to the requested product ({expected_format!r} vs {observed_format!r})."
                 )
             canonical_id = target.id
-            target_variant = db.query(ProductVariant).filter(
-                ProductVariant.canonical_product_id == target.id,
-                ProductVariant.is_deleted == False,
-            ).order_by(ProductVariant.created_at.asc()).first()
+            from app.services.product_identity import preferred_product_variant
+            target_variant = preferred_product_variant(db, target.id)
             variant_id = target_variant.id if target_variant else None
             match_status, score = "matched", 1.0
     suggested_product_id = canonical_id if match_status == "possible_match" else None

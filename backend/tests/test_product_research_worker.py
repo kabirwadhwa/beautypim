@@ -6,7 +6,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models import (
-    Brand, CanonicalProduct, CrawlJob, ImportJob, ImportJobItem, SourceListing, User,
+    Brand, CanonicalProduct, CrawlJob, ImportJob, ImportJobItem, ProductVariant,
+    SourceListing, User,
 )
 from app.services.product_research_worker import recover_product_research_jobs, run_product_research_job
 
@@ -72,6 +73,17 @@ def test_background_research_persists_provider_id_and_completes(tmp_path):
     db.flush()
     db.add(product)
     db.flush()
+    db.add_all([
+        ProductVariant(
+            id=uuid.uuid4(), canonical_product_id=product.id,
+            size="3.4 oz", unit="3.4 oz",
+        ),
+        ProductVariant(
+            id=uuid.uuid4(), canonical_product_id=product.id,
+            gtin="3614271716026", size="100", unit="ml",
+        ),
+    ])
+    db.flush()
     db.add(listing)
     db.flush()
     db.add_all([item, research])
@@ -108,6 +120,7 @@ def test_background_research_persists_provider_id_and_completes(tmp_path):
     assert saved.configuration["result"]["review_evidence_found"] is True
     start.assert_called_once()
     assert start.call_args.kwargs["research_objectives"] == ["inci"]
+    assert start.call_args.kwargs["gtin"] == "3614271716026"
     poll.assert_called_once()
     enrich.assert_called_once()
     verify.close()

@@ -99,3 +99,22 @@ def product_is_fragrance(db, product) -> bool:
         values.extend((listing[0] or {}).values())
     text = " ".join(str(value or "") for value in values).lower()
     return any(token in text for token in ("perfume", "parfum", "fragrance", "eau de", "cologne"))
+
+
+def preferred_product_variant(db, product_id):
+    """Choose the strongest operational identity, not merely the oldest row.
+
+    Legacy imports can leave a descriptive size-only variant before a later
+    exact GTIN variant.  Research, corpus retrieval and the dossier must all
+    prefer the GTIN-bearing row or an "exact" search silently loses its most
+    important identifier.
+    """
+    from app.models import ProductVariant
+
+    return db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id == product_id,
+        ProductVariant.is_deleted == False,
+    ).order_by(
+        ProductVariant.gtin.is_(None),
+        ProductVariant.created_at.asc(),
+    ).first()
