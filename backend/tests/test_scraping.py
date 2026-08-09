@@ -94,6 +94,32 @@ def test_generic_official_page_open_graph_fallback():
     assert product.fields["image_urls"].method == "open_graph"
 
 
+def test_generic_parser_prefers_rich_pdp_copy_and_extracts_bulleted_inci():
+    html = """
+    <html><head>
+      <script type="application/ld+json">{
+        "@type":"Product", "name":"Y Eau de Toilette", "brand":{"name":"YSL"},
+        "description":"A fresh fragrance.", "image":"https://example.com/y.jpg"
+      }</script>
+    </head><body>
+      <div class="c-accordion__content">
+        <p class="pdp_description_content">This mineral woody fragrance contrasts fresh lavender and aromatic clary sage
+        with a crisp geranium heart. Freshness is matched by sensual woods, ambergris and addictive incense,
+        with source-stated lasting intensity suitable for a polished everyday fragrance profile.</p>
+      </div>
+      <div id="description">
+        <p class="pdp_description_content">ALCOHOL ● AQUA / WATER ● PARFUM / FRAGRANCE ● LIMONENE ●
+        COUMARIN ● LINALOOL ● GERANIOL ● CITRAL ●</p>
+      </div>
+    </body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://example.com/y-edt")
+    assert product is not None
+    assert product.description.startswith("This mineral woody fragrance")
+    assert "ALCOHOL" in product.ingredient_text_raw
+    assert len(product.ingredients) >= 7
+
+
 def test_retail_site_adapter_and_inci_order():
     product = RetailSiteAdapter().parse(
         (FIXTURES / "retail-product.html").read_text(),

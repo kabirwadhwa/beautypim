@@ -7,6 +7,7 @@ from app.worker import (
     apply_category_specific_enrichment, collect_structured_evidence,
     compact_enrichment_value, create_field_value_version, normalize_claim_value,
     normalize_gtin_value, run_job_worker, source_alias_value,
+    merge_structured_module, structured_module_has_gaps,
 )
 from app.models import FieldValue, CanonicalProduct, Brand, ValidationIssue, User
 from app.routes.products import approve_product
@@ -24,6 +25,40 @@ def test_premium_fragrance_normalization_and_missing_inci_message():
     assert result["fragrance"]["concentration"] == "Eau de Toilette"
     assert result["skincare"] is None
     assert result["warnings_considerations"][0]["source_status"] == "unknown"
+
+
+def test_missing_only_detects_partial_fragrance_module():
+    partial = {
+        "concentration": "Eau de Toilette", "fragrance_family": None,
+        "top_notes": [], "heart_notes": [], "base_notes": [],
+        "longevity": None, "sillage_projection": None,
+        "seasonal_fit": [], "occasion_fit": [],
+    }
+    assert structured_module_has_gaps("fragrance", partial) is True
+
+
+def test_partial_fragrance_merge_preserves_identity_and_adds_researched_fields():
+    existing = {
+        "concentration": "Eau de Toilette", "fragrance_family": None,
+        "top_notes": [], "heart_notes": [], "base_notes": [],
+        "evidence": [{"source_reference": "customer-feed"}], "confidence": 1.0,
+    }
+    researched = {
+        "concentration": "Eau de Parfum", "fragrance_family": "Woody Aromatic",
+        "top_notes": ["Aldehydes", "Bergamot", "Ginger"],
+        "heart_notes": ["Sage", "Geranium"], "base_notes": ["Cedar", "Incense"],
+        "longevity": "Moderate", "sillage_projection": "Moderate",
+        "evidence": [{"source_reference": "official-page"}], "confidence": 0.84,
+    }
+    merged = merge_structured_module(existing, researched)
+    assert merged["concentration"] == "Eau de Toilette"
+    assert merged["fragrance_family"] == "Woody Aromatic"
+    assert merged["top_notes"] == ["Aldehydes", "Bergamot", "Ginger"]
+    assert merged["heart_notes"] == ["Sage", "Geranium"]
+    assert merged["base_notes"] == ["Cedar", "Incense"]
+    assert merged["longevity"] == "Moderate"
+    assert merged["sillage_projection"] == "Moderate"
+    assert len(merged["evidence"]) == 2
 
 
 def test_premium_helpers_bound_context_and_promote_nested_evidence():

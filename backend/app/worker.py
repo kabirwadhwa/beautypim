@@ -19,6 +19,53 @@ from app.config import settings
 
 logger = logging.getLogger("worker")
 
+CATEGORY_MODULE_FIELDS = {
+    "skincare": ("skin_types", "texture", "finish", "key_ingredients"),
+    "haircare": ("hair_types", "texture_format", "key_ingredients"),
+    "makeup": ("shade_colour", "coverage", "finish", "texture_format"),
+    "fragrance": (
+        "concentration", "fragrance_family", "top_notes", "heart_notes",
+        "base_notes", "longevity", "sillage_projection", "seasonal_fit",
+        "occasion_fit",
+    ),
+}
+
+
+def _structured_value_present(value: Any) -> bool:
+    if value in (None, "", [], {}):
+        return False
+    return str(value).strip().lower() not in {
+        "unknown", "not provided", "not_provided", "unverified", "null", "none",
+    }
+
+
+def structured_module_has_gaps(field_name: str, value: Any) -> bool:
+    """Return true when a category block is present but only partly complete."""
+    expected = CATEGORY_MODULE_FIELDS.get(field_name)
+    if not expected or not isinstance(value, dict):
+        return not _structured_value_present(value)
+    return any(not _structured_value_present(value.get(name)) for name in expected)
+
+
+def merge_structured_module(existing: Any, candidate: Any) -> Any:
+    """Fill category-module gaps without replacing accepted existing facts."""
+    if not isinstance(existing, dict) or not isinstance(candidate, dict):
+        return candidate if not _structured_value_present(existing) else existing
+    merged = dict(existing)
+    for key, candidate_value in candidate.items():
+        existing_value = merged.get(key)
+        if key == "evidence" and isinstance(candidate_value, list):
+            combined = list(existing_value or []) if isinstance(existing_value, list) else []
+            for item in candidate_value:
+                if item not in combined:
+                    combined.append(item)
+            merged[key] = combined
+        elif isinstance(existing_value, dict) and isinstance(candidate_value, dict):
+            merged[key] = merge_structured_module(existing_value, candidate_value)
+        elif not _structured_value_present(existing_value) and _structured_value_present(candidate_value):
+            merged[key] = candidate_value
+    return merged
+
 def source_value(raw_data: Dict[str, Any], mapping: Dict[str, str], field_name: str) -> str:
     """Return a clean mapped source value without leaking Python sentinel strings."""
     column = mapping.get(field_name)
@@ -389,6 +436,8 @@ def process_item_enrichment(
             if not existing:
                 return True
             value = existing.value
+            if field_name in CATEGORY_MODULE_FIELDS:
+                return structured_module_has_gaps(field_name, value)
             if value in (None, "", [], {}):
                 return True
             return str(value).strip().lower() in {
@@ -714,6 +763,12 @@ def process_item_enrichment(
         field_data = enrichment_result.get(field)
         if field_data is None:
             continue
+        if field in CATEGORY_MODULE_FIELDS and isinstance(field_data, dict):
+            existing = current_values.get(field)
+            if existing and isinstance(existing.value, dict):
+                field_data = merge_structured_module(existing.value, field_data)
+                if field_data == existing.value:
+                    continue
         confidence = 0.0
         if isinstance(field_data, dict):
             confidence = field_data.get("confidence") or 0.0
