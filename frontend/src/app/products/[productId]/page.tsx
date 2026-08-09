@@ -112,6 +112,19 @@ interface ProductDetail {
     family_matches: Array<Record<string, any>>;
     comparables: Array<Record<string, any>>;
   };
+  completeness?: {
+    category_module: string;
+    overall_completeness: number;
+    identity_completeness: number;
+    content_completeness: number;
+    commercial_completeness: number;
+    category_completeness: number;
+    evidence_completeness: number;
+    research_completeness: number;
+    missing_high_priority_fields: string[];
+    missing_optional_fields: string[];
+    field_states: Record<string, { priority: string; state: string; value_present: boolean }>;
+  };
 }
 
 interface ImprovementSummary {
@@ -124,6 +137,15 @@ interface ImprovementSummary {
   evidence_required_fields: string[];
   inference_eligible_fields: string[];
   candidate_products: Array<Record<string, any>>;
+  overall_completeness?: number;
+  content_completeness?: number;
+  commercial_completeness?: number;
+  category_completeness?: number;
+  evidence_completeness?: number;
+  research_completeness?: number;
+  missing_high_priority_fields?: string[];
+  missing_optional_fields?: string[];
+  category_module?: string;
 }
 
 export default function ProductDetailPage() {
@@ -169,6 +191,7 @@ export default function ProductDetailPage() {
   const [discoveredSources, setDiscoveredSources] = useState<Array<Record<string, any>>>([]);
   const [researchResults, setResearchResults] = useState<Array<Record<string, any>>>([]);
   const [identityDraft, setIdentityDraft] = useState<Record<string, string>>({});
+  const [activeResearchJobId, setActiveResearchJobId] = useState<string | null>(null);
 
   const fetchDetail = async () => {
     try {
@@ -199,6 +222,48 @@ export default function ProductDetailPage() {
   useEffect(() => {
     fetchDetail();
   }, [productId]);
+
+  useEffect(() => {
+    if (!activeResearchJobId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${API_URL}/products/${productId}/research-status`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) throw new Error('Research status is temporarily unavailable.');
+        const status = await response.json();
+        if (cancelled) return;
+        if (status.research_pending) {
+          setNotice('Catalogue enrichment is complete. Image and review research is continuing in the background.');
+          timer = setTimeout(poll, 3000);
+          return;
+        }
+        setActiveResearchJobId(null);
+        await fetchDetail();
+        const result = status.result || {};
+        if (status.research_status === 'completed' || status.research_status === 'partially_completed') {
+          const evidence = [
+            result.image_found ? 'image' : null,
+            result.review_evidence_found ? 'reviews' : null,
+            result.formulation_evidence_found ? 'ingredients' : null,
+          ].filter(Boolean).join(', ');
+          setNotice(`Product research completed${evidence ? `; added ${evidence}` : ''}.`);
+        } else {
+          setNotice('Catalogue enrichment is complete. Live image/review research could not add verified evidence this time.');
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeResearchJobId, productId]);
 
   const toggleFieldExpand = (fieldName: string) => {
     setExpandedFields(prev => ({ ...prev, [fieldName]: !prev[fieldName] }));
@@ -327,8 +392,12 @@ export default function ProductDetailPage() {
       const researchErrors = Array.isArray(research.errors) ? research.errors.filter(Boolean) : [];
       if (research.identity_required) {
         setError(researchErrors[0] || 'Confirm the product identity before live source research.');
+      } else if (research.research_pending) {
+        setActiveResearchJobId(research.research_job_id || 'pending');
+        setNotice(research.message || 'Catalogue enrichment is complete. Image and review research is continuing in the background.');
+        setShowImprove(false);
       } else if (!research.sources_ingested) {
-        setError(`Catalogue fields were enriched, but live source research did not complete${researchErrors.length ? `: ${researchErrors.join(' ')}` : '. No exact product pages were found.'} No image or review evidence was added.`);
+        setNotice(`Catalogue fields were enriched${researchErrors.length ? `; live research reported: ${researchErrors.join(' ')}` : '. No additional verified image or review evidence was found.'}`);
       } else {
         const evidence = [
           research.image_found ? 'image' : null,
@@ -562,11 +631,12 @@ export default function ProductDetailPage() {
     "subcategory", "product_type", "application_area", "product_positioning",
     "sensory_description", "routine_time", "routine_step"
   ];
-  const richFields = [
-    "benefits", "directions", "targeted_concerns", "claims",
-    "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
+  const activeCategoryModule = product?.completeness?.category_module;
+  const richFields = Array.from(new Set([
+    ...(activeCategoryModule ? [activeCategoryModule] : []),
+    "benefits", "directions", "targeted_concerns", "claims", "warnings_considerations",
     "ingredients_intelligence"
-  ];
+  ]));
   const claimOverrideFields = ['claims'];
   const structuredOverrideFields = richFields.filter(field => field !== 'source_claims');
 
@@ -697,6 +767,33 @@ export default function ProductDetailPage() {
       {notice && (
         <div style={{ padding: 12, backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid #10b981', borderRadius: 6, color: '#6ee7b7', fontSize: 13, marginBottom: 20 }}>
           {notice}
+        </div>
+      )}
+
+      {product?.completeness && (
+        <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ color: '#a5b4fc', fontSize: 11, fontWeight: 800, letterSpacing: '.08em' }}>ENRICHMENT QUALITY</div>
+              <div style={{ color: '#f8fafc', fontSize: 30, fontWeight: 800, marginTop: 2 }}>{product.completeness.overall_completeness}%</div>
+              <div style={{ color: '#94a3b8', fontSize: 12, textTransform: 'capitalize' }}>{product.completeness.category_module} profile</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(90px, 1fr))', gap: 12, flex: 1 }}>
+              {[
+                ['Identity', product.completeness.identity_completeness],
+                ['Content', product.completeness.content_completeness],
+                ['Commercial', product.completeness.commercial_completeness],
+                [product.completeness.category_module, product.completeness.category_completeness],
+                ['Evidence', product.completeness.evidence_completeness],
+              ].map(([label, score]) => <div key={String(label)} style={{ padding: 10, borderRadius: 7, background: '#10192c', border: '1px solid #283756' }}>
+                <div style={{ color: '#94a3b8', fontSize: 10, textTransform: 'capitalize' }}>{label}</div>
+                <div style={{ color: Number(score) >= 80 ? '#6ee7b7' : Number(score) >= 55 ? '#fbbf24' : '#fca5a5', fontSize: 18, fontWeight: 800 }}>{score}%</div>
+              </div>)}
+            </div>
+          </div>
+          {product.completeness.missing_high_priority_fields.length > 0 && <div style={{ marginTop: 12, color: '#fbbf24', fontSize: 12 }}>
+            Missing high-value information: {product.completeness.missing_high_priority_fields.map(name => name.replaceAll('_', ' ')).join(', ')}
+          </div>}
         </div>
       )}
 
@@ -1000,7 +1097,7 @@ export default function ProductDetailPage() {
           <div className={styles.panelCard}>
             <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
               <Info size={18} color="#38bdf8" />
-              <span>Claims, Usage, Suitability & Safety Observations</span>
+              <span>{activeCategoryModule ? `${activeCategoryModule.charAt(0).toUpperCase()}${activeCategoryModule.slice(1)} Intelligence, Claims & Usage` : 'Claims, Usage, Suitability & Safety Observations'}</span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
               {richFields.filter(field => currentValDict[field]?.value != null).map(field => {
@@ -1241,7 +1338,7 @@ export default function ProductDetailPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
                   {[
                     ['Identity', improvement.identity_status, improvement.identity_completeness],
-                    ['Knowledge coverage', `${improvement.knowledge_coverage}%`, improvement.knowledge_coverage],
+                    ['Enrichment quality', `${improvement.overall_completeness ?? improvement.knowledge_coverage}%`, improvement.overall_completeness ?? improvement.knowledge_coverage],
                     ['Research opportunities', `${improvement.fields_recommended_for_research.length} fields`, null],
                   ].map(([label, value, score]) => (
                     <div key={String(label)} style={{ padding: 14, border: '1px solid #283756', borderRadius: 8, background: '#111a30' }}>

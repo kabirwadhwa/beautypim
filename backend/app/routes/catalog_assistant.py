@@ -607,6 +607,18 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             }
             for price in prices
         ]
+        from app.services.category_completeness import evaluate_completeness
+        matched["completeness"] = evaluate_completeness({
+            **matched,
+            "brand": product.brand.name if product.brand else None,
+            "product_name": product.product_name,
+            "category": category_path,
+            "description": source.get("description"),
+            "image_url": product.image_url,
+            "gtin": variants[0].gtin if variants else None,
+            "size": f"{variants[0].size or ''} {variants[0].unit or ''}".strip() if variants else None,
+            "inci": formulations[0].raw_inci_text if formulations else None,
+        })
         matched["knowledge_sources"] = [
             {
                 "domain": row.source_domain, "url": row.source_url,
@@ -796,7 +808,8 @@ def generate_grounded_answer(
         "You may explain a product, answer questions about any stored attribute, "
         "compare products, recommend catalogue matches, and summarise the result set. "
         "Never invent a product fact, ingredient, claim, suitability, price, or medical "
-        "advice. If a requested fact is missing, say it is not recorded. Do not discuss "
+        "advice. The completeness attribute distinguishes missing, not applicable, conflicting, and researched facts. "
+        "If a requested fact is missing, explain its evidence state instead of inventing it. Do not discuss "
         "confidence scores, model metadata, or internal enrichment mechanics. For a "
         "named-product question, lead with a useful explanation instead of a result "
         "count. Write polished plain text only: do not use Markdown markers, embedded "

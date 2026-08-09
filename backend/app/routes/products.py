@@ -342,7 +342,10 @@ def product_improvement(
     return product_improvement_summary(db, product)
 
 
-def _automatic_product_research(db: Session, product: CanonicalProduct, user: User) -> dict:
+def _automatic_product_research(
+    db: Session, product: CanonicalProduct, user: User,
+    candidates: list[dict] | None = None,
+) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
     This is deliberately bounded: up to three exact product-page candidates
@@ -370,13 +373,14 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
                 "before exact-page research so editions are not mixed."
             ],
         }
-    candidates = discover_product_sources(
-        brand=product.brand.name if product.brand else "",
-        product_name=product.product_name,
-        product_format=expected_format,
-        gtin=variant.gtin if variant and variant.gtin else "",
-        approved_domains=[],
-    )
+    if candidates is None:
+        candidates = discover_product_sources(
+            brand=product.brand.name if product.brand else "",
+            product_name=product.product_name,
+            product_format=expected_format,
+            gtin=variant.gtin if variant and variant.gtin else "",
+            approved_domains=[],
+        )
 
     brand_token = re.sub(r"[^a-z0-9]", "", (product.brand.name if product.brand else "").lower())
     product_tokens = [
@@ -521,6 +525,63 @@ def _automatic_product_research(db: Session, product: CanonicalProduct, user: Us
     }
 
 
+def _enqueue_product_research(
+    db: Session, product: CanonicalProduct, item: ImportJobItem,
+    request: ProductImproveRequest, user: User, research_objectives: list[str] | None = None,
+) -> CrawlJob:
+    active = db.query(CrawlJob).filter(
+        CrawlJob.domain == "product-research.internal",
+        CrawlJob.status.in_(["queued", "discovering", "crawling", "parsing"]),
+    ).order_by(CrawlJob.created_at.desc()).all()
+    for job in active:
+        if str((job.configuration or {}).get("research_product_id")) == str(product.id):
+            return job
+    job = CrawlJob(
+        id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
+        crawl_mode="single_url", status="queued", requested_by_id=user.id,
+        configuration={
+            "product_research_job": True,
+            "research_product_id": str(product.id),
+            "research_item_id": str(item.id),
+            "requested_mode": request.mode,
+            "selected_fields": request.fields,
+            "research_objectives": research_objectives or [],
+            "discovery": None,
+            "result": None,
+        },
+    )
+    db.add(job)
+    db.flush()
+    return job
+
+
+def _research_job_payload(job: CrawlJob) -> dict:
+    configuration = job.configuration or {}
+    return {
+        "research_job_id": str(job.id),
+        "research_status": job.status,
+        "research_pending": job.status in {"queued", "discovering", "crawling", "parsing"},
+        "result": configuration.get("result"),
+        "error": job.error_summary,
+    }
+
+
+@router.get("/{product_id}/research-status")
+def product_research_status(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_viewer_or_above),
+):
+    jobs = db.query(CrawlJob).filter(
+        CrawlJob.domain == "product-research.internal",
+    ).order_by(CrawlJob.created_at.desc()).limit(100).all()
+    for job in jobs:
+        if str((job.configuration or {}).get("research_product_id")) == str(product_id):
+            return _research_job_payload(job)
+    return {"research_job_id": None, "research_status": "not_started", "research_pending": False,
+            "result": None, "error": None}
+
+
 @router.post("/{product_id}/improve", response_model=ProductDetailOut)
 def improve_product(
     product_id: uuid.UUID,
@@ -548,6 +609,8 @@ def improve_product(
         # Improve Product is a complete workflow: research first, then let the
         # enrichment model consume exact-source observations. Search/crawl
         # failures remain non-fatal so imported data can still be improved.
+        from app.services.product_improvement import product_improvement_summary
+        before_quality = product_improvement_summary(db, product)
         research_summary = None
         from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
         variant = db.query(ProductVariant).filter(
@@ -560,17 +623,37 @@ def improve_product(
             product_name=product.product_name, category=category.path if category else "",
         )
         requested = set(request.fields or []) if request.mode == "selected" else None
-        if evidence_is_sufficient(corpus_result, requested):
+        meaningful_gaps = before_quality.get("missing_high_priority_fields") or []
+        if not meaningful_gaps:
+            research_summary = {
+                "web_search_skipped": True, "reason": "No meaningful evidence gaps found.",
+                "sources_ingested": 0, "errors": [],
+            }
+        elif evidence_is_sufficient(corpus_result, requested):
             research_summary = {
                 "web_search_skipped": True, "reason": "Exact internal retail evidence already covers the requested product fields.",
                 "corpus_match_level": corpus_result.get("match_level"), "sources_ingested": 0, "errors": [],
             }
         elif settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY:
-            try:
-                research_summary = _automatic_product_research(db, product, current_user)
-            except Exception as research_exc:
-                db.rollback()
-                research_summary = {"candidates": 0, "sources_ingested": 0, "errors": [str(research_exc)]}
+            from app.services.product_identity import product_is_fragrance, trusted_product_version
+            if product_is_fragrance(db, product) and not trusted_product_version(db, product):
+                research_summary = {
+                    "identity_required": True, "sources_ingested": 0,
+                    "errors": [
+                        "Confirm the fragrance concentration (for example EDT, EDP, Parfum or Elixir) "
+                        "before exact-page research so editions are not mixed."
+                    ],
+                }
+            else:
+                research_job = _enqueue_product_research(
+                    db, product, item, request, current_user,
+                    [item["field"] for item in before_quality.get("research_objectives") or []],
+                )
+                research_summary = {
+                    **_research_job_payload(research_job),
+                    "sources_ingested": 0, "errors": [],
+                    "message": "Catalogue enrichment completed. Image and review research is continuing in the background.",
+                }
         process_item_enrichment(
             db, item, job.column_mapping or {}, mode=request.mode,
             selected_fields=request.fields,
@@ -587,7 +670,17 @@ def improve_product(
         db.rollback()
         raise HTTPException(500, f"Product improvement failed: {exc}") from exc
     detail = get_product_detail(product_id, db, current_user)
-    detail.improvement_result = research_summary
+    after_quality = detail.completeness or {}
+    detail.improvement_result = {
+        **(research_summary or {}),
+        "before_completeness": before_quality.get("overall_completeness"),
+        "after_completeness": after_quality.get("overall_completeness"),
+        "added_fields": sorted(set(before_quality.get("missing_high_priority_fields") or []) -
+                               set(after_quality.get("missing_high_priority_fields") or [])),
+        "still_unavailable": after_quality.get("missing_high_priority_fields") or [],
+        "conflicting": [name for name, state in (after_quality.get("field_states") or {}).items()
+                        if state.get("state") == "conflicting"],
+    }
     return detail
 
 
@@ -1033,6 +1126,8 @@ def get_product_detail(
         db, gtin=variants[0].gtin if variants else "", brand=brand_name or "",
         product_name=prod.product_name, category=category_path or "", max_comparables=3,
     ))
+    from app.services.product_improvement import product_improvement_summary
+    completeness = product_improvement_summary(db, prod)
 
     return ProductDetailOut(
         id=prod.id,
@@ -1068,6 +1163,7 @@ def get_product_detail(
         dynamic_concerns=concerns_out,
         market_observations=market_observations,
         corpus_evidence=corpus_evidence,
+        completeness=completeness,
     )
 
 @router.put("/{product_id}/image", response_model=ProductDetailOut)

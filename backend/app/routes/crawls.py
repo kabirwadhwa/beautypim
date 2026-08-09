@@ -86,7 +86,9 @@ def create_job(
 
 @router.get("")
 def list_jobs(db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above)):
-    return [_serialize(job) for job in db.query(CrawlJob).order_by(CrawlJob.created_at.desc()).limit(100)]
+    return [_serialize(job) for job in db.query(CrawlJob).filter(
+        CrawlJob.domain != "product-research.internal",
+    ).order_by(CrawlJob.created_at.desc()).limit(100)]
 
 
 @router.get("/{job_id}")

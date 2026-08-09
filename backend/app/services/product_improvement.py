@@ -19,6 +19,7 @@ from app.models import (
 from app.services.deduplication import normalize_text
 from app.services.product_identity import product_is_fragrance, trusted_product_version
 from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
+from app.services.category_completeness import build_gap_plan
 
 
 IDENTITY_FIELDS = ("brand", "product_name", "format", "variant", "size", "gtin", "market")
@@ -105,6 +106,23 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         coverage_fields.add("ingredients_intelligence")
     missing_research = [field for field in RESEARCHABLE_FIELDS if field not in coverage_fields]
 
+    snapshot = {
+        "brand": identity["brand"], "product_name": product.product_name,
+        "gtin": identity["gtin"], "size": identity["size"],
+        "category": category.path if category else "", "product_type": format_value,
+        "description": description, "image_url": product.image_url,
+        "inci": next((row.raw_inci_text for row in formulations if _present(row.raw_inci_text)), None),
+        "key_ingredients": [],
+    }
+    metadata = {}
+    for name, row in current.items():
+        snapshot[name] = row.value
+        metadata[name] = {
+            "source_type": row.source_type, "semantic_status": row.semantic_status,
+            "evidence": row.evidence or [], "researched": bool(row.enrichment_run_id),
+        }
+    gap_plan = build_gap_plan(snapshot, metadata)
+
     corpus = retrieve_corpus_evidence(
         db, gtin=identity["gtin"] or "", brand=identity["brand"] or "",
         product_name=product.product_name, category=category.path if category else "",
@@ -134,8 +152,19 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "identity_completeness": completeness,
         "identity": identity,
         "missing_identity_fields": missing_identity,
-        "knowledge_coverage": round(100 * (len(RESEARCHABLE_FIELDS) - len(missing_research)) / len(RESEARCHABLE_FIELDS)),
-        "fields_recommended_for_research": missing_research,
+        "knowledge_coverage": gap_plan["overall_completeness"],
+        "overall_completeness": gap_plan["overall_completeness"],
+        "content_completeness": gap_plan["content_completeness"],
+        "commercial_completeness": gap_plan["commercial_completeness"],
+        "category_completeness": gap_plan["category_completeness"],
+        "evidence_completeness": gap_plan["evidence_completeness"],
+        "research_completeness": gap_plan["research_completeness"],
+        "category_module": gap_plan["category_module"],
+        "field_states": gap_plan["field_states"],
+        "missing_high_priority_fields": gap_plan["missing_high_priority_fields"],
+        "missing_optional_fields": gap_plan["missing_optional_fields"],
+        "research_objectives": gap_plan["research_objectives"],
+        "fields_recommended_for_research": [item["field"] for item in gap_plan["research_objectives"]],
         "evidence_required_fields": list(EVIDENCE_REQUIRED_FIELDS),
         "inference_eligible_fields": [
             "subcategory", "product_type", "texture", "application_area", "target_audience",
