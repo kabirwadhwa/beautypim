@@ -60,7 +60,7 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await expect(page.getByRole('heading', { name: '2. Research official or approved pages', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '3. Re-enrich with control', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh selected fields', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Run improvement', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Research & improve', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Close improve product', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Improve Product', exact: true })).not.toBeVisible();
 
