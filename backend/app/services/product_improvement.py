@@ -18,6 +18,7 @@ from app.models import (
 )
 from app.services.deduplication import normalize_text
 from app.services.product_identity import product_is_fragrance, trusted_product_version
+from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
 
 
 IDENTITY_FIELDS = ("brand", "product_name", "format", "variant", "size", "gtin", "market")
@@ -104,42 +105,24 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         coverage_fields.add("ingredients_intelligence")
     missing_research = [field for field in RESEARCHABLE_FIELDS if field not in coverage_fields]
 
-    target_name = normalize_text(product.product_name)
-    target_brand = normalize_text(identity["brand"] or "")
-    rows = db.query(ScrapedProductObservation).filter(
-        ScrapedProductObservation.source_domain == "retail-data.invalid",
-    ).all()
+    corpus = retrieve_corpus_evidence(
+        db, gtin=identity["gtin"] or "", brand=identity["brand"] or "",
+        product_name=product.product_name, category=category.path if category else "",
+        max_comparables=8,
+    )
     candidates = []
-    seen = set()
-    target_tokens = set(target_name.split())
-    for row in rows:
-        payload = row.normalized_payload or {}
-        candidate_name = normalize_text(str(payload.get("product_name") or ""))
-        candidate_brand = normalize_text(str(payload.get("brand") or ""))
-        if not candidate_name or not candidate_brand:
-            continue
-        name_tokens = set(candidate_name.split())
-        overlap = len(target_tokens & name_tokens) / max(1, len(target_tokens | name_tokens))
-        exact_brand = candidate_brand == target_brand
-        if not exact_brand or overlap < 0.45:
-            continue
-        key = (candidate_brand, candidate_name, str(payload.get("size") or ""), str(payload.get("product_type") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append({
-            "observation_id": str(row.id),
-            "brand": payload.get("brand"),
-            "product_name": payload.get("product_name"),
-            "format": payload.get("product_type") or payload.get("variant_name"),
-            "size": payload.get("size"),
-            "gtin": payload.get("gtin") or payload.get("ean") or payload.get("upc"),
-            "country": payload.get("country"),
-            "source_url": payload.get("source_url") or row.source_url,
-            "match_score": round(min(0.99, 0.55 + overlap * 0.4), 2),
-        })
-    candidates.sort(key=lambda item: item["match_score"], reverse=True)
-    candidates = candidates[:8]
+    for level, rows in (("exact_product", corpus.get("exact_matches", [])),
+                        ("product_family", corpus.get("family_matches", [])),
+                        ("comparable", corpus.get("comparables", []))):
+        for row in rows:
+            candidates.append({
+                "knowledge_product_id": row.get("knowledge_product_id"),
+                "knowledge_variant_id": row.get("knowledge_variant_id"),
+                "brand": row.get("brand"), "product_name": row.get("product_name"),
+                "format": row.get("product_type"), "size": None, "gtin": row.get("gtin"),
+                "source_type": "Retail Data", "match_type": level,
+                "match_score": 1.0 if level == "exact_product" else 0.8 if level == "product_family" else 0.5,
+            })
 
     ambiguous = bool((product_is_fragrance(db, product) and not trusted_product_version(db, product)) or (candidates and (
         not identity["gtin"] or len({(c.get("format"), c.get("size")) for c in candidates}) > 1
@@ -159,5 +142,6 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
             "product_positioning", "sensory_description", "routine_time", "routine_step",
         ],
         "candidate_products": candidates,
+        "corpus_match_level": corpus.get("match_level"),
         "category": category.path if category else None,
     }

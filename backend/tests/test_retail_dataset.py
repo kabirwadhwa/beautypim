@@ -145,6 +145,8 @@ def test_retail_corpus_retrieves_comparable_products_for_enrichment(db, tmp_path
     assert len(examples) == 1
     assert examples[0]["similarity_score"] > 0
     assert examples[0]["data"]["product_name"] == "Radiance Serum"
+    assert "ingredients" not in examples[0]["data"]
+    assert "claims" not in examples[0]["data"]
     assert "supports inference, not direct claims" in examples[0]["knowledge_role"]
 
 
@@ -256,3 +258,10 @@ def test_retail_knowledge_packet_keeps_enrichment_fields_and_drops_noise():
     assert "price" not in payload
     assert "image_urls" not in payload
     assert "raw_payload_reference" not in payload
+
+    comparable = _retail_knowledge_payload({
+        "product_name": "Radiance Serum", "ingredients": ["Aqua"],
+        "claims": ["Vegan"], "shade": "Rose", "benefits": ["Radiance"],
+    }, comparable=True)
+    assert comparable["benefits"] == ["Radiance"]
+    assert not ({"ingredients", "claims", "shade"} & set(comparable))

@@ -1,6 +1,8 @@
 # Python
 backend/venv/
 backend/__pycache__/
+**/__pycache__/
+*.py[cod]
 backend/*.pyc
 backend/*.db
 backend/*.dump
@@ -14,6 +16,16 @@ frontend/.next/
 frontend/out/
 frontend/build/
 frontend/.env*.local
+frontend/tsconfig.tsbuildinfo
+
+# Local reference-corpus inputs and generated validation artifacts
+*.xlsx
+*.xls
+corpus-data/
+backend/corpus-data/
+output/
+tmp/
+test_invitation_token.txt
 
 # OS
 .DS_Store

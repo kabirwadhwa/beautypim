@@ -620,6 +620,15 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
         )
         matched["pending_crawl_conflicts"] = pending_conflicts
         matched["formulation_observation_count"] = len(formulations)
+        if filters.get("intent") in {"product_detail", "compare"} or filters.get("has_conflicts"):
+            from app.knowledge_corpus.retrieval import public_evidence_summary, retrieve_corpus_evidence
+            primary_variant = variants[0] if variants else None
+            matched["retail_corpus_evidence"] = public_evidence_summary(retrieve_corpus_evidence(
+                db, gtin=primary_variant.gtin if primary_variant else "",
+                brand=product.brand.name if product.brand else "",
+                product_name=product.product_name, category=category_path,
+                max_comparables=3,
+            ))
         if filters.get("intent") in {"product_detail", "compare"}:
             matched["source_attributes"] = {
                 str(key): value

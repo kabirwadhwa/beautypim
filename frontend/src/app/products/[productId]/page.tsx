@@ -106,6 +106,12 @@ interface ProductDetail {
     confidence: number | null;
     source: string;
   }>;
+  corpus_evidence?: {
+    match_level: 'exact_product' | 'product_family' | 'comparable' | 'unmatched';
+    exact_matches: Array<Record<string, any>>;
+    family_matches: Array<Record<string, any>>;
+    comparables: Array<Record<string, any>>;
+  };
 }
 
 interface ImprovementSummary {
@@ -783,6 +789,24 @@ export default function ProductDetailPage() {
         </div>
       </div>
 
+      {product?.corpus_evidence && product.corpus_evidence.match_level !== 'unmatched' && (
+        <div className={styles.panelCard} style={{ marginBottom: 20, borderColor: '#10b98155' }}>
+          <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
+            <BookOpen size={18} color="#34d399" /><span>Retail evidence match</span>
+          </div>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12, fontSize: 13 }}>
+            <div><span style={{ color: '#64748b' }}>Source type</span><br/><strong>Retail Data</strong></div>
+            <div><span style={{ color: '#64748b' }}>Match type</span><br/><strong>{product.corpus_evidence.match_level.replace('_', ' ')}</strong></div>
+            <div><span style={{ color: '#64748b' }}>Evidence records</span><br/><strong>{(
+              product.corpus_evidence.exact_matches.length + product.corpus_evidence.family_matches.length + product.corpus_evidence.comparables.length
+            ).toLocaleString()}</strong></div>
+          </div>
+          <p style={{ color: '#94a3b8', fontSize: 12, margin: '10px 0 0' }}>
+            Exact evidence can support product facts. Family and comparable records are restricted to safe shared or interpretive fields.
+          </p>
+        </div>
+      )}
+
       {/* Global AI Enrichment Run Metadata */}
       {product?.enrichment_metadata && (
         <details className={styles.panelCard} style={{ marginBottom: 20, background: 'linear-gradient(135deg, #131c35 0%, #0d1222 100%)', borderColor: '#3b82f633' }}>
@@ -1272,7 +1296,7 @@ export default function ProductDetailPage() {
                   <h3 style={{ fontSize: 15, marginBottom: 5 }}>2. Research official or approved pages</h3>
                   <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 10 }}>Discover product pages through the configured licensed search provider, or paste an exact URL. Search snippets are never treated as evidence: selected pages are fetched, parsed and identity-checked first.</p>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                    <input className={styles.inputField} value={approvedResearchDomains} onChange={e => setApprovedResearchDomains(e.target.value)} placeholder="Approved domains, e.g. burberry.com, sephora.fr (optional)" />
+                    <input className={styles.inputField} value={approvedResearchDomains} onChange={e => setApprovedResearchDomains(e.target.value)} placeholder="Approved domains, e.g. brand.example (optional)" />
                     <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={discoverSources} disabled={improveLoading}><Search size={15} /> Discover live sources</button>
                   </div>
                   {discoveredSources.length > 0 && (
