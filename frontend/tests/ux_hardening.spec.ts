@@ -116,8 +116,8 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     const dynamicConcernsCard = page.locator('text=Dynamic Concern Targeting');
     await expect(dynamicConcernsCard).toBeVisible();
 
-    // 10. Test formulation key ingredients provenance labels
-    const ingredientsCard = page.locator('text=Formulation Key Ingredients Provenance');
+    // 10. Test the simplified dossier's key ingredient intelligence section
+    const ingredientsCard = page.locator('text=Key Ingredient Intelligence');
     await expect(ingredientsCard).toBeVisible();
   });
 
