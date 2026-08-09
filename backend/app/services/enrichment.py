@@ -196,6 +196,32 @@ def normalize_provider_shapes(payload: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(benefit, dict) and isinstance(benefit.get("evidence"), list):
             benefit["evidence"] = "; ".join(str(x.get("supporting_text") or x) if isinstance(x, dict) else str(x)
                                               for x in benefit["evidence"])
+
+    # Fragrance values are intentionally simple strings/lists in the persisted
+    # category module, but providers sometimes wrap each child field in the
+    # evidence-aware categorical shape used by universal attributes. Unwrap
+    # that valid semantic response before Pydantic validation and retain its
+    # evidence/confidence at module level. Without this compatibility layer a
+    # useful fragrance response is rejected in full with nine type errors.
+    fragrance = payload.get("fragrance")
+    if isinstance(fragrance, dict):
+        module_evidence = _evidence_list(fragrance.get("evidence"))
+        confidences = []
+        for field in (
+            "concentration", "fragrance_family", "top_notes", "heart_notes",
+            "base_notes", "longevity", "sillage_projection", "seasonal_fit",
+            "occasion_fit",
+        ):
+            item = fragrance.get(field)
+            if not isinstance(item, dict) or "value" not in item:
+                continue
+            fragrance[field] = item.get("value")
+            module_evidence.extend(_evidence_list(item.get("evidence")))
+            if isinstance(item.get("confidence"), (int, float)):
+                confidences.append(float(item["confidence"]))
+        fragrance["evidence"] = module_evidence
+        if confidences:
+            fragrance["confidence"] = sum(confidences) / len(confidences)
     return consolidate_enrichment_payload(payload)
 
 def _is_missing_field(payload: Any, key: str) -> bool:

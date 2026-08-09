@@ -20,6 +20,36 @@ def test_provider_shape_is_normalized_to_current_contract():
     assert validated.claims[0].status == "unverified"
 
 
+def test_evidence_wrapped_fragrance_children_are_unwrapped_before_validation():
+    normalized = normalize_provider_shapes({
+        "product_type": {"value": "Eau de Toilette"},
+        "subcategory": {"value": "Fragrance"},
+        "fragrance": {
+            "concentration": {"value": "Eau de Toilette", "confidence": 0.9},
+            "fragrance_family": {
+                "value": "Woody Aromatic", "confidence": 0.8,
+                "evidence": [{"source_field": "description", "supporting_text": "mineral woody fragrance"}],
+            },
+            "top_notes": {"value": ["Lavender"], "confidence": 0.75},
+            "heart_notes": {"value": ["Geranium", "Clary Sage"], "confidence": 0.75},
+            "base_notes": {"value": ["Incense", "Ambergris", "Woods"], "confidence": 0.75},
+            "longevity": {"value": "Up to 12 hours", "confidence": 0.8},
+            "sillage_projection": {"value": "Moderate", "confidence": 0.6},
+            "seasonal_fit": {"value": ["Spring", "Summer"], "confidence": 0.65},
+            "occasion_fit": {"value": ["Everyday", "Office"], "confidence": 0.65},
+        },
+    })
+    prepared = prepare_provider_payload(
+        normalized, "Y Eau de Toilette", "YSL", "A mineral woody fragrance.", ""
+    )
+    validated = BeautyProductEnrichmentSchema.model_validate(prepared)
+    assert validated.fragrance.concentration == "Eau de Toilette"
+    assert validated.fragrance.fragrance_family == "Woody Aromatic"
+    assert validated.fragrance.heart_notes == ["Geranium", "Clary Sage"]
+    assert validated.fragrance.base_notes == ["Incense", "Ambergris", "Woods"]
+    assert validated.fragrance.evidence[0].supporting_text == "mineral woody fragrance"
+
+
 def test_fallback_has_exact_three_commercial_profiles_and_no_legacy_fields():
     fallback = generate_deterministic_fallback(
         "Hydrating Moisturizer", "Example", "A lightweight vegan face cream for dry skin.", "Aqua, Glycerin"
