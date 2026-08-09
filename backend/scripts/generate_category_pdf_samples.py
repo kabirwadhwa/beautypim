@@ -1,7 +1,7 @@
 """Generate deterministic visual-QA dossiers for all supported category modules."""
 from pathlib import Path
 
-from app.services.product_pdf import build_product_pdf
+from app.services.product_pdf import _current_fields, _select_density, build_product_pdf
 
 OUT = Path(__file__).resolve().parents[2] / "output" / "pdf"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -26,8 +26,15 @@ profiles = {"value": [
 
 samples = {
     "fragrance": {
-        **base, "product_name": "Y Eau de Toilette", "product_category": "Perfume",
-        "field_values": [field("product_type", "Eau de Toilette"), field("target_audience", profiles),
+        **base, "brand_name": "YSL", "product_name": "Y", "product_category": "Perfume",
+        "market_observations": [{"source_name": "Ulta", "rating": 4.8, "review_count": 2924,
+                                 "review_summary": {"summary": "Praised for its versatile fresh woody profile."}}],
+        "formulations": [{"raw_inci_text": "Alcohol, Parfum (Fragrance), Aqua (Water), Limonene, Linalool, Coumarin, Citral, Geraniol."}],
+        "field_values": [field("product_type", "Eau de Toilette"), field("target_audience", {"value": [
+            "Professionals seeking a versatile fresh woody fragrance for regular daytime wear.",
+            "Fragrance buyers who prefer aromatic freshness balanced by a structured woody dry-down.",
+            "Consumers wanting a polished signature scent that transitions from office to evening occasions.",
+        ]}),
             field("product_positioning", "A versatile fresh woody signature scent for office-to-evening wear."),
             field("benefits", [{"statement": "Balances aromatic freshness with a structured woody dry-down."}]),
             field("directions", {"text": "Spray onto pulse points such as the wrists and neck. Reapply as desired."}),
@@ -63,4 +70,5 @@ samples = {
 for category, payload in samples.items():
     path = OUT / f"beautypim-{category}-sample.pdf"
     path.write_bytes(build_product_pdf(payload))
-    print(path)
+    density = _select_density(payload, _current_fields(payload)).name
+    print(f"{path} [{density} density]")
