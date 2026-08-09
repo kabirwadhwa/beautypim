@@ -75,6 +75,38 @@ def _items(value: Any) -> list[str]:
     return [text for text in (_clean(item) for item in source) if text]
 
 
+def _review_lines(data: dict[str, Any]) -> list[str]:
+    """Return compact, sourced market-review copy for every PDF layout."""
+    observations = data.get("market_observations") or []
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        rating = observation.get("rating")
+        count = observation.get("review_count")
+        summary = observation.get("review_summary")
+        if rating in (None, "") and count in (None, "") and summary in (None, "", {}, []):
+            continue
+        lines: list[str] = []
+        headline = []
+        if rating not in (None, ""):
+            headline.append(f"Rating: {_clean(rating)}/5")
+        if count not in (None, ""):
+            headline.append(f"{_clean(count)} reviews")
+        if headline:
+            lines.append(" · ".join(headline))
+        if isinstance(summary, dict):
+            summary = (summary.get("summary") or summary.get("text") or summary.get("review_summary")
+                       or summary.get("highlights") or summary.get("sentiment"))
+        summary_text = _clean(summary)
+        if summary_text:
+            lines.append(summary_text)
+        source = _clean(observation.get("source_name") or observation.get("source_domain"))
+        if source:
+            lines.append(f"Observed from {source}")
+        return lines
+    return []
+
+
 def _style(name: str, size: float, *, bold: bool = False, color=INK,
            leading: float | None = None, align: int = 0) -> ParagraphStyle:
     return ParagraphStyle(
@@ -211,6 +243,7 @@ def _build_fragrance_pdf(data: dict[str, Any], current: dict[str, Any]) -> bytes
     claims = [str(item.get("name")) for item in (field("claims") or []) if isinstance(item, dict)
               and item.get("status") in {"verified", "source_supported"}
               and str(item.get("value", "")).lower() not in {"no", "false"}]
+    review_lines = _review_lines(data)
 
     buffer = BytesIO(); pdf = canvas.Canvas(buffer, pagesize=A4, pageCompression=1)
     pdf.setTitle(f"{name} - Fragrance Dossier"); pdf.setAuthor("Beauty PIM")
@@ -274,8 +307,10 @@ def _build_fragrance_pdf(data: dict[str, Any], current: dict[str, Any]) -> bytes
     aud_w = width*.62; right_w = width-aud_w-gap
     _box(pdf, margin, y, aud_w, 47*mm, "Three Consumer Profiles")
     _draw(pdf, _bullets(audience or ["Audience profiles require stronger product evidence."], aud_w, limit=3), margin, y, aud_w, 42.3*mm)
-    _box(pdf, margin+aud_w+gap, y, right_w, 47*mm, "Supported Claims")
-    _draw(pdf, _bullets(claims or ["No meaningful source-supported claims recorded."], right_w, limit=4), margin+aud_w+gap, y, right_w, 42.3*mm)
+    _box(pdf, margin+aud_w+gap, y, right_w, 47*mm, "Ratings, Reviews & Claims")
+    review_and_claims = review_lines[:3] + (["Claims: " + "; ".join(claims[:2])] if claims else [])
+    _draw(pdf, _bullets(review_and_claims or ["No rating, review or supported claim evidence recorded."], right_w, limit=4),
+          margin+aud_w+gap, y, right_w, 42.3*mm)
 
     bottom_h = 18*mm if not inci else max(20*mm, y-gap-10*mm)
     bottom_y = y-gap-bottom_h if not inci else 10*mm
@@ -301,6 +336,7 @@ def _build_compact_category_pdf(data: dict[str, Any], current: dict[str, Any], m
     audience = _items(audience_value.get("value") if isinstance(audience_value, dict) else audience_value)[:3]
     claims = [str(item.get("name")) for item in (field("claims") or []) if isinstance(item, dict)
               and item.get("status") in {"verified", "source_supported"} and str(item.get("value", "")).lower() not in {"no", "false"}]
+    review_lines = _review_lines(data)
     inci = _clean(((data.get("formulations") or [{}])[0]).get("raw_inci_text"))
     if module_name == "haircare":
         profile = [
@@ -343,7 +379,8 @@ def _build_compact_category_pdf(data: dict[str, Any], current: dict[str, Any], m
     _box(pdf,margin,y,half,39*mm,"How to Use"); _draw(pdf,_p(field("directions"),fallback="Directions not established."),margin,y,half,34.3*mm,pad=3*mm)
     _box(pdf,margin+half+gap,y,half,39*mm,"Three Consumer Profiles"); _draw(pdf,_bullets(audience or ["Audience profiles require stronger evidence."],half,limit=3),margin+half+gap,y,half,34.3*mm)
     y-=gap+34*mm
-    _box(pdf,margin,y,width,34*mm,"Supported Claims"); _draw(pdf,_bullets(claims or ["No meaningful source-supported claims recorded."],width,limit=4),margin,y,width,29.3*mm)
+    _box(pdf,margin,y,half,34*mm,"Supported Claims"); _draw(pdf,_bullets(claims or ["No meaningful source-supported claims recorded."],half,limit=4),margin,y,half,29.3*mm)
+    _box(pdf,margin+half+gap,y,half,34*mm,"Ratings & Reviews"); _draw(pdf,_bullets(review_lines or ["No rating or review evidence recorded."],half,limit=4),margin+half+gap,y,half,29.3*mm)
     bottom_h=22*mm if not inci else max(30*mm,y-gap-10*mm)
     bottom_y=y-gap-bottom_h if not inci else 10*mm
     _box(pdf,margin,bottom_y,width,bottom_h,"Ingredients (INCI)",dark_header=False)
@@ -687,9 +724,12 @@ def build_product_pdf(product: Any) -> bytes:
                                     ("BACKGROUND", (0, 4), (-1, 4), PALE), ("BACKGROUND", (0, 6), (-1, 6), PALE)]))
     _draw(pdf, identifier, bx[3], bottom_y, widths[3], identifier_h - 4.7 * mm, pad=0)
 
-    _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Verified Claims", dark_header=False)
+    _box(pdf, bx[4], bottom_y, widths[4], bottom_h, "Ratings, Reviews & Claims", dark_header=False)
     verified_claims = [item for item in claims if isinstance(item, dict) and item.get("status") in {"verified", "source_supported"}]
-    _draw(pdf, _p("; ".join(str(item.get("name")) for item in verified_claims) or "No verified claims recorded", "micro"),
+    review_copy = _review_lines(data)
+    if verified_claims:
+        review_copy.append("Claims: " + "; ".join(str(item.get("name")) for item in verified_claims[:3]))
+    _draw(pdf, _bullets(review_copy or ["No rating, review or verified claim evidence recorded."], widths[4], limit=5),
           bx[4], bottom_y, widths[4], bottom_h - 4.7 * mm, pad=1.3 * mm)
 
     pdf.setFillColor(MUTED)
