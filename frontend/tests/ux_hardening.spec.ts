@@ -60,7 +60,7 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await expect(page.getByRole('heading', { name: '2. Research official or approved pages', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '3. Re-enrich with control', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh selected fields', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Run improvement', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Research & improve', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Close improve product', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Improve Product', exact: true })).not.toBeVisible();
 
@@ -116,8 +116,8 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     const dynamicConcernsCard = page.locator('text=Dynamic Concern Targeting');
     await expect(dynamicConcernsCard).toBeVisible();
 
-    // 10. Test formulation key ingredients provenance labels
-    const ingredientsCard = page.locator('text=Formulation Key Ingredients Provenance');
+    // 10. Test the simplified dossier's key ingredient intelligence section
+    const ingredientsCard = page.locator('text=Key Ingredient Intelligence');
     await expect(ingredientsCard).toBeVisible();
   });
 

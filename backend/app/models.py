@@ -595,3 +595,198 @@ class CrawlConflict(Base):
         CheckConstraint(status.in_(["pending", "accepted", "rejected"]), name="check_crawl_conflict_status"),
         Index("uq_pending_crawl_conflict", "scraped_product_id", "field_name", unique=True),
     )
+
+
+# Internal evidence corpus.  These rows are deliberately independent from
+# CanonicalProduct/ProductVariant: reference data must never appear in the
+# customer's operational Product Grid merely because it was imported.
+class KnowledgeCorpusImportJob(Base):
+    __tablename__ = "knowledge_corpus_import_jobs"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    dataset_key = Column(String(100), nullable=False, index=True)
+    source_name = Column(String(255), nullable=False)
+    filename = Column(String(500), nullable=False)
+    file_hash = Column(String(64), nullable=False, index=True)
+    adapter_name = Column(String(100), nullable=False)
+    adapter_version = Column(String(50), nullable=False)
+    status = Column(String(50), nullable=False, default="queued", index=True)
+    total_rows = Column(Integer, nullable=False, default=0)
+    processed_rows = Column(Integer, nullable=False, default=0)
+    imported_rows = Column(Integer, nullable=False, default=0)
+    skipped_rows = Column(Integer, nullable=False, default=0)
+    duplicate_rows = Column(Integer, nullable=False, default=0)
+    failed_rows = Column(Integer, nullable=False, default=0)
+    products_created = Column(Integer, nullable=False, default=0)
+    variants_created = Column(Integer, nullable=False, default=0)
+    observations_created = Column(Integer, nullable=False, default=0)
+    formulations_created = Column(Integer, nullable=False, default=0)
+    market_observations_created = Column(Integer, nullable=False, default=0)
+    conflicts_detected = Column(Integer, nullable=False, default=0)
+    metrics = Column(PortableJSON(), nullable=True)
+    error_summary = Column(Text, nullable=True)
+    requested_by_id = Column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
+    __table_args__ = (
+        CheckConstraint(status.in_([
+            "queued", "processing", "partially_completed", "completed", "failed", "cancelled"
+        ]), name="check_knowledge_import_status"),
+        Index("uq_knowledge_import_file_adapter", "dataset_key", "file_hash", "adapter_version", unique=True),
+    )
+
+
+class KnowledgeProduct(Base):
+    __tablename__ = "knowledge_products"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    brand_name = Column(String(255), nullable=False)
+    normalized_brand = Column(String(255), nullable=False, index=True)
+    product_name = Column(String(500), nullable=False)
+    normalized_name = Column(String(500), nullable=False, index=True)
+    category = Column(String(255), nullable=True, index=True)
+    subcategory = Column(String(255), nullable=True, index=True)
+    product_type = Column(String(255), nullable=True, index=True)
+    application_area = Column(String(255), nullable=True)
+    identity_key = Column(String(64), nullable=False, unique=True, index=True)
+    searchable_text = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_knowledge_product_brand_name", "normalized_brand", "normalized_name"),
+        Index("idx_knowledge_product_classification", "category", "product_type"),
+    )
+
+
+class KnowledgeVariant(Base):
+    __tablename__ = "knowledge_variants"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    knowledge_product_id = Column(GUID, ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    normalized_gtin = Column(String(50), nullable=True, index=True)
+    source_product_name = Column(String(500), nullable=True)
+    normalized_product_name = Column(String(500), nullable=True, index=True)
+    variant_name = Column(String(500), nullable=True)
+    normalized_variant = Column(String(500), nullable=True, index=True)
+    size_value = Column(String(100), nullable=True)
+    size_unit = Column(String(30), nullable=True)
+    shade = Column(String(255), nullable=True)
+    colour = Column(String(255), nullable=True)
+    undertone = Column(String(255), nullable=True)
+    identity_key = Column(String(64), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_knowledge_variant_product_gtin", "knowledge_product_id", "normalized_gtin"),
+        Index("idx_knowledge_variant_product_name", "knowledge_product_id", "normalized_product_name"),
+        Index("idx_knowledge_variant_attributes", "knowledge_product_id", "normalized_variant", "size_value", "shade"),
+    )
+
+
+class KnowledgeSourceObservation(Base):
+    __tablename__ = "knowledge_source_observations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    import_job_id = Column(GUID, ForeignKey("knowledge_corpus_import_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_product_id = Column(GUID, ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_variant_id = Column(GUID, ForeignKey("knowledge_variants.id", ondelete="SET NULL"), nullable=True, index=True)
+    dataset_key = Column(String(100), nullable=False, index=True)
+    source_sheet = Column(String(255), nullable=False)
+    source_row_number = Column(Integer, nullable=False)
+    source_record_id = Column(String(255), nullable=True, index=True)
+    source_parent_id = Column(String(255), nullable=True, index=True)
+    source_retailer = Column(String(255), nullable=True)
+    source_url = Column(Text, nullable=True)
+    locale = Column(String(20), nullable=True)
+    market = Column(String(50), nullable=True)
+    raw_payload = Column(PortableJSON(), nullable=False)
+    normalized_payload = Column(PortableJSON(), nullable=False)
+    source_hash = Column(String(64), nullable=False, index=True)
+    evidence_level = Column(String(30), nullable=False, default="exact_product")
+    observed_at = Column(DateTime(timezone=True), nullable=True)
+    observation_date_type = Column(String(40), nullable=False, default="dataset_imported_at")
+    imported_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(evidence_level.in_(["exact_product", "product_family", "variant"]), name="check_knowledge_observation_level"),
+        Index("uq_knowledge_source_row", "import_job_id", "source_sheet", "source_row_number", unique=True),
+        Index("idx_knowledge_source_identity", "dataset_key", "source_record_id", "source_parent_id"),
+    )
+
+
+class KnowledgeFieldObservation(Base):
+    __tablename__ = "knowledge_field_observations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    source_observation_id = Column(GUID, ForeignKey("knowledge_source_observations.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_product_id = Column(GUID, ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_variant_id = Column(GUID, ForeignKey("knowledge_variants.id", ondelete="CASCADE"), nullable=True, index=True)
+    field_name = Column(String(100), nullable=False, index=True)
+    raw_value = Column(PortableJSON(), nullable=True)
+    normalized_value = Column(PortableJSON(), nullable=True)
+    evidence_scope = Column(String(30), nullable=False)
+    confidence = Column(Numeric(5, 4), nullable=True)
+    observed_at = Column(DateTime(timezone=True), nullable=True)
+    imported_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(evidence_scope.in_(["exact_product", "family", "variant"]), name="check_knowledge_field_scope"),
+        Index("idx_knowledge_field_product_name", "knowledge_product_id", "field_name"),
+        Index("idx_knowledge_field_variant_name", "knowledge_variant_id", "field_name"),
+    )
+
+
+class KnowledgeFormulation(Base):
+    __tablename__ = "knowledge_formulations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    source_observation_id = Column(GUID, ForeignKey("knowledge_source_observations.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_product_id = Column(GUID, ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_variant_id = Column(GUID, ForeignKey("knowledge_variants.id", ondelete="CASCADE"), nullable=True, index=True)
+    raw_inci_text = Column(Text, nullable=False)
+    normalized_ingredients = Column(PortableJSON(), nullable=False)
+    formulation_hash = Column(String(64), nullable=False, index=True)
+    language = Column(String(20), nullable=True)
+    market = Column(String(50), nullable=True)
+    observed_at = Column(DateTime(timezone=True), nullable=True)
+    imported_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("uq_knowledge_formulation_observation_hash", "source_observation_id", "formulation_hash", unique=True),
+    )
+
+
+class KnowledgeMarketObservation(Base):
+    __tablename__ = "knowledge_market_observations"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    source_observation_id = Column(GUID, ForeignKey("knowledge_source_observations.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_variant_id = Column(GUID, ForeignKey("knowledge_variants.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_retailer = Column(String(255), nullable=True)
+    market = Column(String(50), nullable=True)
+    currency = Column(String(10), nullable=True)
+    price = Column(Numeric(12, 4), nullable=True)
+    original_price = Column(Numeric(12, 4), nullable=True)
+    availability = Column(String(100), nullable=True)
+    image_url = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
+    observed_at = Column(DateTime(timezone=True), nullable=True)
+    observation_date_type = Column(String(40), nullable=False, default="dataset_imported_at")
+    imported_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class KnowledgeConflict(Base):
+    __tablename__ = "knowledge_conflicts"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    knowledge_product_id = Column(GUID, ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_variant_id = Column(GUID, ForeignKey("knowledge_variants.id", ondelete="CASCADE"), nullable=True, index=True)
+    field_name = Column(String(100), nullable=False, index=True)
+    conflict_type = Column(String(50), nullable=False)
+    values = Column(PortableJSON(), nullable=False)
+    source_observation_ids = Column(PortableJSON(), nullable=False)
+    status = Column(String(30), nullable=False, default="open", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(status.in_(["open", "accepted", "dismissed"]), name="check_knowledge_conflict_status"),
+        Index("idx_knowledge_conflict_target", "knowledge_product_id", "knowledge_variant_id", "field_name", "status"),
+    )

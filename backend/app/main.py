@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db, engine, Base
-from app.routes import auth, feeds, products, exports, admin_users, taxonomies, catalog_assistant, crawls
+from app.routes import auth, feeds, products, exports, admin_users, taxonomies, catalog_assistant, crawls, knowledge_corpus
 from app.worker import recover_unfinished_jobs
 
 # Structured logging configuration
@@ -72,7 +72,11 @@ def run_migrations():
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations completed successfully.")
     except Exception as e:
-        logger.error(f"Failed to run database migrations: {e}")
+        logger.exception(f"Failed to run database migrations: {e}")
+        # A process with a partially migrated schema must never become healthy.
+        # Railway will retain the prior healthy deployment instead of allowing
+        # Base.metadata.create_all() to mask a failed migration.
+        raise
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -113,6 +117,7 @@ app.include_router(exports.router, prefix=settings.API_V1_STR)
 app.include_router(taxonomies.router, prefix=settings.API_V1_STR)
 app.include_router(catalog_assistant.router, prefix=settings.API_V1_STR)
 app.include_router(crawls.router, prefix=settings.API_V1_STR)
+app.include_router(knowledge_corpus.router, prefix=settings.API_V1_STR)
 
 @app.get("/health", tags=["System Controls"])
 def health_check():

@@ -20,6 +20,7 @@ from app.models import (
     ScrapedProductObservation,
 )
 from app.services.deduplication import normalize_text
+from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
 
 
 MAX_OBSERVATIONS = 3
@@ -183,13 +184,16 @@ def _trim(value: Any) -> Any:
     return value
 
 
-def _retail_knowledge_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _retail_knowledge_payload(payload: dict[str, Any], *, comparable: bool = False) -> dict[str, Any]:
     """Project a retail observation into a compact enrichment knowledge packet."""
     selected = {
         field: payload[field]
         for field in RETAIL_KNOWLEDGE_FIELDS
         if payload.get(field) not in (None, "", [], {})
     }
+    if comparable:
+        for field in ("brand", "variant_name", "size", "unit", "shade", "ingredient_text_raw", "ingredients", "claims"):
+            selected.pop(field, None)
     # INCI and descriptions are useful but can dominate the model context.
     for field, limit in (("description", 1_200), ("ingredient_text_raw", 1_500)):
         value = selected.get(field)
@@ -283,27 +287,26 @@ def build_catalogue_knowledge_context(
         or str(current_field_map.get("product_type") or "")
     )
 
-    retail_rows = (
+    # Legacy 4k corpus compatibility. Keep the candidate pool bounded while the
+    # dedicated indexed corpus below becomes the primary retrieval layer.
+    legacy_query = (
         db.query(ScrapedProductObservation)
         .filter(ScrapedProductObservation.source_domain == "retail-data.invalid")
         .order_by(ScrapedProductObservation.scraped_at.desc())
-        .all()
     )
     normalized_name = normalize_text(product_name)
     normalized_brand = normalize_text(brand)
     normalized_gtin = "".join(character for character in str(gtin or "") if character.isdigit())
     exact_retail = []
     comparable_retail = []
+    # PostgreSQL JSON indexes are not assumed for legacy rows, so this bounded
+    # fallback cannot grow into an unbounded in-memory scan.
+    retail_rows = legacy_query.limit(500).all()
     for row in retail_rows:
         payload = row.normalized_payload or {}
         row_gtin = "".join(character for character in str(payload.get("gtin") or payload.get("ean") or payload.get("upc") or "") if character.isdigit())
         same_gtin = bool(normalized_gtin and row_gtin == normalized_gtin)
-        same_identity = bool(
-            normalized_name and normalized_brand
-            and normalize_text(str(payload.get("product_name") or "")) == normalized_name
-            and normalize_text(str(payload.get("brand") or "")) == normalized_brand
-        )
-        if same_gtin or same_identity:
+        if same_gtin:
             exact_retail.append(row)
             continue
         similarity, reasons = _retail_similarity(
@@ -335,7 +338,12 @@ def build_catalogue_knowledge_context(
             break
     comparable_retail = deduplicated_retail
 
-    if not observations and not field_values and not formulations and not exact_retail and not comparable_retail:
+    corpus = retrieve_corpus_evidence(
+        db, gtin=gtin, brand=brand, product_name=product_name,
+        category=retrieval_category,
+    )
+
+    if not observations and not field_values and not formulations and not exact_retail and not comparable_retail and corpus.get("match_level") == "unmatched":
         return {}
 
     return {
@@ -346,6 +354,16 @@ def build_catalogue_knowledge_context(
             "Never present a comparable product's ingredients, claims, certifications, "
             "price or compliance status as a verified fact about the target product."
         ),
+        "internal_corpus": {
+            "policy": (
+                "Exact-product corpus evidence may directly support the target field. Family evidence may only support "
+                "family-safe fields. Comparable examples may inform taxonomy and commercial language only; never copy "
+                "ingredients, claims, identifiers, prices, availability, testing, free-from or regulatory facts. "
+                "A match_level of conflict is not direct evidence: preserve the alternatives and do not select one "
+                "without corroboration or human review."
+            ),
+            **corpus,
+        },
         "observations": [
             {
                 "source_name": item.source_name,
@@ -359,7 +377,7 @@ def build_catalogue_knowledge_context(
         ],
         "retail_reference_matches": [
             {
-                "match_basis": "exact barcode or exact normalized brand and product name",
+                "match_basis": "exact barcode",
                 "source_name": "Retail Data",
                 "source_url": item.source_url,
                 "observed_at": item.scraped_at.isoformat() if item.scraped_at else None,
@@ -372,7 +390,7 @@ def build_catalogue_knowledge_context(
                 "knowledge_role": "Comparable industry example; supports inference, not direct claims.",
                 "similarity_score": score,
                 "similarity_basis": reasons,
-                "data": _retail_knowledge_payload(item.normalized_payload or {}),
+                "data": _retail_knowledge_payload(item.normalized_payload or {}, comparable=True),
             }
             for score, reasons, item in comparable_retail
         ],

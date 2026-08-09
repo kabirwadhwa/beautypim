@@ -426,6 +426,7 @@ class ProductDetailOut(ProductOut):
     key_ingredients: list[KeyIngredientOut] = Field(default_factory=list)
     dynamic_concerns: list[DynamicConcernOut] = Field(default_factory=list)
     market_observations: list[MarketObservationOut] = Field(default_factory=list)
+    corpus_evidence: Optional[dict] = None
     improvement_result: Optional[dict] = None
 
     class Config:

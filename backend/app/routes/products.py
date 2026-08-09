@@ -549,7 +549,23 @@ def improve_product(
         # enrichment model consume exact-source observations. Search/crawl
         # failures remain non-fatal so imported data can still be improved.
         research_summary = None
-        if settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY:
+        from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
+        variant = db.query(ProductVariant).filter(
+            ProductVariant.canonical_product_id == product.id,
+            ProductVariant.is_deleted == False,
+        ).order_by(ProductVariant.created_at.asc()).first()
+        category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
+        corpus_result = retrieve_corpus_evidence(
+            db, gtin=variant.gtin if variant else "", brand=product.brand.name if product.brand else "",
+            product_name=product.product_name, category=category.path if category else "",
+        )
+        requested = set(request.fields or []) if request.mode == "selected" else None
+        if evidence_is_sufficient(corpus_result, requested):
+            research_summary = {
+                "web_search_skipped": True, "reason": "Exact internal retail evidence already covers the requested product fields.",
+                "corpus_match_level": corpus_result.get("match_level"), "sources_ingested": 0, "errors": [],
+            }
+        elif settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY:
             try:
                 research_summary = _automatic_product_research(db, product, current_user)
             except Exception as research_exc:
@@ -1012,6 +1028,12 @@ def get_product_detail(
                         break
             source_image_url = normalize_public_image_url(candidate)
 
+    from app.knowledge_corpus.retrieval import public_evidence_summary, retrieve_corpus_evidence
+    corpus_evidence = public_evidence_summary(retrieve_corpus_evidence(
+        db, gtin=variants[0].gtin if variants else "", brand=brand_name or "",
+        product_name=prod.product_name, category=category_path or "", max_comparables=3,
+    ))
+
     return ProductDetailOut(
         id=prod.id,
         internal_code=product_internal_code(prod.id),
@@ -1045,6 +1067,7 @@ def get_product_detail(
         key_ingredients=key_ingredients_out,
         dynamic_concerns=concerns_out,
         market_observations=market_observations,
+        corpus_evidence=corpus_evidence,
     )
 
 @router.put("/{product_id}/image", response_model=ProductDetailOut)

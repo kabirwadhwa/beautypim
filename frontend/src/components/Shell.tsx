@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { 
   LayoutDashboard, FileInput, TableProperties, Download, 
-  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle, Globe2
+  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle, Globe2, Database
 } from 'lucide-react';
 import styles from '../app/page.module.css';
 import { API_URL } from '../config';
@@ -79,6 +79,7 @@ export default function Shell({ children }: ShellProps) {
   }
 
   if (role === 'admin') {
+    navItems.push({ name: 'Knowledge Corpus', path: '/knowledge-corpus', icon: Database });
     navItems.push({ name: 'Team & Access', path: '/settings/team', icon: Users });
   }
 
