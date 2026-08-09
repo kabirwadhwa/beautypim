@@ -142,6 +142,7 @@ def test_fragrance_pdf_prioritizes_pyramid_and_compacts_missing_inci():
                 "longevity": "Moderate", "sillage_projection": "Moderate", "seasonal_fit": ["Spring"], "occasion_fit": ["Office"]}, "is_current": True},
             {"field_name": "target_audience", "value": {"value": ["Need-led profile", "Taste-led profile", "Occasion-led profile"]}, "is_current": True},
             {"field_name": "directions", "value": {"text": "Spray onto pulse points."}, "is_current": True},
+            {"field_name": "sensory_description", "value": "Oil format", "is_current": True},
             {"field_name": "claims", "value": [{"name": "Fresh and clean fragrance", "status": "unverified"}], "is_current": True},
         ],
     })
@@ -153,6 +154,7 @@ def test_fragrance_pdf_prioritizes_pyramid_and_compacts_missing_inci():
     assert "Ingredient list not available from current evidence" in text
     assert "Morning:" not in text and "Evening:" not in text
     assert "Fresh and clean fragrance" not in text
+    assert "Oil format" not in text
     assert "RATINGS, REVIEWS & CLAIMS" in text
     assert "4.6/5" in text and "218 reviews" in text
     assert "versatile fresh woody profile" in text
