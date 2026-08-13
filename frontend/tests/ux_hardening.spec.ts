@@ -120,9 +120,9 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     // field remains present even when no legacy dynamic-concern cards apply.
     await expect(page.getByText('targeted concerns', { exact: true })).toBeVisible();
 
-    // 10. Test the simplified dossier's key ingredient intelligence section
-    const ingredientsCard = page.locator('text=Key Ingredient Intelligence');
-    await expect(ingredientsCard).toBeVisible();
+    // 10. The exact raw INCI remains visible even when no normalized key
+    // ingredients can be established safely from the available evidence.
+    await expect(page.getByText('Raw Ingredients Ingredients List', { exact: true })).toBeVisible();
   });
 
 });
