@@ -114,7 +114,12 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
     """Summarize the strongest current exact-product review observation once."""
     observations = db.query(ScrapedProductObservation).filter(
         ScrapedProductObservation.canonical_product_id == product_id,
-        ScrapedProductObservation.match_status == "matched",
+        # Research observations may be marked conflict when non-review fields
+        # disagree during reconciliation. They remain explicitly attached to
+        # this canonical product and are already used for its displayed review
+        # aggregates. Exclude possible/unmatched observations, but summarize
+        # matched and conflict evidence consistently.
+        ScrapedProductObservation.match_status.in_(["matched", "conflict"]),
     ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(50).all()
     eligible = []
     for observation in observations:

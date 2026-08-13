@@ -31,7 +31,7 @@ def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch)
         id=uuid.uuid4(), crawl_job_id=crawl.id, raw_page_id=page.id,
         canonical_product_id=product.id, source_name="Retail Data", source_domain="shop.example",
         source_url=url.url, canonical_url=url.url, identity_hash=uuid.uuid4().hex,
-        structured_hash=uuid.uuid4().hex, match_status="matched", adapter_name="test",
+        structured_hash=uuid.uuid4().hex, match_status="conflict", adapter_name="test",
         adapter_version="1", parser_version="1",
         normalized_payload={"rating": 4.7, "review_count": 128, "review_summary": {
             "average_rating": 4.7, "review_count": 128, "review_sample_count": 24,
