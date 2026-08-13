@@ -121,7 +121,16 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
         payload = observation.normalized_payload or {}
         summary = payload.get("review_summary") or {}
         if not isinstance(summary, dict):
-            continue
+            summary = {}
+        # Some public product pages expose only aggregateRating at the product
+        # level. Treat those exact-product rating/count values as valid review
+        # evidence even when an adapter did not duplicate them into the nested
+        # review_summary payload.
+        summary = {
+            **summary,
+            "average_rating": summary.get("average_rating", payload.get("rating")),
+            "review_count": summary.get("review_count", payload.get("review_count")),
+        }
         if not any(summary.get(key) not in (None, "", [], {}) for key in (
             "average_rating", "review_count", "review_sample_count",
             "frequently_praised_topics", "frequent_complaint_topics",
