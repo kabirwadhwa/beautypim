@@ -690,6 +690,30 @@ export default function ProductDetailPage() {
     observed_at: observation.observed_at,
   }));
   const marketObservations = persistedObservations.length ? persistedObservations : researchResults;
+  const reviewObservation = [...marketObservations]
+    .filter(result => {
+      const summary = result.data?.review_summary;
+      return result.data?.rating != null || result.data?.review_count != null ||
+        (summary && typeof summary === 'object' && Object.keys(summary).length > 0);
+    })
+    .sort((left, right) => {
+      const score = (result: any) => {
+        const summary = result.data?.review_summary || {};
+        const hasSummary = Array.isArray(summary.ai_summary_lines) && summary.ai_summary_lines.length > 0
+          || Boolean(summary.ai_summary_text || summary.summary);
+        const sampleCount = Number(summary.review_sample_count || 0);
+        const reviewCount = Number(result.data?.review_count ?? summary.review_count ?? 0);
+        return (hasSummary ? 1_000_000_000 : 0) + sampleCount * 1_000_000 + reviewCount;
+      };
+      return score(right) - score(left);
+    })[0];
+  const reviewSummary = reviewObservation?.data?.review_summary || {};
+  const reviewRating = reviewObservation?.data?.rating ?? reviewSummary.average_rating;
+  const reviewCount = reviewObservation?.data?.review_count ?? reviewSummary.review_count;
+  const reviewSummaryLines = Array.isArray(reviewSummary.ai_summary_lines)
+    ? reviewSummary.ai_summary_lines.filter((line: any) => String(line || '').trim()).slice(0, 5)
+    : String(reviewSummary.ai_summary_text || reviewSummary.summary || '')
+      .split(/\n+/).map((line: string) => line.trim()).filter(Boolean).slice(0, 5);
 
   return (
     <Shell>
@@ -945,61 +969,37 @@ export default function ProductDetailPage() {
       <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
           <Star size={18} color="#fbbf24" />
-          <span>Market Observations</span>
+          <span>Customer Reviews</span>
         </div>
-        {marketObservations.length ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginTop: 12 }}>
-            {marketObservations.map(result => {
-              const summary = result.data?.review_summary || {};
-              const rating = result.data?.rating ?? summary.average_rating;
-              const count = result.data?.review_count ?? summary.review_count;
-              const praised = summary.frequently_praised_topics || [];
-              const complaints = summary.frequent_complaint_topics || [];
-              const sampleCount = summary.review_sample_count;
-              const summaryLines = Array.isArray(summary.ai_summary_lines)
-                ? summary.ai_summary_lines.filter((line: any) => String(line || '').trim()).slice(0, 5)
-                : String(summary.ai_summary_text || summary.summary || '').split(/\n+/).filter(Boolean).slice(0, 5);
-              const price = result.data?.promotional_price ?? result.data?.price;
-              return (
-                <div key={result.id} style={{ padding: 14, borderRadius: 8, border: '1px solid #334155', background: '#10192c' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-                    <div style={{ color: '#f8fafc', fontSize: 20, fontWeight: 800 }}>
-                      {rating != null ? `${Number(rating).toFixed(1)} / 5` : 'Rating unavailable'}
-                    </div>
-                    <div style={{ color: '#94a3b8', fontSize: 12 }}>{count != null ? `${Number(count).toLocaleString()} reviews` : 'Count unavailable'}</div>
+        {reviewObservation ? (
+          <div style={{ marginTop: 14, padding: 18, borderRadius: 10, border: '1px solid #334155', background: '#10192c' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px 16px' }}>
+              <div style={{ color: '#f8fafc', fontSize: 28, fontWeight: 800 }}>
+                {reviewRating != null ? `${Number(reviewRating).toFixed(1)} / 5` : 'Rating unavailable'}
+              </div>
+              {reviewCount != null && (
+                <div style={{ color: '#94a3b8', fontSize: 14 }}>{Number(reviewCount).toLocaleString()} customer reviews</div>
+              )}
+            </div>
+            <div style={{ color: '#c4b5fd', fontSize: 14, fontWeight: 750, marginTop: 16, marginBottom: 9 }}>AI Review Summary</div>
+            {reviewSummaryLines.length > 0 ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {reviewSummaryLines.map((line: string, index: number) => (
+                  <div key={`${index}-${line}`} style={{ display: 'flex', gap: 9, color: '#e2e8f0', fontSize: 14, lineHeight: 1.5 }}>
+                    <span style={{ color: '#818cf8', fontWeight: 800 }}>•</span>
+                    <span>{line}</span>
                   </div>
-                  {(price != null || result.data?.availability) && <div style={{ color: '#e2e8f0', fontSize: 12, marginTop: 7 }}>
-                    {price != null ? `${result.data?.currency || ''} ${Number(price).toFixed(2)}`.trim() : ''}
-                    {price != null && result.data?.availability ? ' · ' : ''}{result.data?.availability || ''}
-                  </div>}
-                  <a href={result.source_url} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', gap: 5, alignItems: 'center', color: '#93c5fd', fontSize: 12, marginTop: 7 }}>
-                    {result.source_domain} <ExternalLink size={11} />
-                  </a>
-                  {praised.length > 0 && <div style={{ color: '#86efac', fontSize: 11, marginTop: 10 }}>Frequently praised: {praised.join(', ')}</div>}
-                  {complaints.length > 0 && <div style={{ color: '#fda4af', fontSize: 11, marginTop: 5 }}>Frequent complaints: {complaints.join(', ')}</div>}
-                  {summaryLines.length > 0 && (
-                    <div style={{ marginTop: 12, padding: 11, borderRadius: 7, border: '1px solid #334155', background: '#0b1324' }}>
-                      <div style={{ color: '#c4b5fd', fontSize: 12, fontWeight: 750, marginBottom: 7 }}>AI Review Summary</div>
-                      <div style={{ display: 'grid', gap: 6 }}>
-                        {summaryLines.map((line: string, index: number) => (
-                          <div key={`${index}-${line}`} style={{ display: 'flex', gap: 7, color: '#dbeafe', fontSize: 12, lineHeight: 1.45 }}>
-                            <span style={{ color: '#818cf8', fontWeight: 800 }}>{String(index + 1).padStart(2, '0')}</span>
-                            <span>{line}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ color: '#64748b', fontSize: 10, marginTop: 8 }}>Evidence-grounded synthesis of source-visible aggregate review signals.</div>
-                    </div>
-                  )}
-                  {sampleCount != null && <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 7 }}>Topic analysis used {Number(sampleCount).toLocaleString()} visible review samples from the aggregate count above.</div>}
-                  <div style={{ color: '#64748b', fontSize: 10, marginTop: 9 }}>Observed {new Date(result.observed_at).toLocaleString()} · source-specific, not combined or fabricated</div>
-                </div>
-              );
-            })}
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5 }}>
+                A reliable review summary is not available from the current review evidence yet.
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ marginTop: 12, padding: 14, borderRadius: 8, border: '1px dashed #334155', color: '#94a3b8', fontSize: 13 }}>
-            No price, availability, rating or review observation has been recorded for this exact product yet.
+            No customer rating or review evidence has been recorded for this exact product yet.
           </div>
         )}
       </div>
