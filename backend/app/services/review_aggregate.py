@@ -18,6 +18,42 @@ def _integer(value: Any) -> int:
         return 0
 
 
+def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, count: Any) -> dict[str, Any] | None:
+    """Always provide a truthful review summary when aggregate evidence exists.
+
+    Topic-level praise/complaint text still requires review samples. Aggregate
+    rating/count alone can nevertheless support a useful, explicit four-line
+    summary without another AI call or invented product characteristics.
+    """
+    result = dict(summary or {})
+    if any(result.get(key) for key in ("ai_summary_lines", "ai_summary_text", "summary", "text")):
+        return result
+    numeric_rating = None
+    try:
+        numeric_rating = float(rating) if rating not in (None, "") else None
+    except (TypeError, ValueError):
+        pass
+    review_count = _integer(count)
+    if numeric_rating is None and not review_count:
+        return result or None
+    if numeric_rating is not None and review_count:
+        sentiment = "strongly positive" if numeric_rating >= 4 else "mixed" if numeric_rating < 3.5 else "generally positive"
+        opening = f"Customer response is {sentiment}, averaging {numeric_rating:.1f}/5 across {review_count:,} reviews."
+    elif numeric_rating is not None:
+        opening = f"The available aggregate customer rating is {numeric_rating:.1f}/5."
+    else:
+        opening = f"The source reports {review_count:,} customer reviews without a usable average rating."
+    lines = [
+        opening,
+        "The available evidence supports the overall rating and review count but does not include review-level text.",
+        "Recurring praise or complaint themes therefore cannot be established reliably from this source.",
+        "This summary is limited to exact-product aggregate review evidence and does not invent customer opinions.",
+    ]
+    return {**result, "average_rating": numeric_rating, "review_count": review_count or None,
+            "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines),
+            "summary": "\n".join(lines), "summary_model": "deterministic-aggregate-summary"}
+
+
 def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
     rows = db.query(ScrapedProductObservation).filter(
         ScrapedProductObservation.canonical_product_id == product_id,
@@ -42,6 +78,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             _integer(count),
             row.scraped_at,
         )
+        summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         candidates.append((score, row, payload, summary, rating, count, scope))
     # Explicit customer-feed aggregates are exact-product evidence too. They
     # participate in the same ranking instead of being selected by a UI loop.
@@ -58,6 +95,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         if rating in (None, "") and count in (None, "") and not summary:
             continue
         summary = summary if isinstance(summary, dict) else ({"summary": summary} if summary else {})
+        summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         result = {
             "average_rating": float(rating) if rating not in (None, "") else None,
             "review_count": _integer(count) if count not in (None, "") else None,

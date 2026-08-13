@@ -85,7 +85,15 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "gtin": variant.gtin if variant else None,
         "market": market,
     }
-    missing_identity = [key for key, value in identity.items() if not _present(value)]
+    # Exact GTIN plus brand/name/format is sufficient foundational identity.
+    # Variant, size and market are valuable when the source/product exposes
+    # them, but their absence must not make an un-sized tool look unresolved.
+    required_identity_fields = ["brand", "product_name", "format", "gtin"]
+    if _find_value(raw, "variant", "shade", "colour", "color") or (variant and variant.variant_name):
+        required_identity_fields.append("variant")
+    if _find_value(raw, "size", "volume", "weight") or (variant and (variant.size or variant.unit)):
+        required_identity_fields.append("size")
+    missing_identity = [key for key in required_identity_fields if not _present(identity.get(key))]
 
     formulations = db.query(Formulation).filter(
         Formulation.canonical_product_id == product.id,
@@ -147,7 +155,8 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     ambiguous = bool((product_is_fragrance(db, product) and not trusted_product_version(db, product)) or (candidates and (
         not identity["gtin"] or len({(c.get("format"), c.get("size")) for c in candidates}) > 1
     )))
-    completeness = round(100 * (len(IDENTITY_FIELDS) - len(missing_identity)) / len(IDENTITY_FIELDS))
+    completeness = round(100 * (len(required_identity_fields) - len(missing_identity)) /
+                         len(required_identity_fields))
     status = "complete" if completeness >= 85 and not ambiguous else "ambiguous" if ambiguous else "incomplete"
     return {
         "identity_status": status,

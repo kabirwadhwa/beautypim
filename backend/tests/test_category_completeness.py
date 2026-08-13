@@ -73,6 +73,22 @@ def test_category_specific_modules_do_not_cross_contaminate():
     assert "coverage" in makeup["field_states"] and "hair_types" not in makeup["field_states"]
 
 
+def test_makeup_tool_does_not_require_formula_or_colour_cosmetic_attributes():
+    puff = {
+        **base_product("Makeup", "Makeup"),
+        "product_name": "Givenchy Prisme Libre Puff",
+        "subcategory": "Make-up > Penselen > Poederpuffs",
+        "makeup": {},
+    }
+    result = evaluate_completeness(puff)
+    assert result["category_module"] == "makeup"
+    assert result["category_completeness"] == 100
+    assert result["field_states"]["finish"]["state"] == "not_applicable"
+    assert result["field_states"]["inci"]["state"] == "not_applicable"
+    assert result["field_states"]["targeted_concerns"]["state"] == "not_applicable"
+    assert "finish" not in result["missing_high_priority_fields"]
+
+
 def test_ysl_y_acceptance_gap_plan_is_fragrance_specific():
     ysl = {
         "brand": "YSL", "product_name": "YSL Y", "category": "Perfume",

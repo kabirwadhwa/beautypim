@@ -132,7 +132,9 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
     summary = {**(aggregate.get("review_summary") or {}),
                "average_rating": aggregate.get("average_rating"),
                "review_count": aggregate.get("review_count")}
-    if summary.get("ai_summary_lines") and not force:
+    if (summary.get("ai_summary_lines")
+            and summary.get("summary_model") != "deterministic-aggregate-summary"
+            and not force):
         return summary
     product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
     brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None

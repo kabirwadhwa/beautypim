@@ -45,6 +45,12 @@ UNIVERSAL = {
 }
 WEIGHTS = {"critical": 4, "high": 3, "medium": 2, "optional": 1, "not_applicable": 0}
 
+MAKEUP_TOOL_TERMS = (
+    "makeup tool", "make-up tool", "cosmetic tool", "accessory", "accessories",
+    "accessoire", "accessoires", "brush", "penselen", "puff", "poederpuff",
+    "sponge", "applicator", "beauty blender", "tweezer", "lash curler", "sharpener",
+)
+
 
 def present(value: Any) -> bool:
     if value is None or value == [] or value == {}:
@@ -71,6 +77,20 @@ def category_module(snapshot: dict[str, Any]) -> str:
     if any(term in text for term in ("skincare", "skin care", "serum", "moistur", "cleanser", "toner")):
         return "skincare"
     return "unknown"
+
+
+def _is_makeup_tool(snapshot: dict[str, Any]) -> bool:
+    """Return true for applicators/accessories that do not have cosmetic formula attributes."""
+    understanding = snapshot.get("product_understanding") or {}
+    taxonomy = understanding.get("taxonomy") if isinstance(understanding.get("taxonomy"), dict) else {}
+    text = " ".join(
+        str(value or "") for value in (
+            snapshot.get("product_name"), snapshot.get("category"), snapshot.get("subcategory"),
+            snapshot.get("product_type"), taxonomy.get("category"), taxonomy.get("subcategory"),
+            taxonomy.get("product_type"),
+        )
+    ).lower()
+    return any(term in text for term in MAKEUP_TOOL_TERMS)
 
 
 def _state(value: Any, metadata: dict[str, Any] | None = None) -> str:
@@ -104,6 +124,13 @@ def evaluate_completeness(snapshot: dict[str, Any], metadata: dict[str, dict[str
         rules["targeted_concerns"] = "not_applicable"
     elif module == "makeup":
         rules["targeted_concerns"] = "optional"
+        if _is_makeup_tool(snapshot):
+            # A puff/brush/applicator is correctly classified as makeup, but
+            # shade, coverage, finish, INCI and treatment concerns genuinely do
+            # not apply. Requiring them made Improve Product appear broken.
+            for field in CATEGORY_RULES["makeup"]:
+                rules[field] = "not_applicable"
+            rules["targeted_concerns"] = "not_applicable"
     fields = {}
     for name, priority in rules.items():
         value = _value(snapshot, name, module)

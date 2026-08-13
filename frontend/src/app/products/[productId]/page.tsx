@@ -409,7 +409,17 @@ export default function ProductDetailPage() {
         setNotice(research.message || 'Catalogue enrichment is complete. Image and review research is continuing in the background.');
         setShowImprove(false);
       } else if (!research.sources_ingested) {
-        setNotice(`Catalogue fields were enriched${researchErrors.length ? `; live research reported: ${researchErrors.join(' ')}` : '. No additional verified image or review evidence was found.'}`);
+        const before = research.before_completeness;
+        const after = research.after_completeness;
+        const added = Array.isArray(research.added_fields) ? research.added_fields : [];
+        const still = Array.isArray(research.still_unavailable) ? research.still_unavailable : [];
+        const progress = before != null && after != null ? ` Completeness: ${before}% → ${after}%.` : '';
+        const details = added.length
+          ? ` Added: ${added.join(', ')}.`
+          : still.length
+            ? ` No safe new facts were found; still unavailable: ${still.join(', ')}.`
+            : ' No meaningful evidence gaps remain.';
+        setNotice(`Product improvement completed.${progress}${details}${researchErrors.length ? ` Live research reported: ${researchErrors.join(' ')}` : ''}`);
       } else {
         const evidence = [
           research.image_found ? 'image' : null,

@@ -169,7 +169,7 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
                        or summary.get("sentiment"))
         if _clean(summary):
             lines.append(_clean(summary))
-        source = _clean(observation.get("source_name") or observation.get("source_domain"))
+        source = _clean(observation.get("source") or observation.get("source_name") or observation.get("source_domain"))
         if source:
             lines.append(f"Source: {source}")
         return lines
