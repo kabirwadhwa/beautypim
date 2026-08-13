@@ -192,6 +192,25 @@ def normalize_provider_shapes(payload: Dict[str, Any]) -> Dict[str, Any]:
     for item in payload.get("warnings_considerations") or []:
         if isinstance(item, dict):
             item["evidence"] = _evidence_list(item.get("evidence"))
+    # Providers occasionally return a single evidence explanation even though
+    # the contract uses evidence arrays. Treat that semantically equivalent
+    # shape as one evidence item instead of rejecting the entire enrichment.
+    for field in ("directions", "targeted_concerns"):
+        item = payload.get(field)
+        if isinstance(item, dict):
+            item["evidence"] = _evidence_list(item.get("evidence"))
+    for module_name, nested_fields in {
+        "skincare": ("skin_types", "texture", "finish"),
+        "haircare": ("hair_types", "texture_format"),
+        "makeup": ("shade_colour", "coverage", "finish", "texture_format"),
+    }.items():
+        module = payload.get(module_name)
+        if not isinstance(module, dict):
+            continue
+        for field in nested_fields:
+            item = module.get(field)
+            if isinstance(item, dict) and "evidence" in item:
+                item["evidence"] = _evidence_list(item.get("evidence"))
     for benefit in payload.get("benefits") or []:
         if isinstance(benefit, dict) and isinstance(benefit.get("evidence"), list):
             benefit["evidence"] = "; ".join(str(x.get("supporting_text") or x) if isinstance(x, dict) else str(x)
@@ -498,6 +517,10 @@ def run_ai_enrichment(
             ]
         }
         
+        response = None
+        candidate_text = None
+        prompt_t = complete_t = None
+        cost = None
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             response_json = response.json()
@@ -569,9 +592,16 @@ def run_ai_enrichment(
                     schema_version=settings.SCHEMA_VERSION,
                     status="failed",
                     error_details=str(e),
+                    processing_time_ms=(
+                        int(response.elapsed.total_seconds() * 1000) if response is not None else None
+                    ),
+                    prompt_tokens=prompt_t,
+                    completion_tokens=complete_t,
+                    estimated_cost=cost,
                     attempt_number=attempt,
                     input_content_hash=input_content_hash,
-                    validation_errors={"error": str(e)}
+                    validation_errors={"error": str(e)},
+                    raw_response=candidate_text,
                 )
                 db.add(run_record)
                 db.commit()
@@ -670,6 +700,10 @@ def run_ai_enrichment(
         "generationConfig": {"responseMimeType": "application/json"},
     }
 
+    response = None
+    candidate_text = None
+    prompt_t = complete_t = None
+    cost = None
     try:
         response = requests.post(url, json=payload, timeout=60)
         response_json = response.json()
@@ -752,9 +786,16 @@ def run_ai_enrichment(
                 schema_version=settings.SCHEMA_VERSION,
                 status="failed",
                 error_details=str(e),
+                processing_time_ms=(
+                    int(response.elapsed.total_seconds() * 1000) if response is not None else None
+                ),
+                prompt_tokens=prompt_t,
+                completion_tokens=complete_t,
+                estimated_cost=cost,
                 attempt_number=attempt,
                 input_content_hash=input_content_hash,
-                validation_errors={"error": str(e)}
+                validation_errors={"error": str(e)},
+                raw_response=candidate_text,
             )
             db.add(run_record)
             db.commit()

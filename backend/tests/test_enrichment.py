@@ -1,9 +1,15 @@
+import json
+from types import SimpleNamespace
+
+from app.config import settings
+from app.models import EnrichmentRun
 from app.schemas import BeautyProductEnrichmentSchema
 from app.services.enrichment import (
     generate_deterministic_fallback,
     normalize_and_validate_enrichment,
     normalize_provider_shapes,
     prepare_provider_payload,
+    run_ai_enrichment,
 )
 
 
@@ -48,6 +54,53 @@ def test_evidence_wrapped_fragrance_children_are_unwrapped_before_validation():
     assert validated.fragrance.heart_notes == ["Geranium", "Clary Sage"]
     assert validated.fragrance.base_notes == ["Incense", "Ambergris", "Woods"]
     assert validated.fragrance.evidence[0].supporting_text == "mineral woody fragrance"
+
+
+def test_single_string_directions_evidence_is_normalized_before_validation():
+    normalized = normalize_provider_shapes({
+        "product_type": {"value": "Lipstick"},
+        "subcategory": {"value": "Lip Colour"},
+        "directions": {
+            "text": "Apply directly to the lips.",
+            "source_status": "source_supported",
+            "evidence": "Specific usage instructions are stated in the source description.",
+            "confidence": 0.9,
+        },
+    })
+    prepared = prepare_provider_payload(
+        normalized, "Velvet Lip Colour", "Example", "A liquid matte lipstick.", ""
+    )
+    validated = BeautyProductEnrichmentSchema.model_validate(prepared)
+    assert validated.directions.evidence[0].supporting_text == (
+        "Specific usage instructions are stated in the source description."
+    )
+
+
+def test_failed_provider_validation_preserves_usage_cost_and_raw_response(db, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+    candidate = json.dumps({"benefits": "invalid-list-shape"})
+    response = SimpleNamespace(
+        status_code=200,
+        elapsed=SimpleNamespace(total_seconds=lambda: 0.25),
+        text=candidate,
+        json=lambda: {
+            "choices": [{"message": {"content": candidate}}],
+            "usage": {"prompt_tokens": 1200, "completion_tokens": 300},
+        },
+    )
+    monkeypatch.setattr("app.services.enrichment.requests.post", lambda *args, **kwargs: response)
+
+    _, run_id = run_ai_enrichment(
+        db, "Velvet Lip Colour", "Example", "Liquid matte lipstick.", "", attempt=2,
+    )
+    run = db.query(EnrichmentRun).filter(EnrichmentRun.id == run_id).one()
+    assert run.status == "failed"
+    assert run.prompt_tokens == 1200
+    assert run.completion_tokens == 300
+    assert float(run.estimated_cost) == 0.00036
+    assert run.processing_time_ms == 250
+    assert run.raw_response == candidate
 
 
 def test_fallback_has_exact_three_commercial_profiles_and_no_legacy_fields():
