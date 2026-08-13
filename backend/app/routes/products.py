@@ -794,6 +794,10 @@ def update_product_identity(
     if not variant:
         variant = ProductVariant(id=uuid.uuid4(), canonical_product_id=product.id)
         db.add(variant)
+        # FieldValue has a direct FK to ProductVariant. Persist the newly created
+        # variant before adding human-confirmed GTIN/variant evidence so
+        # PostgreSQL cannot order the evidence INSERT ahead of its parent row.
+        db.flush()
     if request.gtin:
         digits = re.sub(r"\D", "", request.gtin)
         if len(digits) not in {8, 12, 13, 14}:
