@@ -956,6 +956,9 @@ export default function ProductDetailPage() {
               const praised = summary.frequently_praised_topics || [];
               const complaints = summary.frequent_complaint_topics || [];
               const sampleCount = summary.review_sample_count;
+              const summaryLines = Array.isArray(summary.ai_summary_lines)
+                ? summary.ai_summary_lines.filter((line: any) => String(line || '').trim()).slice(0, 5)
+                : String(summary.ai_summary_text || summary.summary || '').split(/\n+/).filter(Boolean).slice(0, 5);
               const price = result.data?.promotional_price ?? result.data?.price;
               return (
                 <div key={result.id} style={{ padding: 14, borderRadius: 8, border: '1px solid #334155', background: '#10192c' }}>
@@ -974,6 +977,20 @@ export default function ProductDetailPage() {
                   </a>
                   {praised.length > 0 && <div style={{ color: '#86efac', fontSize: 11, marginTop: 10 }}>Frequently praised: {praised.join(', ')}</div>}
                   {complaints.length > 0 && <div style={{ color: '#fda4af', fontSize: 11, marginTop: 5 }}>Frequent complaints: {complaints.join(', ')}</div>}
+                  {summaryLines.length > 0 && (
+                    <div style={{ marginTop: 12, padding: 11, borderRadius: 7, border: '1px solid #334155', background: '#0b1324' }}>
+                      <div style={{ color: '#c4b5fd', fontSize: 12, fontWeight: 750, marginBottom: 7 }}>AI Review Summary</div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {summaryLines.map((line: string, index: number) => (
+                          <div key={`${index}-${line}`} style={{ display: 'flex', gap: 7, color: '#dbeafe', fontSize: 12, lineHeight: 1.45 }}>
+                            <span style={{ color: '#818cf8', fontWeight: 800 }}>{String(index + 1).padStart(2, '0')}</span>
+                            <span>{line}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ color: '#64748b', fontSize: 10, marginTop: 8 }}>Evidence-grounded synthesis of source-visible aggregate review signals.</div>
+                    </div>
+                  )}
                   {sampleCount != null && <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 7 }}>Topic analysis used {Number(sampleCount).toLocaleString()} visible review samples from the aggregate count above.</div>}
                   <div style={{ color: '#64748b', fontSize: 10, marginTop: 9 }}>Observed {new Date(result.observed_at).toLocaleString()} · source-specific, not combined or fabricated</div>
                 </div>

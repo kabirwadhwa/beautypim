@@ -37,6 +37,7 @@ export default function ProductsPage() {
   const [bulkCategory, setBulkCategory] = useState('');
   const [bulkSubcategory, setBulkSubcategory] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
 
   const fetchProducts = async (signal?: AbortSignal) => {
     setLoading(true);
@@ -135,6 +136,41 @@ export default function ProductsPage() {
     }
   };
 
+  const handleBulkImprove = async () => {
+    if (selectedIds.length === 0) return;
+    setActionLoading(true);
+    setError(null);
+    setBulkMessage(`Queueing ${selectedIds.length} selected products…`);
+    try {
+      const token = localStorage.getItem("token");
+      const resp = await fetch(`${API_URL}/products/bulk/actions/improve`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ product_ids: selectedIds, mode: "missing_only" })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) throw new Error(data?.detail || "Bulk Improve failed.");
+      const message = `${data.queued_count || 0} queued for background improvement` +
+        `${data.skipped_count ? ` · ${data.skipped_count} already complete` : ''}` +
+        `${data.failed_count ? ` · ${data.failed_count} failed` : ''}.`;
+      setBulkMessage(message);
+      if (data.failed_count) {
+        const firstFailure = (data.items || []).find((item: any) => item.status === 'failed');
+        setError(`${message} ${firstFailure?.error || ''}`.trim());
+      }
+      setSelectedIds([]);
+      await fetchProducts();
+    } catch (e: any) {
+      setBulkMessage(null);
+      setError(e?.message || "Bulk Improve failed.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const getStatusClass = (status: string) => {
     switch (status.toLowerCase()) {
       case 'approved': return styles.badgeSuccess;
@@ -169,6 +205,14 @@ export default function ProductsPage() {
               disabled={actionLoading}
             >
               Bulk Approve ({selectedIds.length})
+            </button>
+            <button
+              onClick={handleBulkImprove}
+              className={`${styles.btn} ${styles.btnPrimary}`}
+              disabled={actionLoading}
+              title="Research and improve missing high-value fields for every selected product"
+            >
+              <Sparkles size={15} /> Improve selected ({selectedIds.length})
             </button>
             <button
               onClick={() => handleBulkAction('re_enrich')}
@@ -276,6 +320,11 @@ export default function ProductsPage() {
       {error && (
         <div role="alert" style={{ marginBottom: 16, padding: 12, border: '1px solid #ef4444', borderRadius: 6, color: '#fecaca', background: 'rgba(239,68,68,.1)' }}>
           {error}
+        </div>
+      )}
+      {bulkMessage && !error && (
+        <div role="status" style={{ marginBottom: 16, padding: 12, border: '1px solid #10b981', borderRadius: 6, color: '#a7f3d0', background: 'rgba(16,185,129,.1)' }}>
+          {bulkMessage} You can continue working while the queue runs.
         </div>
       )}
 

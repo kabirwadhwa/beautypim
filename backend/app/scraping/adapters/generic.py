@@ -115,6 +115,14 @@ def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
     if isinstance(reviews, dict):
         reviews = [reviews]
     topics = {
+        "performance": ("effective", "results", "works well", "made a difference", "didn't work", "not effective"),
+        "hydration": ("hydrating", "hydration", "moisturizing", "moisturising", "dryness", "dry skin"),
+        "sensitivity": ("sensitive", "irritation", "irritating", "redness", "gentle", "reaction"),
+        "application": ("application", "applies", "blend", "blends", "easy to use", "difficult to use"),
+        "wear": ("wear time", "stays on", "longwear", "long-wear", "creases", "smudges", "fades"),
+        "shade": ("shade", "colour", "color", "undertone", "match"),
+        "finish": ("finish", "glowy", "matte", "dewy", "radiant", "cakey"),
+        "hair feel": ("soft hair", "shine", "frizz", "tangles", "scalp", "weighed down"),
         "longevity": ("long lasting", "long-lasting", "longevity", "lasts", "fade"),
         "sillage": ("sillage", "projection", "projects", "trail"),
         "packaging": ("packaging", "bottle", "pump", "cap", "box"),

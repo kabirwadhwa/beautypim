@@ -31,6 +31,11 @@ class BulkActionRequest(BaseModel):
     subcategory: Optional[str] = None
 
 
+class BulkImproveRequest(BaseModel):
+    product_ids: List[uuid.UUID]
+    mode: str = "missing_only"
+
+
 class ProductImproveRequest(BaseModel):
     mode: str = "missing_only"
     fields: List[str] = []
@@ -548,6 +553,7 @@ def _automatic_product_research(
 def _enqueue_product_research(
     db: Session, product: CanonicalProduct, item: ImportJobItem,
     request: ProductImproveRequest, user: User, research_objectives: list[str] | None = None,
+    initial_discovery: dict | None = None,
 ) -> CrawlJob:
     active = db.query(CrawlJob).filter(
         CrawlJob.domain == "product-research.internal",
@@ -566,7 +572,7 @@ def _enqueue_product_research(
             "requested_mode": request.mode,
             "selected_fields": request.fields,
             "research_objectives": research_objectives or [],
-            "discovery": None,
+            "discovery": initial_discovery,
             "result": None,
         },
     )
@@ -676,6 +682,13 @@ def improve_product(
             db, item, job.column_mapping or {}, mode=request.mode,
             selected_fields=request.fields,
         )
+        try:
+            from app.services.review_summarization import summarize_product_reviews
+            summarize_product_reviews(db, product.id)
+        except Exception:
+            # Review synthesis is additive and must never turn otherwise useful
+            # product enrichment into a failed customer action.
+            pass
         record_audit(
             db, "CanonicalProduct", product.id, product.product_name, "update",
             {"enrichment": "existing"},
@@ -1484,6 +1497,94 @@ def reject_product(
 
     db.commit()
     return get_product_detail(product_id, db, current_user)
+
+@router.post(
+    "/bulk/actions/improve", status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit("bulk_improve", "2/minute"))],
+)
+def bulk_improve_products(
+    req: BulkImproveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    """Queue durable missing-field improvement for selected grid products."""
+    product_ids = list(dict.fromkeys(req.product_ids))
+    if not product_ids:
+        raise HTTPException(422, "Select at least one product.")
+    if len(product_ids) > 50:
+        raise HTTPException(422, "Bulk Improve supports up to 50 products per request.")
+    if req.mode != "missing_only":
+        raise HTTPException(422, "Bulk Improve currently supports missing_only mode.")
+
+    from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
+    from app.services.product_identity import preferred_product_variant
+    from app.services.product_improvement import product_improvement_summary
+
+    items = []
+    queued_count = skipped_count = failed_count = 0
+    improve_request = ProductImproveRequest(mode="missing_only", fields=[])
+    for product_id in product_ids:
+        try:
+            product = db.query(CanonicalProduct).filter(
+                CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+            ).first()
+            if not product:
+                raise ValueError("Product not found")
+            source_item = db.query(ImportJobItem).filter(
+                ImportJobItem.canonical_product_id == product_id,
+                ImportJobItem.source_listing_id.isnot(None),
+            ).order_by(ImportJobItem.created_at.desc()).first()
+            if not source_item:
+                raise ValueError("No source record is available for enrichment")
+            quality = product_improvement_summary(db, product)
+            gaps = quality.get("missing_high_priority_fields") or []
+            if not gaps:
+                skipped_count += 1
+                items.append({
+                    "product_id": str(product_id), "product_name": product.product_name,
+                    "status": "skipped", "message": "No meaningful evidence gaps found.",
+                })
+                continue
+
+            variant = preferred_product_variant(db, product.id)
+            category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
+            corpus = retrieve_corpus_evidence(
+                db, gtin=variant.gtin if variant else "",
+                brand=product.brand.name if product.brand else "",
+                product_name=product.product_name,
+                category=category.path if category else "",
+            )
+            local_only = evidence_is_sufficient(corpus, None)
+            initial_discovery = ({
+                "provider": "internal_corpus", "status": "completed", "response_id": None,
+                "domains": [], "candidates": [],
+            } if local_only else None)
+            research_job = _enqueue_product_research(
+                db, product, source_item, improve_request, current_user,
+                [entry["field"] for entry in quality.get("research_objectives") or []],
+                initial_discovery=initial_discovery,
+            )
+            db.commit()
+            queued_count += 1
+            items.append({
+                "product_id": str(product_id), "product_name": product.product_name,
+                "status": research_job.status, "research_job_id": str(research_job.id),
+                "web_search_planned": not local_only,
+                "missing_high_priority_fields": gaps,
+            })
+        except Exception as exc:
+            db.rollback()
+            failed_count += 1
+            items.append({"product_id": str(product_id), "status": "failed", "error": str(exc)})
+
+    db.commit()
+    return {
+        "action": "improve", "requested_count": len(product_ids),
+        "queued_count": queued_count, "skipped_count": skipped_count,
+        "failed_count": failed_count, "items": items,
+        "message": f"Queued {queued_count} products for background improvement.",
+    }
+
 
 @router.post("/bulk/actions", status_code=status.HTTP_200_OK)
 def bulk_product_action(

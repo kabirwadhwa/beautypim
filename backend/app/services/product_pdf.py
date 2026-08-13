@@ -162,7 +162,7 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
         if headline:
             lines.append("  |  ".join(headline))
         if isinstance(summary, dict):
-            summary = (summary.get("summary") or summary.get("text")
+            summary = (summary.get("ai_summary_text") or summary.get("summary") or summary.get("text")
                        or summary.get("review_summary") or summary.get("highlights")
                        or summary.get("sentiment"))
         if _clean(summary):

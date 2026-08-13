@@ -234,6 +234,61 @@ def test_guided_improvement_identity_research_discovery_and_selected_enrichment(
     assert results.json() == []
 
 
+def test_bulk_improve_queues_durable_jobs_without_running_ai_in_request(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Bulk Improve", normalized_name=uuid.uuid4().hex)
+    job = ImportJob(
+        id=uuid.uuid4(), filename="bulk.csv", file_hash=uuid.uuid4().hex,
+        status="completed", total_rows=2, processed_rows=2,
+        column_mapping={"product_name": "name", "brand": "brand"},
+    )
+    db.add_all([brand, job])
+    db.flush()
+    products = []
+    for index in range(2):
+        product = CanonicalProduct(
+            id=uuid.uuid4(), brand_id=brand.id, product_name=f"Bulk Product {index}",
+            normalized_name=f"bulkproduct{index}",
+        )
+        db.add(product)
+        db.flush()
+        listing = SourceListing(
+            id=uuid.uuid4(), import_job_id=job.id, canonical_product_id=product.id,
+            raw_data={"name": product.product_name, "brand": brand.name}, source_hash=uuid.uuid4().hex,
+        )
+        db.add(listing)
+        db.flush()
+        db.add(ImportJobItem(
+            id=uuid.uuid4(), import_job_id=job.id, source_row_number=index + 1,
+            source_listing_id=listing.id, canonical_product_id=product.id,
+            status="completed", match_status="new_product", enrichment_status="succeeded",
+        ))
+        products.append(product)
+    db.commit()
+
+    quality = {
+        "missing_high_priority_fields": ["description", "benefits"],
+        "research_objectives": [{"field": "description"}, {"field": "benefits"}],
+    }
+    with (
+        patch("app.services.product_improvement.product_improvement_summary", return_value=quality),
+        patch("app.knowledge_corpus.retrieval.retrieve_corpus_evidence", return_value={"match_level": "unmatched"}),
+        patch("app.knowledge_corpus.retrieval.evidence_is_sufficient", return_value=False),
+        patch("app.routes.products.process_item_enrichment") as process,
+    ):
+        response = client.post(
+            "/api/products/bulk/actions/improve", headers=headers,
+            json={"product_ids": [str(product.id) for product in products], "mode": "missing_only"},
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["queued_count"] == 2
+    assert response.json()["failed_count"] == 0
+    assert all(item["web_search_planned"] for item in response.json()["items"])
+    process.assert_not_called()
+
+
 def test_taxonomy_crud_and_guards(client: TestClient, db):
     token = get_admin_token(client)
     headers = {"Authorization": f"Bearer {token}"}

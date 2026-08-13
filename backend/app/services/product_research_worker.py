@@ -117,6 +117,17 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             research_objectives=configuration.get("research_objectives") or [],
         )
 
+        # One evidence-grounded synthesis per product, using the strongest
+        # exact-product aggregate review observation found by this run.
+        try:
+            from app.services.review_summarization import summarize_product_reviews
+            review_summary = summarize_product_reviews(db, product.id)
+            result["review_summary_generated"] = bool(review_summary)
+        except Exception as exc:
+            logger.warning("Review synthesis failed for %s: %s", product.id, exc)
+            result["review_summary_generated"] = False
+            result["review_summary_error"] = str(exc)
+
         # Re-run enrichment after exact-source observations have been persisted.
         import_job = db.query(ImportJob).filter(ImportJob.id == item.import_job_id).first()
         if import_job:
