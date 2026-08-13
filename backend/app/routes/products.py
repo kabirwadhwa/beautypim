@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from app.limiter import rate_limit
 from app.config import settings
+from app.services.deduplication import normalize_text
 
 class BulkActionRequest(BaseModel):
     product_ids: List[uuid.UUID]
