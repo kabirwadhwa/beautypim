@@ -8,10 +8,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-UNKNOWN = {"", "unknown", "not provided", "not_provided", "none", "null", "nan", "unavailable"}
+UNKNOWN = {"", "unknown", "not provided", "not_provided", "none", "null", "nan", "unavailable", "std", "standard", "c", "both", "n/a"}
 FACT_FIELDS = {"gtin", "size", "variant", "concentration", "inci", "top_notes", "heart_notes", "base_notes"}
 
 CATEGORY_RULES = {
+    "unknown": {},
     "skincare": {
         "skin_types": "high", "texture": "medium", "finish": "medium", "inci": "high",
         "key_ingredients": "high", "targeted_concerns": "high",
@@ -56,6 +57,10 @@ def present(value: Any) -> bool:
 
 
 def category_module(snapshot: dict[str, Any]) -> str:
+    understanding = snapshot.get("product_understanding") or {}
+    authoritative = understanding.get("category_module") or snapshot.get("category_module")
+    if authoritative in CATEGORY_RULES:
+        return authoritative
     text = " ".join(str(snapshot.get(key) or "") for key in ("category", "subcategory", "product_type")).lower()
     if any(term in text for term in ("fragrance", "perfume", "parfum", "eau de", "cologne")):
         return "fragrance"
@@ -63,7 +68,9 @@ def category_module(snapshot: dict[str, Any]) -> str:
         return "haircare"
     if any(term in text for term in ("makeup", "foundation", "concealer", "lip", "mascara", "eyeshadow", "blush")):
         return "makeup"
-    return "skincare"
+    if any(term in text for term in ("skincare", "skin care", "serum", "moistur", "cleanser", "toner")):
+        return "skincare"
+    return "unknown"
 
 
 def _state(value: Any, metadata: dict[str, Any] | None = None) -> str:
@@ -122,8 +129,16 @@ def evaluate_completeness(snapshot: dict[str, Any], metadata: dict[str, dict[str
                     if item["priority"] in {"critical", "high"} and item["state"] in {"not_found", "not_researched", "conflicting"}]
     missing_optional = [name for name, item in fields.items()
                         if item["priority"] in {"medium", "optional"} and item["state"] in {"not_found", "not_researched", "conflicting"}]
+    overall = score(list(fields))
+    understanding = snapshot.get("product_understanding") or {}
+    identity_status = understanding.get("identity_status")
+    if module == "unknown" or identity_status in {"unresolved", "conflicting"}:
+        overall = min(overall, 55)
+    elif identity_status == "partial":
+        # Commercial prose must not conceal weak foundational identity.
+        overall = min(overall, 75)
     return {
-        "category_module": module, "overall_completeness": score(list(fields)),
+        "category_module": module, "overall_completeness": overall,
         "identity_completeness": score(identity_names), "content_completeness": score(content_names),
         "commercial_completeness": score(commercial_names), "category_completeness": score(category_names),
         "evidence_completeness": round(100 * len(evidence_supported) / len(evidence_names)) if evidence_names else 100,
@@ -145,14 +160,33 @@ def build_gap_plan(snapshot: dict[str, Any], metadata: dict[str, dict[str, Any]]
             if name in FACT_FIELDS or name == "claims" else
             f"Use product evidence to produce specific {name.replace('_', ' ')} intelligence.",
         })
-    return {**result, "research_objectives": objectives, "should_research": bool(objectives)}
+    understanding = snapshot.get("product_understanding") or {}
+    identity_objectives = list((understanding.get("research_plan") or {}).get("objectives") or [])
+    if result["category_module"] == "unknown" and not identity_objectives:
+        identity_objectives = ["consumer_brand", "product_family", "variant", "category", "product_type"]
+    identity_plan = [{
+        "field": name, "objective_type": "identity", "requires_direct_evidence": True,
+        "instruction": f"Resolve {name.replace('_', ' ')} before category enrichment.",
+    } for name in identity_objectives]
+    identity_required = bool(identity_plan)
+    return {
+        **result,
+        "phase": "identity_resolution" if identity_required else "attribute_completion",
+        # This is deliberately not a flat plan: downstream work is operationally
+        # blocked until Product Understanding is recalculated after phase one.
+        "research_objectives": identity_plan if identity_required else objectives,
+        "blocked_objectives": objectives if identity_required else [],
+        "identity_resolution_required": identity_required,
+        "should_research": bool(identity_plan if identity_required else objectives),
+    }
 
 
 GENERIC_PHRASES = ("express your individuality", "beauty lovers", "people who like", "men who like", "women who like")
 SENSORY_CLAIM_WORDS = ("fresh and clean", "refreshing scent", "invigorating scent", "luxurious scent")
 
 
-def quality_gate(payload: dict[str, Any], module: str | None = None) -> tuple[dict[str, Any], list[str]]:
+def quality_gate(payload: dict[str, Any], module: str | None = None,
+                 identity_text: str = "") -> tuple[dict[str, Any], list[str]]:
     """Remove unsafe/generic output without making a second model call."""
     data, rejected = dict(payload or {}), []
     module = module or category_module(data)
@@ -168,8 +202,45 @@ def quality_gate(payload: dict[str, Any], module: str | None = None) -> tuple[di
         if any(term in name for term in SENSORY_CLAIM_WORDS):
             rejected.append(f"claim:{name}")
             continue
+        if isinstance(claim, dict):
+            affirmative = str(claim.get("value") or "").strip().lower() in {"yes", "true", "verified", "1"}
+            has_direct_evidence = bool(claim.get("evidence")) and str(claim.get("status") or "").lower() in {
+                "verified", "source_supported", "explicit_source",
+            }
+            if affirmative and not has_direct_evidence:
+                claim = {**claim, "value": "Unknown", "status": "unverified", "confidence": 0.0}
+                rejected.append(f"unsupported_claim:{name}")
         claims.append(claim)
     data["claims"] = claims
+    concerns = data.get("targeted_concerns") or []
+    wrapped = isinstance(concerns, dict)
+    concern_key = "values" if wrapped and "values" in concerns else "value"
+    values = concerns.get(concern_key, []) if wrapped else concerns
+    values = list(values) if isinstance(values, list) else ([values] if values else [])
+    if module == "fragrance":
+        if values:
+            rejected.append("targeted_concerns:not_applicable")
+        values = []
+    elif module == "makeup":
+        safe = []
+        for value in values:
+            lowered = str(value).lower()
+            if any(term in lowered for term in ("pigmentation", "hyperpigmentation", "dark spot", "acne", "redness")):
+                rejected.append(f"makeup_concern_collision:{value}")
+                continue
+            if lowered in {"dehydration", "dryness", "dry skin"}:
+                rejected.append(f"makeup_concern_collision:{value}")
+                continue
+            safe.append(value)
+        # Colour/pigment vocabulary is makeup performance, never a skincare diagnosis.
+        if not safe and re.search(r"\b(?:pigment|pigmented|colour payoff|color payoff)\b", identity_text, re.I):
+            safe.append("Colour payoff")
+        values = safe
+    elif module == "skincare":
+        # Pigment alone describes colour cosmetics; pigmentation requires treatment context.
+        if not re.search(r"\b(?:dark spots?|uneven tone|hyperpigmentation|discolou?ration)\b", identity_text, re.I):
+            values = [v for v in values if str(v).lower() != "pigmentation"]
+    data["targeted_concerns"] = ({**concerns, concern_key: values} if wrapped else values)
     if module == "fragrance":
         directions = data.get("directions") or {}
         text = str(directions.get("text") or directions.get("value") or "") if isinstance(directions, dict) else str(directions)

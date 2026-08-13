@@ -6,6 +6,7 @@ from app.models import (
     ScrapedProductObservation,
 )
 from app.services.review_summarization import summarize_product_reviews
+from app.services.review_aggregate import select_review_aggregate
 
 
 def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch):
@@ -58,6 +59,10 @@ def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch)
     assert "texture" in " ".join(summary["ai_summary_lines"]).lower()
     assert "value" in " ".join(summary["ai_summary_lines"]).lower()
     assert observation.normalized_payload["review_summary"]["summary_model"] == "deterministic-evidence-summary"
+    selected = select_review_aggregate(db, product.id)
+    assert selected["average_rating"] == 4.7
+    assert selected["review_count"] == 128
+    assert selected["evidence_reference"].endswith(str(observation.id))
 
 
 def test_review_synthesis_accepts_top_level_aggregate_rating(db, monkeypatch):

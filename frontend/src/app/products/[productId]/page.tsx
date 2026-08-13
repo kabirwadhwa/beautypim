@@ -125,6 +125,19 @@ interface ProductDetail {
     missing_optional_fields: string[];
     field_states: Record<string, { priority: string; state: string; value_present: boolean }>;
   };
+  product_understanding?: {
+    identity_status?: string;
+    match_type?: string;
+    category_module?: string;
+    confidence?: number;
+    identity?: Record<string, { value?: unknown; confidence?: number; status?: string }>;
+    taxonomy?: Record<string, { value?: unknown; confidence?: number; status?: string }>;
+    warnings?: string[];
+    conflicts?: Array<{ field_name?: string; severity?: string }>;
+    source_interpretation?: Record<string, unknown>;
+    reconciliation_reason?: string;
+  } | null;
+  review_aggregate?: any;
 }
 
 interface ImprovementSummary {
@@ -218,7 +231,6 @@ export default function ProductDetailPage() {
       setLoading(false);
     }
   };
-
   useEffect(() => {
     fetchDetail();
   }, [productId]);
@@ -684,29 +696,12 @@ export default function ProductDetailPage() {
     return String(value).toUpperCase();
   };
 
-  const persistedObservations = (product?.market_observations || []).map((observation, index) => ({
-    id: `persisted-${index}`, data: observation, source_url: observation.source_url,
-    source_domain: observation.source_domain || observation.source_name || 'Imported feed',
-    observed_at: observation.observed_at,
-  }));
-  const marketObservations = persistedObservations.length ? persistedObservations : researchResults;
-  const reviewObservation = [...marketObservations]
-    .filter(result => {
-      const summary = result.data?.review_summary;
-      return result.data?.rating != null || result.data?.review_count != null ||
-        (summary && typeof summary === 'object' && Object.keys(summary).length > 0);
-    })
-    .sort((left, right) => {
-      const score = (result: any) => {
-        const summary = result.data?.review_summary || {};
-        const hasSummary = Array.isArray(summary.ai_summary_lines) && summary.ai_summary_lines.length > 0
-          || Boolean(summary.ai_summary_text || summary.summary);
-        const sampleCount = Number(summary.review_sample_count || 0);
-        const reviewCount = Number(result.data?.review_count ?? summary.review_count ?? 0);
-        return (hasSummary ? 1_000_000_000 : 0) + sampleCount * 1_000_000 + reviewCount;
-      };
-      return score(right) - score(left);
-    })[0];
+  const reviewObservation = product?.review_aggregate ? {
+    data: { rating: product.review_aggregate.average_rating, review_count: product.review_aggregate.review_count,
+      review_summary: product.review_aggregate.review_summary },
+    source_domain: product.review_aggregate.source_domain || product.review_aggregate.source,
+    observed_at: product.review_aggregate.observation_date,
+  } : undefined;
   const reviewSummary = reviewObservation?.data?.review_summary || {};
   const reviewRating = reviewObservation?.data?.rating ?? reviewSummary.average_rating;
   const reviewCount = reviewObservation?.data?.review_count ?? reviewSummary.review_count;
@@ -791,6 +786,47 @@ export default function ProductDetailPage() {
       {notice && (
         <div style={{ padding: 12, backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid #10b981', borderRadius: 6, color: '#6ee7b7', fontSize: 13, marginBottom: 20 }}>
           {notice}
+        </div>
+      )}
+
+      {product?.product_understanding && (
+        <div className={styles.panelCard} style={{ marginBottom: 20, padding: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ color: '#a5b4fc', fontSize: 11, fontWeight: 800, letterSpacing: '.08em' }}>PRODUCT UNDERSTANDING</div>
+              <div style={{ marginTop: 5, color: '#f8fafc', fontSize: 16, fontWeight: 750, textTransform: 'capitalize' }}>
+                {product.product_understanding.identity_status || 'unresolved'} identity · {product.product_understanding.category_module || 'unknown'}
+              </div>
+              <div style={{ marginTop: 4, color: '#94a3b8', fontSize: 12 }}>
+                Match: {(product.product_understanding.match_type || 'unmatched').replaceAll('_', ' ')}
+                {typeof product.product_understanding.confidence === 'number' ? ` · ${Math.round(product.product_understanding.confidence * 100)}% confidence` : ''}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {Object.entries(product.product_understanding.taxonomy || {}).map(([name, decision]) => decision?.value ? (
+                <span key={name} style={{ border: '1px solid #33466f', borderRadius: 999, padding: '6px 9px', color: '#dbeafe', fontSize: 11 }}>
+                  {name.replaceAll('_', ' ')}: {String(decision.value)}
+                </span>
+              ) : null)}
+            </div>
+          </div>
+          {(product.product_understanding.warnings?.length || product.product_understanding.conflicts?.length) ? (
+            <div style={{ marginTop: 10, color: '#fbbf24', fontSize: 12 }}>
+              {[...(product.product_understanding.warnings || []), ...((product.product_understanding.conflicts || []).map(item => `Conflict: ${item.field_name || 'identity'}`))].join(' · ')}
+            </div>
+          ) : null}
+          {product.product_understanding.source_interpretation && (
+            <div style={{ marginTop: 10, color: '#94a3b8', fontSize: 12 }}>
+              Source identity: {Object.entries(product.product_understanding.source_interpretation)
+                .filter(([key, value]) => key !== 'raw_source_preserved' && value)
+                .map(([key, value]) => `${key.replaceAll('_', ' ')} = ${String(value)}`).join(' · ')}
+            </div>
+          )}
+          {product.product_understanding.reconciliation_reason && (
+            <div style={{ marginTop: 8, color: '#cbd5e1', fontSize: 12 }}>
+              Reconciliation: {product.product_understanding.reconciliation_reason}
+            </div>
+          )}
         </div>
       )}
 
@@ -1370,7 +1406,7 @@ export default function ProductDetailPage() {
                   <h3 style={{ fontSize: 15, marginBottom: 5 }}>1. Confirm product identity</h3>
                   <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>Exact format, size, market or GTIN unlocks formulation-specific evidence without mixing variants.</p>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                    {['format', 'variant', 'size', 'unit', 'gtin', 'market'].map(field => (
+                    {['brand', 'product_name', 'product_family', 'format', 'variant', 'size', 'unit', 'gtin', 'market'].map(field => (
                       <label key={field} style={{ color: '#94a3b8', fontSize: 11, textTransform: 'capitalize' }}>{field.replace('_', ' ')}
                         <input className={styles.inputField} value={identityDraft[field] || ''} onChange={e => setIdentityDraft(prev => ({ ...prev, [field]: e.target.value }))} style={{ marginTop: 5 }} />
                       </label>

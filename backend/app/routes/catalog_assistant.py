@@ -573,6 +573,8 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             )
             if key in field_map
         })
+        if "product_understanding" in field_map and isinstance(field_map["product_understanding"].value, dict):
+            matched["product_understanding"] = field_map["product_understanding"].value
         ingredient_list = [
             item.strip()
             for formulation in formulations
@@ -607,6 +609,12 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             }
             for price in prices
         ]
+        from app.services.review_aggregate import select_review_aggregate
+        review = select_review_aggregate(db, product.id)
+        if review:
+            matched["review_aggregate"] = {
+                key: value for key, value in review.items() if key != "observation_id"
+            }
         from app.services.category_completeness import evaluate_completeness
         matched["completeness"] = evaluate_completeness({
             **matched,

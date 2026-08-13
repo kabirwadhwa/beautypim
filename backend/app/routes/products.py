@@ -42,6 +42,9 @@ class ProductImproveRequest(BaseModel):
 
 
 class ProductIdentityUpdateRequest(BaseModel):
+    brand: Optional[str] = None
+    product_name: Optional[str] = None
+    product_family: Optional[str] = None
     format: Optional[str] = None
     variant: Optional[str] = None
     size: Optional[str] = None
@@ -89,6 +92,28 @@ def product_internal_code(product_id: uuid.UUID) -> str:
     return f"ICN-{product_id.hex.upper()}"
 
 
+def _refresh_product_understanding(db: Session, product: CanonicalProduct) -> dict:
+    """Synchronously refresh the contract after a foundational human change."""
+    from app.services.product_identity import preferred_product_variant
+    from app.services.product_understanding import resolve_product_understanding
+    listing = db.query(SourceListing).filter(
+        SourceListing.canonical_product_id == product.id, SourceListing.is_deleted == False,
+    ).order_by(SourceListing.created_at.desc()).first()
+    job = db.query(ImportJob).filter(ImportJob.id == listing.import_job_id).first() if listing and listing.import_job_id else None
+    contract = resolve_product_understanding(
+        db, raw_data=(listing.raw_data or {}) if listing else {}, mapping=(job.column_mapping or {}) if job else {},
+        product=product, variant=preferred_product_variant(db, product.id),
+    )
+    create_field_value_version(
+        db, product.id, None, "product_understanding", contract, "deterministic_rule",
+        "foundational-change", float(contract.get("confidence") or 0),
+        "conflicting" if contract.get("conflicts") else "confirmed" if contract.get("identity_status") == "resolved" else "inferred",
+        None, contract.get("evidence") or [], "Recalculated after foundational identity/taxonomy change.",
+        contract.get("identity_status"), "product_understanding",
+    )
+    return contract
+
+
 def _clean_classification(value: str, label: str) -> str:
     cleaned = " ".join(value.split()).strip()
     if not cleaned:
@@ -112,6 +137,18 @@ def _set_product_classification(db: Session, product: CanonicalProduct, category
         db.flush()
     before_category = str(product.category_id) if product.category_id else None
     product.category_id = child.id
+    current_category = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id, FieldValue.field_name == "category",
+        FieldValue.is_current == True,
+    ).first()
+    if current_category and current_category.value != category_name:
+        current_category.is_current = False
+    if not current_category or current_category.value != category_name:
+        create_field_value_version(
+            db, product.id, None, "category", category_name, "human_edit",
+            f"user:{user.id}", 1.0, "confirmed", None, [],
+            "Category manually assigned.", "confirmed", "taxonomy",
+        )
     previous = db.query(FieldValue).filter(
         FieldValue.canonical_product_id == product.id,
         FieldValue.product_variant_id.is_(None),
@@ -135,6 +172,7 @@ def _set_product_classification(db: Session, product: CanonicalProduct, category
         changed={"category": [before_category, category_name], "subcategory": [before_subcategory, subcategory_name]},
         user_id=user.id, actor_type="user",
     )
+    _refresh_product_understanding(db, product)
 
 
 @router.get("/metrics")
@@ -555,6 +593,7 @@ def _enqueue_product_research(
     request: ProductImproveRequest, user: User, research_objectives: list[str] | None = None,
     initial_discovery: dict | None = None,
 ) -> CrawlJob:
+    from app.services.product_improvement import product_improvement_summary
     active = db.query(CrawlJob).filter(
         CrawlJob.domain == "product-research.internal",
         CrawlJob.status.in_(["queued", "discovering", "crawling", "parsing"]),
@@ -572,6 +611,7 @@ def _enqueue_product_research(
             "requested_mode": request.mode,
             "selected_fields": request.fields,
             "research_objectives": research_objectives or [],
+            "research_phase": product_improvement_summary(db, product).get("research_phase"),
             "discovery": initial_discovery,
             "result": None,
         },
@@ -727,6 +767,27 @@ def update_product_identity(
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
+    if request.brand and request.brand.strip():
+        brand_name = request.brand.strip()
+        normalized_brand = normalize_text(brand_name)
+        brand = db.query(Brand).filter(Brand.normalized_name == normalized_brand).first()
+        if not brand:
+            brand = Brand(id=uuid.uuid4(), name=brand_name, normalized_name=normalized_brand)
+            db.add(brand); db.flush()
+        product.brand_id = brand.id
+        create_field_value_version(db, product.id, None, "brand", brand_name, "human_edit",
+            f"user:{current_user.id}", 1.0, "confirmed", None, [],
+            "Consumer brand confirmed by a human editor.", "confirmed", "identity")
+    if request.product_name and request.product_name.strip():
+        product.product_name = request.product_name.strip()
+        product.normalized_name = normalize_text(product.product_name)
+        create_field_value_version(db, product.id, None, "product_name", product.product_name, "human_edit",
+            f"user:{current_user.id}", 1.0, "confirmed", None, [],
+            "Product name confirmed by a human editor.", "confirmed", "identity")
+    if request.product_family and request.product_family.strip():
+        create_field_value_version(db, product.id, None, "product_family", request.product_family.strip(), "human_edit",
+            f"user:{current_user.id}", 1.0, "confirmed", None, [],
+            "Product family confirmed by a human editor.", "confirmed", "identity")
     from app.services.product_identity import preferred_product_variant
     variant = preferred_product_variant(db, product_id)
     if not variant:
@@ -742,8 +803,15 @@ def update_product_identity(
         if duplicate:
             raise HTTPException(409, "This GTIN already belongs to another product")
         variant.gtin = digits
+        create_field_value_version(db, None, variant.id, "gtin", digits, "human_edit",
+            f"user:{current_user.id}", 1.0, "confirmed", None, [],
+            "GTIN supplied by a human editor.", "confirmed", "identity")
     if request.variant is not None:
         variant.variant_name = request.variant.strip() or None
+        if variant.variant_name:
+            create_field_value_version(db, None, variant.id, "variant", variant.variant_name, "human_edit",
+                f"user:{current_user.id}", 1.0, "confirmed", None, [],
+                "Variant supplied by a human editor.", "confirmed", "identity")
     if request.size is not None:
         variant.size = request.size.strip() or None
     if request.unit is not None:
@@ -759,6 +827,7 @@ def update_product_identity(
         db.query(SourcePrice).filter(SourcePrice.product_variant_id == variant.id).update(
             {"country": request.market.strip()}, synchronize_session=False
         )
+    _refresh_product_understanding(db, product)
     db.commit()
     return {"updated": True, "product_id": str(product.id)}
 
@@ -1156,6 +1225,10 @@ def get_product_detail(
     from app.services.product_improvement import product_improvement_summary
     completeness = product_improvement_summary(db, prod)
 
+    from app.services.review_aggregate import select_review_aggregate
+    review_aggregate = select_review_aggregate(db, product_id)
+    if review_aggregate and review_aggregate.get("observation_id") is not None:
+        review_aggregate = {**review_aggregate, "observation_id": str(review_aggregate["observation_id"])}
     return ProductDetailOut(
         id=prod.id,
         internal_code=product_internal_code(prod.id),
@@ -1189,7 +1262,12 @@ def get_product_detail(
         key_ingredients=key_ingredients_out,
         dynamic_concerns=concerns_out,
         market_observations=market_observations,
+        review_aggregate=review_aggregate,
         corpus_evidence=corpus_evidence,
+        product_understanding=next((
+            fv.value for fv in fields
+            if fv.is_current and fv.field_name == "product_understanding" and isinstance(fv.value, dict)
+        ), None),
         completeness=completeness,
     )
 

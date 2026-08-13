@@ -112,6 +112,10 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "inci": next((row.raw_inci_text for row in formulations if _present(row.raw_inci_text)), None),
         "key_ingredients": [],
     }
+    understanding_row = current.get("product_understanding")
+    if understanding_row and isinstance(understanding_row.value, dict):
+        snapshot["product_understanding"] = understanding_row.value
+        snapshot["category_module"] = understanding_row.value.get("category_module")
     metadata = {}
     for name, row in current.items():
         snapshot[name] = row.value
@@ -162,7 +166,12 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "missing_high_priority_fields": gap_plan["missing_high_priority_fields"],
         "missing_optional_fields": gap_plan["missing_optional_fields"],
         "research_objectives": gap_plan["research_objectives"],
-        "fields_recommended_for_research": [item["field"] for item in gap_plan["research_objectives"]],
+        "research_phase": gap_plan["phase"],
+        "identity_resolution_required": gap_plan["identity_resolution_required"],
+        "blocked_objectives": gap_plan.get("blocked_objectives", []),
+        "fields_recommended_for_research": [
+            item["field"] for item in gap_plan["research_objectives"] + gap_plan.get("blocked_objectives", [])
+        ],
         "evidence_required_fields": list(EVIDENCE_REQUIRED_FIELDS),
         "inference_eligible_fields": [
             "subcategory", "product_type", "texture", "application_area", "target_audience",

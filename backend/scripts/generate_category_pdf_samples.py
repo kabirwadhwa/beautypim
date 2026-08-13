@@ -59,11 +59,13 @@ samples = {
             field("haircare", {"hair_types": {"recommended_for": ["Normal", "Oily roots"]}, "texture_format": {"value": "Gel shampoo"}})],
     },
     "makeup": {
-        **base, "product_name": "Second Skin Foundation", "product_category": "Makeup",
-        "field_values": [field("product_type", "Foundation"), field("target_audience", profiles), field("benefits", [{"statement": "Evens the look of complexion with buildable coverage."}]),
-            field("directions", "Blend a small amount from the centre of the face outward."),
-            field("makeup", {"shade_colour": {"value": "Medium Neutral"}, "coverage": {"value": "Medium, buildable"},
-                "finish": {"value": "Natural satin"}, "texture_format": {"value": "Fluid"}})],
+        **base, "brand_name": "Armani Beauty", "product_name": "Lip Maestro", "product_category": "Makeup",
+        "gtin": "3605522075283", "variants": [{"variant_name": "405 Sultan", "gtin": "3605522075283"}],
+        "field_values": [field("product_type", "Liquid Lipstick"), field("target_audience", profiles),
+            field("benefits", [{"statement": "Delivers rich colour with a polished velvet finish."}]),
+            field("directions", "Apply to the lips with the applicator and build to the desired intensity."),
+            field("makeup", {"shade_colour": {"value": "405 Sultan"}, "coverage": {"value": "Full"},
+                "finish": {"value": "Velvet"}, "texture_format": {"value": "Liquid lipstick"}})],
     },
 }
 

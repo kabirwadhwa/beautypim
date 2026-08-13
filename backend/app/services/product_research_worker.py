@@ -117,18 +117,9 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             research_objectives=configuration.get("research_objectives") or [],
         )
 
-        # One evidence-grounded synthesis per product, using the strongest
-        # exact-product aggregate review observation found by this run.
-        try:
-            from app.services.review_summarization import summarize_product_reviews
-            review_summary = summarize_product_reviews(db, product.id)
-            result["review_summary_generated"] = bool(review_summary)
-        except Exception as exc:
-            logger.warning("Review synthesis failed for %s: %s", product.id, exc)
-            result["review_summary_generated"] = False
-            result["review_summary_error"] = str(exc)
-
-        # Re-run enrichment after exact-source observations have been persisted.
+        # Re-run Product Understanding after phase-one evidence. The next plan
+        # is calculated from the newly persisted evidence, never from the old
+        # flat objective list.
         import_job = db.query(ImportJob).filter(ImportJob.id == item.import_job_id).first()
         if import_job:
             process_item_enrichment(
@@ -136,6 +127,37 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 mode=configuration.get("requested_mode") or "missing_only",
                 selected_fields=configuration.get("selected_fields") or [],
             )
+        from app.services.product_improvement import product_improvement_summary
+        next_plan = product_improvement_summary(db, product)
+        result["identity_phase_completed"] = configuration.get("research_phase") == "identity_resolution"
+        result["next_phase"] = next_plan.get("research_phase")
+        if next_plan.get("research_phase") == "attribute_completion":
+            attribute_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
+            if attribute_objectives and configuration.get("research_phase") == "identity_resolution":
+                attribute_result = _automatic_product_research(
+                    db, product, user, candidates=discovery.get("candidates") or [],
+                    research_objectives=attribute_objectives,
+                )
+                result["attribute_completion"] = attribute_result
+                if import_job:
+                    process_item_enrichment(
+                        db, item, import_job.column_mapping or {},
+                        mode=configuration.get("requested_mode") or "missing_only",
+                        selected_fields=configuration.get("selected_fields") or [],
+                    )
+            # Review synthesis is downstream product intelligence and therefore
+            # cannot run during an unresolved identity phase.
+            try:
+                from app.services.review_summarization import summarize_product_reviews
+                review_summary = summarize_product_reviews(db, product.id)
+                result["review_summary_generated"] = bool(review_summary)
+            except Exception as exc:
+                logger.warning("Review synthesis failed for %s: %s", product.id, exc)
+                result["review_summary_generated"] = False
+                result["review_summary_error"] = str(exc)
+        else:
+            result["review_summary_generated"] = False
+            result["identity_unresolved"] = True
         result["research_status"] = "completed"
         result["research_job_id"] = str(job.id)
         result["research_pending"] = False

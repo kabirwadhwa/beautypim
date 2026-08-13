@@ -82,6 +82,15 @@ def product_is_fragrance(db, product) -> bool:
     """Detect fragrance scope without treating a concentration guess as truth."""
     from app.models import Category, FieldValue, SourceListing
 
+    contract = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "product_understanding", FieldValue.is_current == True,
+    ).first()
+    if contract and isinstance(contract.value, dict):
+        # The accepted contract is authoritative; legacy text heuristics cannot
+        # override an explicit non-fragrance module.
+        return contract.value.get("category_module") == "fragrance"
+
     values = [product.product_name]
     values.extend(row.value for row in db.query(FieldValue).filter(
         FieldValue.canonical_product_id == product.id,

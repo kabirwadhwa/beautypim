@@ -583,6 +583,52 @@ def process_item_enrichment(
         if researched_variant and not variant.variant_name:
             variant.variant_name = str(researched_variant)
 
+    # Resolve semantics before the LLM sees this row.  Exact GTIN evidence may
+    # correct a supplier/legal entity, shorthand taxonomy, family or variant;
+    # weak source labels such as "STD" are never promoted to product facts.
+    product = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
+    from app.services.product_understanding import (
+        is_placeholder, resolve_product_understanding, understanding_snapshot_values,
+    )
+    product_understanding = resolve_product_understanding(
+        db, raw_data=raw_data, mapping=mapping, product=product, variant=variant,
+    )
+    understood = understanding_snapshot_values(product_understanding)
+    if product and product_understanding.get("identity_status") == "resolved":
+        human_identity = db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == product.id,
+            FieldValue.field_name.in_(["brand", "product_name"]),
+            FieldValue.source_type == "human_edit", FieldValue.is_current == True,
+        ).first()
+        if not human_identity:
+            before_identity = {"brand": product.brand.name if product.brand else None, "product_name": product.product_name}
+            resolved_brand, resolved_name = understood.get("brand"), understood.get("product_name")
+            if resolved_brand and normalize_text(resolved_brand) != normalize_text(before_identity["brand"]):
+                normalized_brand_name = normalize_text(resolved_brand)
+                brand_record = db.query(Brand).filter(Brand.normalized_name == normalized_brand_name).first()
+                if not brand_record:
+                    brand_record = Brand(id=uuid.uuid4(), name=resolved_brand, normalized_name=normalized_brand_name)
+                    db.add(brand_record)
+                    db.flush()
+                product.brand_id = brand_record.id
+            if resolved_name and normalize_text(resolved_name) != normalize_text(product.product_name):
+                product.product_name = resolved_name
+                product.normalized_name = normalize_text(resolved_name)
+            after_identity = {"brand": resolved_brand, "product_name": resolved_name}
+            if before_identity != after_identity:
+                db.add(AuditLog(
+                    id=uuid.uuid4(), entity_type="canonical_product", entity_id=product.id,
+                    entity_display_label=resolved_name, actor_type="rule", action="update",
+                    before_snapshot=before_identity, after_snapshot=after_identity,
+                    changed_fields=["brand", "product_name"],
+                    reason="Exact-product evidence resolved source semantic roles before enrichment.",
+                ))
+    raw_brand = understood.get("brand") or raw_brand
+    raw_name = understood.get("product_name") or raw_name
+    raw_category = understood.get("category") or raw_category
+    if not is_placeholder(understood.get("product_type")):
+        raw_product_type = understood["product_type"]
+
     # Start Enrichment Run
     item.enrichment_status = "processing"
     item.started_at = datetime.utcnow()
@@ -597,7 +643,8 @@ def process_item_enrichment(
             "product_type": raw_product_type,
             "claims": raw_claims, "directions": raw_directions,
             "market": raw_market, "language": raw_language, "image_url": raw_image_url,
-        }
+        },
+        "_beautypim_product_understanding": product_understanding,
     }
     from app.services.category_completeness import build_gap_plan
     gap_snapshot = {
@@ -606,6 +653,7 @@ def process_item_enrichment(
         "product_type": raw_product_type, "description": raw_desc, "image_url": raw_image_url,
         "inci": raw_ingr,
     }
+    gap_snapshot.update({key: value for key, value in understood.items() if value not in (None, "")})
     gap_metadata = {}
     for field_name, row in current_values.items():
         gap_snapshot[field_name] = row.value
@@ -613,7 +661,9 @@ def process_item_enrichment(
             "source_type": row.source_type, "semantic_status": row.semantic_status,
             "evidence": row.evidence or [], "researched": bool(row.enrichment_run_id),
         }
-    enrichment_source_context["_beautypim_gap_plan"] = build_gap_plan(gap_snapshot, gap_metadata)
+    gap_plan = build_gap_plan(gap_snapshot, gap_metadata)
+    enrichment_source_context["_beautypim_gap_plan"] = gap_plan
+    identity_only = gap_plan.get("phase") == "identity_resolution"
     if research_payloads:
         enrichment_source_context["_exact_product_web_observations"] = [
             compact_enrichment_value(payload) for payload in research_payloads[:5]
@@ -631,19 +681,25 @@ def process_item_enrichment(
         enrichment_source_context["_beautypim_catalogue_knowledge"] = compact_enrichment_value(catalogue_context)
 
     # Trigger LLM/Rule Engine
-    enrichment_result, run_id = run_ai_enrichment(
-        db=db,
-        name=raw_name,
-        brand=raw_brand,
-        description=raw_desc,
-        raw_ingredients=raw_ingr,
-        import_job_id=item.import_job_id,
-        import_job_item_id=item.id,
-        source_listing_id=listing.id,
-        canonical_product_id=item.canonical_product_id,
-        product_variant_id=item.product_variant_id,
-        source_context=enrichment_source_context,
-    )
+    if identity_only:
+        # The dependency is enforced here, not merely expressed in the prompt.
+        # No category/commercial synthesis occurs until research has produced a
+        # new authoritative Product Understanding contract.
+        enrichment_result, run_id = {}, None
+    else:
+        enrichment_result, run_id = run_ai_enrichment(
+            db=db,
+            name=raw_name,
+            brand=raw_brand,
+            description=raw_desc,
+            raw_ingredients=raw_ingr,
+            import_job_id=item.import_job_id,
+            import_job_item_id=item.id,
+            source_listing_id=listing.id,
+            canonical_product_id=item.canonical_product_id,
+            product_variant_id=item.product_variant_id,
+            source_context=enrichment_source_context,
+        )
     if run_id:
         db.query(EnrichmentRun).filter(EnrichmentRun.id == run_id).update({
             "requested_fields": {
@@ -655,22 +711,31 @@ def process_item_enrichment(
     source_ref = f"source_listing_id:{listing.id}"
 
     # Explicit source hierarchy and instructions outrank model inference.
-    explicit_classification = raw_product_type or raw_product_family
-    if explicit_classification:
+    explicit_classification = understood.get("product_type")
+    if not identity_only and explicit_classification and not is_placeholder(explicit_classification):
         explicit_family = explicit_classification.strip()
-        for field_name in ("subcategory", "product_type"):
+        for field_name in ("product_type",):
             enrichment_result[field_name] = {
                 "value": explicit_family,
                 "value_status": "explicit_source",
                 "confidence": 1.0,
                 "evidence": [{
-                    "source_field": mapping.get("product_type") or mapping.get("product_family", "product_family"),
+                    "source_field": "product_understanding",
                     "supporting_text": explicit_family,
                     "evidence_type": "explicit",
                 }],
-                "reasoning_summary": "Copied from the mapped source product family.",
+                "reasoning_summary": "Resolved by the product-understanding service before enrichment.",
             }
-    if raw_directions:
+    for field_name in (() if identity_only else ("subcategory", "application_area")):
+        resolved_value = understood.get(field_name)
+        if resolved_value and not is_placeholder(resolved_value):
+            enrichment_result[field_name] = {
+                "value": resolved_value, "value_status": "normalized_source",
+                "confidence": float(product_understanding.get("taxonomy", {}).get(field_name, {}).get("confidence") or .8),
+                "evidence": product_understanding.get("taxonomy", {}).get(field_name, {}).get("evidence") or [],
+                "reasoning_summary": "Resolved by the product-understanding service before enrichment.",
+            }
+    if raw_directions and not identity_only:
         enrichment_result["directions"] = {
             "value": raw_directions,
             "value_status": "explicit_source",
@@ -682,7 +747,7 @@ def process_item_enrichment(
             }],
             "reasoning_summary": "Copied from mapped source directions.",
         }
-    if raw_claims:
+    if raw_claims and not identity_only:
         source_claim_entries = [
             {
                 "statement": claim.strip(),
@@ -711,21 +776,53 @@ def process_item_enrichment(
             existing_benefits = []
         enrichment_result["benefits"] = source_claim_entries + existing_benefits
 
+    # The authoritative module gates generation. Irrelevant category modules
+    # are stripped rather than leaked into product detail, PDF or exports.
+    authoritative_module = product_understanding.get("category_module", "unknown")
+    for module_name in CATEGORY_MODULE_FIELDS:
+        if module_name != authoritative_module:
+            enrichment_result.pop(module_name, None)
     model_product_type = (enrichment_result.get('product_type') or {}).get('value', '')
     product_identity_text = f"{raw_name} {raw_category} {raw_product_family} " \
         f"__model_type__ {model_product_type}".lower()
-    enrichment_result = apply_category_specific_enrichment(
-        enrichment_result, product_identity_text, raw_ingr,
-    )
+    if not identity_only:
+        enrichment_result = apply_category_specific_enrichment(
+            enrichment_result, product_identity_text, raw_ingr,
+        )
+    for module_name in CATEGORY_MODULE_FIELDS:
+        if module_name != authoritative_module:
+            enrichment_result.pop(module_name, None)
     from app.services.category_completeness import quality_gate
-    enrichment_result, quality_rejections = quality_gate(enrichment_result)
+    enrichment_result, quality_rejections = quality_gate(
+        enrichment_result, authoritative_module, product_identity_text,
+    )
+    from app.services.product_understanding import enforce_evidence_scope
+    enrichment_result, scope_rejections = enforce_evidence_scope(
+        enrichment_result, product_understanding, raw_inci_present=bool(raw_ingr),
+    )
+    quality_rejections.extend(scope_rejections)
     if quality_rejections:
         enrichment_result["_quality_rejections"] = quality_rejections
     from app.services.enrichment import consolidate_enrichment_payload
     enrichment_result = consolidate_enrichment_payload(enrichment_result)
+
+    # Persist the versioned decision contract independently of individual
+    # enriched attributes so every downstream consumer can use one decision.
+    if should_write("product_understanding"):
+        create_field_value_version(
+            db=db, canonical_product_id=item.canonical_product_id, product_variant_id=None,
+            field_name="product_understanding", value=product_understanding,
+            source_type="deterministic_rule", source_ref=source_ref,
+            confidence=float(product_understanding.get("confidence") or 0.0),
+            status="conflicting" if product_understanding.get("identity_status") == "conflicting" else
+                "confirmed" if product_understanding.get("identity_status") == "resolved" else "inferred",
+            run_id=run_id, evidence=[], reasoning_summary="Authoritative pre-enrichment identity and taxonomy decision.",
+            semantic_status=product_understanding.get("identity_status"),
+            semantic_status_type="product_understanding",
+        )
     from app.services.product_identity import product_version_label
     raw_identity_text = f"{raw_name} {raw_category} {raw_product_family} {raw_product_type}"
-    if any(token in raw_identity_text.lower() for token in ("perfume", "parfum", "fragrance", "eau de")) \
+    if not identity_only and any(token in raw_identity_text.lower() for token in ("perfume", "parfum", "fragrance", "eau de")) \
             and not product_version_label(raw_identity_text):
         enrichment_result["product_type"] = {
             "value": "Perfume (concentration not specified)",
@@ -742,6 +839,8 @@ def process_item_enrichment(
         if raw_category
         else inferred_category_name(inferred_product_type, inferred_application_area)
     )
+    if authoritative_module == "unknown" or identity_only:
+        root_name = ""
     if root_name:
         root = db.query(Category).filter(Category.path.ilike(root_name)).first()
         if not root:
@@ -749,7 +848,7 @@ def process_item_enrichment(
             db.add(root)
             db.flush()
         family_value = (
-            raw_product_family
+            understood.get("subcategory")
             or (enrichment_result.get("subcategory") or {}).get("value")
             or inferred_product_type
         )
@@ -946,6 +1045,15 @@ def process_item_enrichment(
             ValidationIssue.product_variant_id == item.product_variant_id,
             ValidationIssue.created_by_type == "system"
         ).delete()
+
+    from app.services.product_understanding import semantic_issues
+    for semantic_issue in semantic_issues(product_understanding, enrichment_result):
+        db.add(ValidationIssue(
+            id=uuid.uuid4(), canonical_product_id=item.canonical_product_id,
+            field_name=semantic_issue["field"], severity=semantic_issue["severity"],
+            issue_type=semantic_issue["type"], message=semantic_issue["message"],
+            created_by_type="system",
+        ))
 
     from app.services.deduplication import normalize_volume
     import re
@@ -1230,6 +1338,21 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
                 source_value(raw_data, mapping, "size"), source_value(raw_data, mapping, "unit")
             )
             raw_price = source_value(raw_data, mapping, "price")
+
+            # Identity resolution precedes canonical matching/creation.  This
+            # prevents supplier aliases and shorthand descriptions from
+            # becoming permanent brand or family records when exact corpus
+            # evidence already identifies the consumer product.
+            from app.services.product_understanding import resolve_product_understanding, understanding_snapshot_values
+            pre_understanding = resolve_product_understanding(db, raw_data=raw_data, mapping=mapping)
+            pre_values = understanding_snapshot_values(pre_understanding)
+            if pre_understanding.get("identity_status") == "resolved":
+                raw_name = pre_values.get("product_name") or raw_name
+                raw_brand = pre_values.get("brand") or raw_brand
+                raw_ean = pre_values.get("gtin") or raw_ean
+                understood_size = pre_values.get("size")
+                if understood_size and not raw_size:
+                    raw_size, raw_unit = split_size_and_unit(str(understood_size), raw_unit)
             
             # Step 1: Matching / Deduplication
             match_status, score, matched_canonical_id, matched_variant_id = evaluate_match(

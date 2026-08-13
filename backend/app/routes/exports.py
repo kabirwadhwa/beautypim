@@ -49,6 +49,18 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
         ).all()
 
         fields_dict: Dict[str, FieldValue] = {fv.field_name: fv for fv in fvs}
+        understanding = fields_dict.get("product_understanding")
+        understanding_value = understanding.value if understanding and isinstance(understanding.value, dict) else {}
+        authoritative_module = understanding_value.get("category_module")
+        row["category_module"] = authoritative_module or "UNKNOWN"
+        from app.services.review_aggregate import select_review_aggregate
+        review = select_review_aggregate(db, prod.id) or {}
+        row.update({
+            "average_rating": review.get("average_rating"),
+            "review_count": review.get("review_count"),
+            "review_summary": (review.get("review_summary") or {}).get("ai_summary_text"),
+            "review_source": review.get("source"),
+        })
 
         # Apply strict priority selection algorithm:
         # 1. human_edit
@@ -66,6 +78,9 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
         for key in enrichment_keys:
             fv = fields_dict.get(key)
             val = "UNKNOWN"
+            if key in {"skincare", "haircare", "makeup", "fragrance"} and authoritative_module and key != authoritative_module:
+                row[key] = "NOT_APPLICABLE"
+                continue
             
             if fv:
                 if fv.review_status == "conflicting":

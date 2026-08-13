@@ -112,47 +112,28 @@ def _ai_lines(summary: dict[str, Any], product_name: str, brand: str) -> tuple[l
 
 def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[str, Any] | None:
     """Summarize the strongest current exact-product review observation once."""
-    observations = db.query(ScrapedProductObservation).filter(
-        ScrapedProductObservation.canonical_product_id == product_id,
-        # Research observations may be marked conflict when non-review fields
-        # disagree during reconciliation. They remain explicitly attached to
-        # this canonical product and are already used for its displayed review
-        # aggregates. Exclude possible/unmatched observations, but summarize
-        # matched and conflict evidence consistently.
-        ScrapedProductObservation.match_status.in_(["matched", "conflict"]),
-    ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(50).all()
-    eligible = []
-    for observation in observations:
-        payload = observation.normalized_payload or {}
-        summary = payload.get("review_summary") or {}
-        if not isinstance(summary, dict):
-            summary = {}
-        # Some public product pages expose only aggregateRating at the product
-        # level. Treat those exact-product rating/count values as valid review
-        # evidence even when an adapter did not duplicate them into the nested
-        # review_summary payload.
-        summary = {
-            **summary,
-            "average_rating": summary.get("average_rating", payload.get("rating")),
-            "review_count": summary.get("review_count", payload.get("review_count")),
-        }
-        if not any(summary.get(key) not in (None, "", [], {}) for key in (
-            "average_rating", "review_count", "review_sample_count",
-            "frequently_praised_topics", "frequent_complaint_topics",
-        )):
-            continue
-        if summary.get("ai_summary_lines") and not force:
-            return summary
-        eligible.append((observation, payload, summary))
-    if not eligible:
+    from app.services.review_aggregate import select_review_aggregate
+    aggregate = select_review_aggregate(db, product_id)
+    if not aggregate:
         return None
-    observation, payload, summary = max(
-        eligible,
-        key=lambda row: (
-            _whole_number(row[2].get("review_sample_count")),
-            _whole_number(row[2].get("review_count")),
-        ),
-    )
+    if not aggregate.get("observation_id"):
+        summary = {**(aggregate.get("review_summary") or {}),
+                   "average_rating": aggregate.get("average_rating"),
+                   "review_count": aggregate.get("review_count")}
+        product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
+        brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None
+        lines, model = _ai_lines(summary, product.product_name if product else "", brand.name if brand else "")
+        return {**summary, "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines), "summary": "\n".join(lines),
+                "summary_model": model, "summary_generated_at": datetime.now(timezone.utc).isoformat()}
+    observation = db.query(ScrapedProductObservation).filter(
+        ScrapedProductObservation.id == aggregate["observation_id"]
+    ).one()
+    payload = observation.normalized_payload or {}
+    summary = {**(aggregate.get("review_summary") or {}),
+               "average_rating": aggregate.get("average_rating"),
+               "review_count": aggregate.get("review_count")}
+    if summary.get("ai_summary_lines") and not force:
+        return summary
     product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
     brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None
     lines, model = _ai_lines(

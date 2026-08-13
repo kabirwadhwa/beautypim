@@ -16,7 +16,7 @@ DIRECT_ONLY_FIELDS = {"gtin", "claims", "raw_inci", "price", "availability", "cl
 FAMILY_SAFE_FIELDS = {
     "description", "benefits", "targeted_concerns", "directions", "product_positioning",
     "sensory_description", "category", "subcategory", "product_type", "application_area",
-    "skin_types", "hair_types", "texture_format", "finish", "coverage", "key_ingredients",
+    "skin_types", "hair_types", "texture_format", "finish", "coverage",
 }
 
 

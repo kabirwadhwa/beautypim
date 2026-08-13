@@ -348,6 +348,8 @@ def import_corpus(db: Session, job: KnowledgeCorpusImportJob, path: str, adapter
     job.completed_at = datetime.now(timezone.utc); job.heartbeat_at = job.completed_at
     job.error_summary = "\n".join(errors) or None
     job.metrics = corpus_metrics(db)
+    from app.services.product_understanding import refresh_contracts_after_corpus_import
+    job.metrics = {**job.metrics, "product_understanding_contracts_refreshed": refresh_contracts_after_corpus_import(db)}
     db.commit(); db.refresh(job)
     return job
 

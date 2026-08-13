@@ -145,14 +145,16 @@ def _current_fields(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _review_lines(data: dict[str, Any]) -> list[str]:
-    for observation in data.get("market_observations") or []:
-        if not isinstance(observation, dict):
-            continue
-        rating = observation.get("rating")
+    observation = data.get("review_aggregate") or {}
+    if not observation and len(data.get("market_observations") or []) == 1:
+        # Backward-compatible serialized dossiers with one unambiguous review
+        # observation require no competing selection decision.
+        legacy = data["market_observations"][0]
+        observation = {**legacy, "average_rating": legacy.get("rating"), "source": legacy.get("source_name")}
+    if observation:
+        rating = observation.get("average_rating")
         count = observation.get("review_count")
         summary = observation.get("review_summary")
-        if rating in (None, "") and count in (None, "") and summary in (None, "", {}, []):
-            continue
         lines: list[str] = []
         headline: list[str] = []
         if rating not in (None, ""):
@@ -453,10 +455,12 @@ def _category_profile(module_name: str, module: dict[str, Any], concerns: list[s
             ("Hair types", hair_types.get("recommended_for") if isinstance(hair_types, dict) else hair_types),
             ("Texture / format", module.get("texture_format")), ("Targeted concerns", concerns),
         ]
-    return "Makeup Profile", [
+    if module_name == "makeup":
+        return "Makeup Profile", [
         ("Shade / colour", module.get("shade_colour")), ("Coverage", module.get("coverage")),
         ("Finish", module.get("finish")), ("Texture / format", module.get("texture_format")),
-    ]
+        ]
+    return "Product Profile", []
 
 
 def _ingredient_name(item: dict[str, Any]) -> str:
@@ -555,7 +559,9 @@ def _render_category(data: dict[str, Any], current: dict[str, Any], module_name:
         return _build_fragrance_pdf(data, current)
     if module_name in {"skincare", "haircare", "makeup"}:
         return _build_category_pdf(data, current, module_name)
-    return _build_category_pdf(data, current, "skincare")
+    # Unknown products must never silently acquire a skincare dossier.  Use a
+    # compact universal sheet until identity/taxonomy has been resolved.
+    return _build_category_pdf(data, current, "unknown")
 
 
 def build_product_pdf(product: Any) -> bytes:
@@ -563,7 +569,16 @@ def build_product_pdf(product: Any) -> bytes:
     data = product.model_dump(mode="json") if hasattr(product, "model_dump") else dict(product)
     current = _current_fields(data)
     modules = {name: current.get(name) for name in ("skincare", "haircare", "makeup", "fragrance")}
-    module_name = next((name for name, value in modules.items() if isinstance(value, dict)), "")
+    understanding = current.get("product_understanding") if isinstance(current.get("product_understanding"), dict) else {}
+    module_name = understanding.get("category_module") or next(
+        (name for name, value in modules.items() if isinstance(value, dict)), ""
+    )
+    if not module_name:
+        from app.services.category_completeness import category_module
+        module_name = category_module({
+            "category": data.get("product_category") or data.get("category_path"),
+            "subcategory": data.get("subcategory"), "product_type": current.get("product_type"),
+        })
     preferred = _select_density(data, current)
     order = ("low", "medium", "high")
     start = order.index(preferred.name)
