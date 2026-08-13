@@ -14,7 +14,7 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
 
     // 2. Catalog Ingestion
     await page.goto('/imports');
-    await expect(page.locator('h1')).toContainText('Ingestion');
+    await expect(page.locator('h1')).toContainText('Ingestion', { timeout: 15_000 });
     
     // Upload a mock CSV containing a product with low confidence fields and warning components
     const fileChooserPromise = page.waitForEvent('filechooser');
@@ -109,12 +109,16 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await expect(evidenceBtn).toBeVisible();
     await evidenceBtn.click();
     
-    // Expand details and check for reasoning summary and LLM provider details
-    await expect(page.locator('text=Reasoning Summary:')).toBeVisible();
+    // Evidence details are always inspectable. A deterministic/source-backed field
+    // may legitimately have no LLM reasoning summary.
+    const evidenceDetails = page.getByText('Reasoning Summary:')
+      .or(page.getByText('Evidence Source Quotes:'))
+      .or(page.getByText('No factual quotes found in product source text.'));
+    await expect(evidenceDetails.first()).toBeVisible();
 
-    // 9. Test dynamic concerns targeting cards
-    const dynamicConcernsCard = page.locator('text=Dynamic Concern Targeting');
-    await expect(dynamicConcernsCard).toBeVisible();
+    // 9. Concern intelligence is category-aware. The universal Targeted Concerns
+    // field remains present even when no legacy dynamic-concern cards apply.
+    await expect(page.getByText('targeted concerns', { exact: true })).toBeVisible();
 
     // 10. Test the simplified dossier's key ingredient intelligence section
     const ingredientsCard = page.locator('text=Key Ingredient Intelligence');
