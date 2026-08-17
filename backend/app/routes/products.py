@@ -258,6 +258,16 @@ def list_products(
 
     offset = (page - 1) * limit
     products = query.order_by(CanonicalProduct.created_at.desc()).offset(offset).limit(limit).all()
+    product_ids = [product.id for product in products]
+    variant_counts = dict(
+        db.query(ProductVariant.canonical_product_id, func.count(ProductVariant.id))
+        .filter(
+            ProductVariant.canonical_product_id.in_(product_ids),
+            ProductVariant.is_deleted == False,
+        )
+        .group_by(ProductVariant.canonical_product_id)
+        .all()
+    ) if product_ids else {}
 
     # Format output items with Brand and Category titles
     out = []
@@ -309,6 +319,7 @@ def list_products(
             ),
             product_type=current_classifications.get("product_type"),
             gtin=variant.gtin if variant else None,
+            variant_count=variant_counts.get(prod.id, 0),
             image_url=prod.image_url,
             review_status=prod.review_status,
             validation_issue_count=len(issues),
@@ -1246,6 +1257,7 @@ def get_product_detail(
         subcategory=next((fv.value for fv in fields if fv.is_current and fv.field_name == "subcategory"), None) or (category_parts[-1] if len(category_parts) > 1 else None),
         product_type=next((fv.value for fv in fields if fv.is_current and fv.field_name == "product_type"), None),
         gtin=variants[0].gtin if variants else None,
+        variant_count=len(variants),
         image_url=source_image_url,
         description=source_description,
         review_status=prod.review_status,

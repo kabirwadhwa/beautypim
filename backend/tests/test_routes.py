@@ -100,6 +100,7 @@ def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(cli
     assert by_gtin.status_code == 200
     assert [row["id"] for row in by_gtin.json()] == [str(product.id)]
     assert by_gtin.json()[0]["validation_issue_count"] == 1
+    assert by_gtin.json()[0]["variant_count"] == 1
 
     internal_code = by_gtin.json()[0]["internal_code"]
     by_icn = client.get(f"/api/products?search={internal_code}", headers=headers)

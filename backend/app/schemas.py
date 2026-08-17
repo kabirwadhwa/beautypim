@@ -401,6 +401,7 @@ class ProductOut(BaseModel):
     subcategory: Optional[str] = None
     product_type: Optional[str] = None
     gtin: Optional[str] = None
+    variant_count: int = 0
     image_url: Optional[str] = None
     review_status: str
     validation_issue_count: int = 0

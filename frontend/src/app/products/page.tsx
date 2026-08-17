@@ -17,6 +17,7 @@ interface Product {
   subcategory: string | null;
   product_type: string | null;
   gtin: string | null;
+  variant_count: number;
   review_status: string;
   validation_issue_count: number;
   highest_issue_severity: string | null;
@@ -46,19 +47,27 @@ export default function ProductsPage() {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
 
-      let url = `${API_URL}/products?limit=100`;
-      if (debouncedSearch) url += `&search=${encodeURIComponent(debouncedSearch)}`;
-      if (statusFilter) url += `&status_filter=${encodeURIComponent(statusFilter)}`;
-      if (issueFilter !== null) url += `&issue_filter=${issueFilter}`;
-
-      const resp = await fetch(url, { headers, signal });
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => null);
-        throw new Error(body?.detail || "Unable to load products.");
+      const pageSize = 100;
+      const allProducts: Product[] = [];
+      // The backend intentionally caps each response. Fetch every page so the
+      // grid, filters, select-all and bulk actions operate on the full customer
+      // catalogue rather than silently stopping at the first 100 products.
+      for (let page = 1; page <= 1000; page += 1) {
+        const params = new URLSearchParams({ limit: String(pageSize), page: String(page) });
+        if (debouncedSearch) params.set('search', debouncedSearch);
+        if (statusFilter) params.set('status_filter', statusFilter);
+        if (issueFilter !== null) params.set('issue_filter', String(issueFilter));
+        const resp = await fetch(`${API_URL}/products?${params.toString()}`, { headers, signal });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => null);
+          throw new Error(body?.detail || "Unable to load products.");
+        }
+        const pageProducts: Product[] = await resp.json();
+        allProducts.push(...pageProducts);
+        if (pageProducts.length < pageSize) break;
       }
-      const data = await resp.json();
-      setProducts(data || []);
-      setSelectedIds(previous => previous.filter(id => data.some((product: Product) => product.id === id)));
+      setProducts(allProducts);
+      setSelectedIds(previous => previous.filter(id => allProducts.some(product => product.id === id)));
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(e?.message || "Unable to load products.");
     } finally {
@@ -91,6 +100,7 @@ export default function ProductsPage() {
     (!categoryFilter || product.product_category === categoryFilter) &&
     (!productTypeFilter || product.product_type === productTypeFilter)
   );
+  const visibleVariantCount = visibleProducts.reduce((total, product) => total + (product.variant_count || 0), 0);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -328,6 +338,17 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {!loading && (
+        <div role="status" style={{ marginBottom: 12, color: '#94a3b8', fontSize: 13 }}>
+          Showing <strong style={{ color: '#f8fafc' }}>{visibleProducts.length}</strong> product families
+          {' · '}
+          <strong style={{ color: '#f8fafc' }}>{visibleVariantCount}</strong> variants
+          {(categoryFilter || productTypeFilter) && visibleProducts.length !== products.length
+            ? ` (filtered from ${products.length} loaded families)`
+            : ' loaded'}
+        </div>
+      )}
+
       <div className={styles.tableContainer}>
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 48, color: '#64748b' }}>
@@ -348,6 +369,7 @@ export default function ProductsPage() {
                 <th>Brand Name</th>
                 <th>Product Name</th>
                 <th>GTIN / EAN</th>
+                <th>Variants</th>
                 <th>Category</th>
                 <th>Subcategory</th>
                 <th>Product Type</th>
@@ -359,7 +381,7 @@ export default function ProductsPage() {
             <tbody>
               {visibleProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={11} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
+                  <td colSpan={12} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
                     No products found matching active filter parameters.
                   </td>
                 </tr>
@@ -379,6 +401,7 @@ export default function ProductsPage() {
                     <td style={{ fontWeight: 600 }}>{p.brand_name}</td>
                     <td>{p.product_name}</td>
                     <td style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{p.gtin || "—"}</td>
+                    <td>{p.variant_count || 0}</td>
                     <td>{p.product_category || "—"}</td>
                     <td style={{ color: '#c4b5fd' }}>{p.subcategory || "—"}</td>
                     <td style={{ color: '#94a3b8' }}>{p.product_type || "—"}</td>
