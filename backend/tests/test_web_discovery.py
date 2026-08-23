@@ -6,7 +6,7 @@ import pytest
 from app.config import settings
 from app.scraping.url_safety import UnsafeUrl
 from app.services.web_discovery import (
-    SearchProviderUnavailable, discover_product_sources,
+    SearchProviderUnavailable, SearchRateLimited, discover_product_sources,
     _parse_openai_market_observations, poll_product_source_discovery,
     start_product_source_discovery,
 )
@@ -192,6 +192,41 @@ def test_durable_discovery_persists_and_polls_the_same_response(post, get, monke
     assert completed["status"] == "completed"
     assert post.call_count == 1
     get.assert_called_once()
+
+
+@patch("app.services.web_discovery.time.sleep")
+@patch("app.services.web_discovery.requests.post")
+def test_start_discovery_retries_provider_429_without_duplicate_success(post, sleep, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", None)
+    monkeypatch.setattr(settings, "OPENAI_WEB_RESEARCH_MAX_RETRIES", 2)
+    monkeypatch.setattr(settings, "OPENAI_WEB_RESEARCH_BACKOFF_SECONDS", 0.1)
+    limited = Mock(status_code=429, headers={"Retry-After": "0.2"}, text="rate limited")
+    success = Mock(status_code=200)
+    success.json.return_value = {"id": "resp_after_wait", "status": "queued", "output": []}
+    post.side_effect = [limited, success]
+
+    state = start_product_source_discovery(
+        brand="Lattafa", product_name="Khamrah Dukhan",
+        identity_queries=[{"strategy": "exact_gtin", "query": "6290362342373"}],
+    )
+
+    assert state["response_id"] == "resp_after_wait"
+    assert state["provider_attempts"] == 2
+    assert len(state["retry_delays"]) == 1
+    assert post.call_count == 2
+    sleep.assert_called_once()
+
+
+@patch("app.services.web_discovery.requests.get")
+def test_poll_reports_provider_retry_after(get, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "openai-test-key")
+    get.return_value = Mock(status_code=429, headers={"Retry-After": "3"}, text="slow down")
+    with pytest.raises(SearchRateLimited) as error:
+        poll_product_source_discovery({
+            "provider": "openai", "status": "in_progress", "response_id": "resp_1",
+        })
+    assert error.value.retry_after == 3
 
 
 @pytest.mark.parametrize("provider", ["openai", "brave"])

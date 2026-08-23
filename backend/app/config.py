@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # AI Cost and Job Processing Controls
     BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "5"))
     MAX_CONCURRENCY: int = int(os.getenv("MAX_CONCURRENCY", "3"))
+    # Paid web research is intentionally throttled separately from ordinary
+    # enrichment.  One large search can consume a substantial part of the TPM
+    # window, so reliability is preferred over parallel speed by default.
+    OPENAI_WEB_RESEARCH_CONCURRENCY: int = int(os.getenv("OPENAI_WEB_RESEARCH_CONCURRENCY", "1"))
+    OPENAI_WEB_RESEARCH_MAX_RETRIES: int = int(os.getenv("OPENAI_WEB_RESEARCH_MAX_RETRIES", "3"))
+    OPENAI_WEB_RESEARCH_BACKOFF_SECONDS: float = float(os.getenv("OPENAI_WEB_RESEARCH_BACKOFF_SECONDS", "2"))
     MAX_JOB_COST_LIMIT: float = float(os.getenv("MAX_JOB_COST_LIMIT", "50.0"))
     
     # Ingestion Constraints

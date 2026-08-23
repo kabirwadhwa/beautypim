@@ -5,8 +5,21 @@ from app.models import (
     Brand, CanonicalProduct, CrawlJob, CrawlUrl, FieldValue, ImportJob, RawPageObservation,
     ScrapedProductObservation, SourceListing,
 )
-from app.services.review_summarization import summarize_product_reviews
+from app.services.review_summarization import summarize_product_reviews, _insufficient_lines
 from app.services.review_aggregate import select_review_aggregate
+from app.services.review_aggregate import classify_review_quality, _quality_rank
+
+
+def test_review_quality_thresholds_are_central_and_truthful():
+    assert classify_review_quality(1.0, 1) == "insufficient"
+    assert classify_review_quality(None, 30) == "insufficient"
+    assert classify_review_quality(4.2, 8) == "weak"
+    assert classify_review_quality(4.4, 20) == "moderate"
+    assert classify_review_quality(4.7, 500) == "strong"
+    assert _quality_rank(4.2, 8) > _quality_rank(None, 3000)
+    lines = _insufficient_lines({"average_rating": 1.0, "review_count": 1})
+    assert "does not present" in " ".join(lines)
+    assert "1.0/5" not in " ".join(lines)
 
 
 def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch):

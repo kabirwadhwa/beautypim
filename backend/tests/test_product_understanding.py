@@ -57,6 +57,12 @@ def test_multilingual_taxonomy_signals():
     assert infer_module("Haar", "Shampoo") == "haircare"
 
 
+def test_common_body_and_bath_products_receive_safe_beauty_module():
+    assert infer_module("Body Care", "Body Milk") == "skincare"
+    assert infer_module("Bath & Shower", "Shower Gel") == "skincare"
+    assert infer_module("Hand Care", "Hydrating Hand Cream") == "skincare"
+
+
 def test_enterprise_row_resolves_brand_family_variant_and_makeup(monkeypatch):
     monkeypatch.setattr("app.services.product_understanding.retrieve_corpus_evidence", lambda *a, **k: _exact_armani())
     raw = {

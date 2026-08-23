@@ -431,8 +431,19 @@ def test_bulk_improve_queues_durable_jobs_without_running_ai_in_request(client: 
 
     jobs = db.query(CrawlJob).filter(CrawlJob.id.in_([uuid.UUID(value) for value in job_ids])).all()
     jobs[0].status = "completed"
+    jobs[0].configuration = {**(jobs[0].configuration or {}), "result": {
+        "business_outcome": "improved", "business_status": "READY",
+        "before_completeness": 40, "after_completeness": 82,
+        "fields_added": ["description", "benefits"], "sources_ingested": 2,
+    }}
     jobs[1].status = "failed"
     jobs[1].error_summary = "Research provider unavailable"
+    jobs[1].configuration = {**(jobs[1].configuration or {}), "result": {
+        "business_outcome": "rate_limited_retriable",
+        "business_status": "TECHNICAL_RETRY_REQUIRED",
+        "before_completeness": 35, "after_completeness": 35,
+        "fields_added": [], "sources_ingested": 0,
+    }}
     db.commit()
     finished = client.post(
         "/api/products/bulk/actions/improve/status", headers=headers,
@@ -442,6 +453,10 @@ def test_bulk_improve_queues_durable_jobs_without_running_ai_in_request(client: 
     assert finished.json()["progress_percent"] == 100
     assert finished.json()["successful_count"] == 1
     assert finished.json()["failed_count"] == 1
+    assert finished.json()["outcome_counts"]["improved"] == 1
+    assert finished.json()["outcome_counts"]["rate_limited_retriable"] == 1
+    assert finished.json()["items"][0]["before_completeness"] == 40
+    assert finished.json()["items"][0]["after_completeness"] == 82
     assert finished.json()["all_terminal"] is True
     process.assert_not_called()
 

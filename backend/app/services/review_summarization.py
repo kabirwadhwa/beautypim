@@ -57,6 +57,20 @@ def _fallback_lines(summary: dict[str, Any]) -> list[str]:
     return [opening, praise, concern, basis]
 
 
+def _insufficient_lines(summary: dict[str, Any]) -> list[str]:
+    total = _whole_number(summary.get("review_count"))
+    first = (
+        f"Review evidence is insufficient for a reliable aggregate: {total:,} observed review{'s' if total != 1 else ''}."
+        if total else "A review count or usable average rating is not available from current evidence."
+    )
+    return [
+        first,
+        "BeautyPIM does not present this limited evidence as a commercially meaningful average rating.",
+        "The available aggregate cannot establish recurring praise or complaint themes.",
+        "Additional exact-product review evidence is required before customer sentiment is summarized.",
+    ]
+
+
 def _valid_lines(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -116,13 +130,18 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
     aggregate = select_review_aggregate(db, product_id)
     if not aggregate:
         return None
+    # A count without a rating, or a single review, cannot support sentiment
+    # synthesis.  Keep the evidence, but use the canonical truthful disclosure.
+    insufficient = aggregate.get("review_quality") == "insufficient"
     if not aggregate.get("observation_id"):
         summary = {**(aggregate.get("review_summary") or {}),
                    "average_rating": aggregate.get("average_rating"),
                    "review_count": aggregate.get("review_count")}
         product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
         brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None
-        lines, model = _ai_lines(summary, product.product_name if product else "", brand.name if brand else "")
+        lines, model = (
+            _insufficient_lines(summary), "deterministic-insufficient-review-evidence"
+        ) if insufficient else _ai_lines(summary, product.product_name if product else "", brand.name if brand else "")
         enriched = {**summary, "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines),
                     "summary": "\n".join(lines), "summary_model": model,
                     "summary_generated_at": datetime.now(timezone.utc).isoformat()}
@@ -158,7 +177,9 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
         return summary
     product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
     brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None
-    lines, model = _ai_lines(
+    lines, model = (
+        _insufficient_lines(summary), "deterministic-insufficient-review-evidence"
+    ) if insufficient else _ai_lines(
         summary, product.product_name if product else "", brand.name if brand else "",
     )
     enriched_summary = {

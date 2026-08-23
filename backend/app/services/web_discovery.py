@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import random
+import re
 import time
 import uuid
 from urllib.parse import urlparse
@@ -14,6 +16,31 @@ from app.scraping.url_safety import UnsafeUrl, validate_public_url
 
 class SearchProviderUnavailable(RuntimeError):
     pass
+
+
+class SearchRateLimited(SearchProviderUnavailable):
+    def __init__(self, message: str, retry_after: float = 1.0, *, restart_required: bool = False):
+        super().__init__(message)
+        self.retry_after = max(0.1, float(retry_after))
+        self.restart_required = restart_required
+
+
+class SearchTransient(SearchProviderUnavailable):
+    def __init__(self, message: str, retry_after: float = 1.0):
+        super().__init__(message)
+        self.retry_after = max(0.1, float(retry_after))
+
+
+def _retry_after(headers: dict | None, message: str = "", default: float = 1.0) -> float:
+    value = (headers or {}).get("Retry-After") or (headers or {}).get("retry-after")
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        match = re.search(r"try again in\s+([0-9.]+)\s*(ms|s|seconds?)", message, re.I)
+        if match:
+            delay = float(match.group(1))
+            return max(0.1, delay / 1000 if match.group(2).lower() == "ms" else delay)
+    return default
 
 
 def _provider_status(payload: dict) -> str:
@@ -54,6 +81,7 @@ def start_product_source_discovery(
     *, brand: str, product_name: str, product_format: str = "",
     gtin: str = "", approved_domains: list[str] | None = None,
     research_objectives: list[str] | None = None,
+    identity_queries: list[dict[str, str]] | None = None,
 ) -> dict:
     """Start one durable provider request and return serializable polling state."""
     if not settings.OPENAI_API_KEY and not settings.BRAVE_SEARCH_API_KEY:
@@ -68,11 +96,16 @@ def start_product_source_discovery(
             "domains": domains, "candidates": _discover_with_brave(identity, domains),
         }
     model = settings.OPENAI_WEB_SEARCH_FALLBACK_MODEL or settings.OPENAI_WEB_SEARCH_MODEL
-    payload = _start_openai_discovery(identity, domains, model, research_objectives)
+    payload, attempts, retry_delays = _start_openai_discovery_with_retry(
+        identity, domains, model, research_objectives, identity_queries,
+    )
     status = _provider_status(payload)
     return {
         "provider": "openai", "status": status,
         "response_id": payload.get("id"), "domains": domains, "model": model,
+        "provider_attempts": attempts, "retry_delays": retry_delays,
+        "usage": payload.get("usage") or {},
+        "identity_queries_tried": identity_queries or [{"strategy": "canonical", "query": identity}],
         "candidates": _parse_openai_candidates(payload, domains, model)
         if status not in {"queued", "in_progress"} else [],
         "market_observations": _parse_openai_market_observations(payload, domains)
@@ -96,14 +129,31 @@ def poll_product_source_discovery(state: dict) -> dict:
     except requests.Timeout:
         return state
     if poll.status_code != 200:
+        if poll.status_code == 429:
+            raise SearchRateLimited(
+                "OpenAI live-search status was rate limited.",
+                _retry_after(poll.headers, getattr(poll, "text", "")),
+            )
+        if poll.status_code in {500, 502, 503, 504}:
+            # The background response still exists. Leave the state intact and
+            # let the durable worker poll the same paid request again.
+            return state
         raise SearchProviderUnavailable(
             f"OpenAI live-search status returned HTTP {poll.status_code}."
         )
     payload = poll.json()
     status = _provider_status(payload)
     updated = {**state, "status": status}
+    if payload.get("usage"):
+        updated["usage"] = payload.get("usage")
     if status in {"failed", "cancelled", "incomplete"}:
         detail = (payload.get("error") or {}).get("message") or status
+        if "rate limit" in detail.lower() or "tokens per min" in detail.lower():
+            raise SearchRateLimited(
+                f"OpenAI live search ended with status {status}: {detail}",
+                _retry_after({}, detail),
+                restart_required=True,
+            )
         raise SearchProviderUnavailable(f"OpenAI live search ended with status {status}: {detail}")
     if status not in {"queued", "in_progress"}:
         updated["candidates"] = _parse_openai_candidates(
@@ -144,7 +194,8 @@ def _discover_with_openai_model(identity: str, domains: list[str], model: str) -
 
 
 def _start_openai_discovery(identity: str, domains: list[str], model: str,
-                            research_objectives: list[str] | None = None) -> dict:
+                            research_objectives: list[str] | None = None,
+                            identity_queries: list[dict[str, str]] | None = None) -> dict:
     tool: dict = {
         "type": "web_search", "external_web_access": True,
         "search_context_size": "low", "search_content_types": ["text", "image"],
@@ -187,6 +238,8 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
         }},
         "input": (
             f"Find the official brand product page and reputable retailer product pages for: {identity}. "
+            f"Use these bounded identity queries in order until exact identity is established: "
+            f"{json.dumps(identity_queries or [{'strategy': 'canonical', 'query': identity}])}. "
             f"The unresolved high-value fields are: {', '.join(research_objectives or []) or 'official product evidence'}. "
             "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
             "Include results from multiple distinct domains when available: the official page for identity and imagery, "
@@ -217,10 +270,49 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             "Live search could not be started in time. It was not retried, to avoid duplicate API usage."
         ) from exc
     if response.status_code != 200:
+        if response.status_code == 429:
+            detail = getattr(response, "text", "")
+            raise SearchRateLimited(
+                "OpenAI live web search returned HTTP 429 before it started.",
+                _retry_after(response.headers, detail),
+                restart_required=True,
+            )
+        if response.status_code in {500, 502, 503, 504}:
+            raise SearchTransient(
+                f"OpenAI live web search returned transient HTTP {response.status_code} before it started.",
+                _retry_after(response.headers, getattr(response, "text", "")),
+            )
         raise SearchProviderUnavailable(
             f"OpenAI live web search returned HTTP {response.status_code}. Check model access and API quota."
         )
     return response.json()
+
+
+def _start_openai_discovery_with_retry(
+    identity: str, domains: list[str], model: str,
+    research_objectives: list[str] | None = None,
+    identity_queries: list[dict[str, str]] | None = None,
+) -> tuple[dict, int, list[float]]:
+    """Retry only requests that the provider explicitly rejected transiently.
+
+    A successful background response ID is returned immediately and is never
+    duplicated by this helper.
+    """
+    delays: list[float] = []
+    max_attempts = max(1, int(settings.OPENAI_WEB_RESEARCH_MAX_RETRIES) + 1)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _start_openai_discovery(
+                identity, domains, model, research_objectives, identity_queries,
+            ), attempt, delays
+        except (SearchRateLimited, SearchTransient) as exc:
+            if attempt >= max_attempts:
+                raise
+            delay = max(exc.retry_after, settings.OPENAI_WEB_RESEARCH_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+            delay += random.uniform(0, min(0.5, delay * 0.1))
+            delays.append(round(delay, 3))
+            time.sleep(delay)
+    raise SearchProviderUnavailable("Unable to start live product research.")
 
 
 def _parse_openai_market_observations(payload: dict, domains: list[str]) -> list[dict]:

@@ -141,7 +141,8 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     market_observation_gaps = []
     if not product.image_url:
         market_observation_gaps.append("image_url")
-    if not review or (review.get("average_rating") is None and not review.get("review_count")):
+    if (not review or review.get("review_quality") == "insufficient"
+            or (review.get("average_rating") is None and not review.get("review_count"))):
         market_observation_gaps.append("reviews")
     research_objectives = list(gap_plan["research_objectives"])
     existing_objectives = {item.get("field") for item in research_objectives}

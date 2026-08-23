@@ -34,6 +34,21 @@ interface BulkProgress {
   skipped: number;
   percent: number;
   running: boolean;
+  outcomes?: Record<string, number>;
+  items?: Array<{
+    product_id: string | null;
+    product_name?: string | null;
+    business_outcome?: string | null;
+    business_status?: string | null;
+    before_completeness?: number | null;
+    after_completeness?: number | null;
+    fields_added?: string[];
+    fields_still_missing?: string[];
+    sources_ingested?: number;
+    error?: string | null;
+    terminal?: boolean;
+    waiting_for_rate_limit?: boolean;
+  }>;
 }
 
 export default function ProductsPage() {
@@ -81,12 +96,13 @@ export default function ProductsPage() {
       const failed = alreadyFailed + (data.failed_count || 0);
       setBulkProgress({
         action, stage: data.all_terminal
-          ? (failed ? 'Bulk processing complete with errors' : (action === 'improve' ? 'Bulk improvement complete' : 'Re-enrichment complete'))
+          ? (failed ? 'Bulk processing complete · some products need attention' : (action === 'improve' ? 'Bulk improvement complete' : 'Re-enrichment complete'))
           : 'Researching and applying missing evidence', total, completed,
         successful, failed, skipped: alreadySkipped,
         percent: Math.min(100, Math.round((completed / total) * 100)), running: !data.all_terminal,
+        outcomes: data.outcome_counts || {}, items: data.items || [],
       });
-      if (data.all_terminal) return { successful, failed };
+      if (data.all_terminal) return { successful, failed, items: data.items || [] };
       await new Promise(resolve => window.setTimeout(resolve, 2000));
     }
   };
@@ -231,12 +247,12 @@ export default function ProductsPage() {
     }
   };
 
-  const handleBulkImprove = async () => {
-    if (selectedIds.length === 0) return;
+  const handleBulkImprove = async (requestedIds: string[] = selectedIds) => {
+    if (requestedIds.length === 0) return;
     setActionLoading(true);
     setError(null);
-    setBulkMessage(`Queueing ${selectedIds.length} selected products…`);
-    setBulkProgress({ action: 'improve', stage: 'Queueing selected products', total: selectedIds.length,
+    setBulkMessage(`Queueing ${requestedIds.length} selected products…`);
+    setBulkProgress({ action: 'improve', stage: 'Queueing selected products', total: requestedIds.length,
       completed: 0, successful: 0, failed: 0, skipped: 0, percent: 0, running: true });
     try {
       const token = localStorage.getItem("token");
@@ -245,14 +261,14 @@ export default function ProductsPage() {
       let failed = 0;
       let firstFailure = '';
       const researchJobIds: string[] = [];
-      for (let offset = 0; offset < selectedIds.length; offset += 100) {
+      for (let offset = 0; offset < requestedIds.length; offset += 100) {
         const resp = await fetch(`${API_URL}/products/bulk/actions/improve`, {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${token}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ product_ids: selectedIds.slice(offset, offset + 100), mode: "missing_only" })
+          body: JSON.stringify({ product_ids: requestedIds.slice(offset, offset + 100), mode: "missing_only" })
         });
         const data = await resp.json().catch(() => null);
         if (!resp.ok) throw new Error(data?.detail || "Bulk Improve failed.");
@@ -263,20 +279,20 @@ export default function ProductsPage() {
           firstFailure = (data.items || []).find((item: any) => item.status === 'failed')?.error || '';
         }
         researchJobIds.push(...(data.items || []).map((item: any) => item.research_job_id).filter(Boolean));
-        const submitted = Math.min(selectedIds.length, offset + 100);
-        setBulkProgress({ action: 'improve', stage: 'Queueing selected products', total: selectedIds.length,
+        const submitted = Math.min(requestedIds.length, offset + 100);
+        setBulkProgress({ action: 'improve', stage: 'Queueing selected products', total: requestedIds.length,
           completed: skipped + failed, successful: 0, failed, skipped,
-          percent: Math.min(10, Math.round((submitted / selectedIds.length) * 10)), running: true });
+          percent: Math.min(10, Math.round((submitted / requestedIds.length) * 10)), running: true });
       }
       const result = await waitForResearchJobs(
-        researchJobIds, selectedIds.length, skipped + failed, 0, failed, skipped, 'improve'
+        researchJobIds, requestedIds.length, skipped + failed, 0, failed, skipped, 'improve'
       );
       const message = `${result.successful} product${result.successful === 1 ? '' : 's'} improved` +
         `${skipped ? ` · ${skipped} already complete` : ''}` +
-        `${result.failed ? ` · ${result.failed} failed` : ''}.`;
+        `${result.failed ? ` · ${result.failed} need attention` : ''}.`;
       setBulkMessage(message);
       if (result.failed) {
-        setError(`${message} ${firstFailure}`.trim());
+        setError(`${message} Review the per-product outcomes below. ${firstFailure}`.trim());
       }
       setSelectedIds([]);
       await fetchProducts();
@@ -340,7 +356,7 @@ export default function ProductsPage() {
               Bulk Approve ({selectedIds.length})
             </button>
             <button
-              onClick={handleBulkImprove}
+              onClick={() => handleBulkImprove()}
               className={`${styles.btn} ${styles.btnPrimary}`}
               disabled={actionLoading}
               title="Research and improve missing high-value fields for every selected product"
@@ -483,9 +499,50 @@ export default function ProductsPage() {
             <span>{bulkProgress.completed} / {bulkProgress.total} finished</span>
             <span>{bulkProgress.successful} successful</span>
             {bulkProgress.skipped > 0 && <span>{bulkProgress.skipped} already complete</span>}
-            {bulkProgress.failed > 0 && <span style={{ color: '#fca5a5' }}>{bulkProgress.failed} failed</span>}
+            {bulkProgress.failed > 0 && <span style={{ color: '#fca5a5' }}>{bulkProgress.failed} need attention</span>}
             {bulkProgress.running && <span>Safe to keep this page open while processing</span>}
           </div>
+          {bulkProgress.outcomes && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+              {Object.entries(bulkProgress.outcomes).filter(([, count]) => count > 0).map(([outcome, count]) => (
+                <span key={outcome} className={`${styles.badge} ${outcome === 'improved' ? styles.badgeSuccess : outcome === 'failed' ? styles.badgeDanger : styles.badgeWarning}`}>
+                  {outcome.replaceAll('_', ' ')}: {count}
+                </span>
+              ))}
+            </div>
+          )}
+          {!!bulkProgress.items?.length && (
+            <div style={{ marginTop: 14, overflowX: 'auto', maxHeight: 300, overflowY: 'auto' }}>
+              <table className={styles.denseTable} style={{ fontSize: 12 }}>
+                <thead><tr><th>Product</th><th>Outcome</th><th>Before → After</th><th>Sources</th><th>Fields added</th><th>Remaining gaps / reason</th></tr></thead>
+                <tbody>{bulkProgress.items.map((item, index) => (
+                  <tr key={`${item.product_id || 'missing'}-${index}`}>
+                    <td>{item.product_name || item.product_id || 'Unknown product'}</td>
+                    <td>{(item.business_outcome || (item.terminal ? 'failed' : item.waiting_for_rate_limit ? 'waiting for rate limit' : 'processing')).replaceAll('_', ' ')}</td>
+                    <td>{item.before_completeness ?? '—'}% → {item.after_completeness ?? '—'}%</td>
+                    <td>{item.sources_ingested ?? 0}</td>
+                    <td>{item.fields_added?.length ? item.fields_added.join(', ') : '—'}</td>
+                    <td>{item.error || item.fields_still_missing?.slice(0, 4).join(', ') || '—'}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          {!bulkProgress.running && bulkProgress.items?.some(item =>
+            item.product_id && ['failed', 'no_material_improvement', 'needs_identity_resolution', 'rate_limited_retriable', 'blocked_sources', 'partially_improved'].includes(item.business_outcome || '')
+          ) && (
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              style={{ marginTop: 12 }}
+              disabled={actionLoading}
+              onClick={() => handleBulkImprove((bulkProgress.items || []).filter(item =>
+                item.product_id && ['failed', 'no_material_improvement', 'needs_identity_resolution', 'rate_limited_retriable', 'blocked_sources', 'partially_improved'].includes(item.business_outcome || '')
+              ).map(item => item.product_id as string))}
+            >
+              Retry failed / incomplete
+            </button>
+          )}
         </div>
       )}
 

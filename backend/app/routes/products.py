@@ -532,21 +532,56 @@ def _automatic_product_research(
         return score
 
     from app.services.product_identity import research_identity_compatible
-    candidates = [
-        candidate for candidate in candidates
-        if research_identity_compatible(
+    understanding_row = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "product_understanding",
+        FieldValue.is_current == True,
+    ).order_by(FieldValue.created_at.desc()).first()
+    understanding = understanding_row.value if understanding_row and isinstance(understanding_row.value, dict) else {}
+    level_b_allowed = understanding.get("identity_status") == "resolved"
+
+    def candidate_has_exact_identity(candidate: dict) -> bool:
+        text = " ".join(
+            str(candidate.get(key) or "") for key in ("title", "url", "snippet")
+        ).lower()
+        compact = re.sub(r"[^a-z0-9]", "", text)
+        if expected_gtin and expected_gtin in re.sub(r"\D", "", text):
+            return True
+        if not expected_gtin:
+            return True
+        # Level B authorizes discovery/crawling of an exact resolved product
+        # page when the retailer does not expose GTIN in search results.  The
+        # downstream evidence-scope gate still prevents this from authorizing
+        # formulation, claims, concentration or other unsafe exact facts.
+        name_tokens = [
+            token for token in re.findall(r"[a-z0-9]+", product.product_name.lower())
+            if len(token) > 3
+        ]
+        return bool(
+            level_b_allowed
+            and brand_token and brand_token in compact
+            and name_tokens and sum(token in text for token in name_tokens) >= min(2, len(name_tokens))
+        )
+
+    candidate_rejections = []
+    compatible_candidates = []
+    for candidate in candidates:
+        identity_compatible = research_identity_compatible(
             expected_format,
             " ".join(str(candidate.get(key) or "") for key in ("title", "url", "snippet")),
             product.product_name,
         )
-        and (
-            not expected_gtin
-            or expected_gtin in " ".join(
-                str(candidate.get(key) or "") for key in ("title", "url", "snippet")
-            ).replace("-", "").replace(" ", "")
-        )
-    ]
+        exact_candidate = candidate_has_exact_identity(candidate)
+        if identity_compatible and exact_candidate:
+            compatible_candidates.append(candidate)
+        else:
+            candidate_rejections.append({
+                "url": candidate.get("url"),
+                "reason": "format_conflict" if not identity_compatible else "insufficient_exact_identity",
+            })
+    candidates = compatible_candidates
     candidates = sorted(candidates, key=candidate_score, reverse=True)
+    image_before_run = bool(product.image_url)
     # An image result is tied to its product-page source. Prefer the strongest
     # identity match, not merely the provider's first arbitrary result.
     if not product.image_url:
@@ -584,6 +619,23 @@ def _automatic_product_research(
                 return True
         return False
 
+    def review_evidence_signature() -> tuple:
+        observation_ids = []
+        rows = db.query(ScrapedProductObservation).filter(
+            ScrapedProductObservation.canonical_product_id == product.id,
+        ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(100).all()
+        for row in rows:
+            payload = row.normalized_payload or {}
+            summary = payload.get("review_summary") or {}
+            if (payload.get("rating") is not None or payload.get("review_count") is not None
+                    or summary.get("average_rating") is not None or summary.get("review_count") is not None):
+                observation_ids.append(str(row.id))
+        field_ids = [str(row.id) for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == product.id,
+            FieldValue.field_name.in_(["rating", "review_count"]), FieldValue.is_current == True,
+        ).all()]
+        return tuple(sorted(observation_ids + field_ids))
+
     def has_official_evidence() -> bool:
         if not brand_token:
             return False
@@ -603,6 +655,7 @@ def _automatic_product_research(
         row = preferred_product_variant(db, product.id)
         return bool(row and (row.gtin or row.size or row.variant_name))
 
+    review_signature_before = review_evidence_signature()
     for url, domain in selected:
         configuration = {
             "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
@@ -614,7 +667,7 @@ def _automatic_product_research(
                 & set(research_objectives or [])
             ), "respect_robots_txt": True,
             "allow_subdomains": False, "request_delay_seconds": 0.25,
-            "per_domain_concurrency": 1, "retry_limit": 0,
+            "per_domain_concurrency": 1, "retry_limit": 1,
             "request_timeout_seconds": 20, "maximum_response_bytes": 8000000,
             "maximum_redirects": 5, "browser_page_limit": 1,
             "country": None, "locale": None, "rescrape_interval_hours": None,
@@ -658,9 +711,14 @@ def _automatic_product_research(
             db.rollback()
             errors.append(f"{domain}: {exc}")
     db.commit()
+    review_signature_after = review_evidence_signature()
     return {
         "candidates": len(candidates), "sources_ingested": completed,
+        "accepted_candidates": [url for url, _ in selected],
+        "rejected_candidates": candidate_rejections,
         "image_found": bool(product.image_url), "review_evidence_found": has_review_evidence(),
+        "image_added_this_run": bool(product.image_url) and not image_before_run,
+        "review_evidence_found_this_run": review_signature_after != review_signature_before,
         "official_evidence_found": has_official_evidence(),
         "formulation_evidence_found": has_formulation_evidence(),
         "variant_identity_found": has_variant_identity(),
@@ -682,6 +740,7 @@ def _enqueue_product_research(
     for job in active:
         if str((job.configuration or {}).get("research_product_id")) == str(product.id):
             return job
+    from app.services.product_research_worker import _research_snapshot
     job = CrawlJob(
         id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
         crawl_mode="single_url", status="queued", requested_by_id=user.id,
@@ -695,6 +754,7 @@ def _enqueue_product_research(
             "research_objectives": research_objectives or [],
             "research_priority": research_priority,
             "research_phase": product_improvement_summary(db, product).get("research_phase"),
+            "before_metrics": _research_snapshot(db, product),
             "discovery": initial_discovery,
             "result": None,
         },
@@ -706,11 +766,14 @@ def _enqueue_product_research(
 
 def _research_job_payload(job: CrawlJob) -> dict:
     configuration = job.configuration or {}
+    result = configuration.get("result") or {}
     return {
         "research_job_id": str(job.id),
         "research_status": job.status,
         "research_pending": job.status in {"queued", "discovering", "crawling", "parsing"},
-        "result": configuration.get("result"),
+        "business_outcome": result.get("business_outcome"),
+        "business_status": result.get("business_status"),
+        "result": result or None,
         "error": job.error_summary,
     }
 
@@ -1784,7 +1847,7 @@ def bulk_improve_status(
     ).all()
     by_id = {job.id: job for job in jobs}
     terminal = {"completed", "partially_completed", "failed", "blocked", "cancelled"}
-    successful = {"completed", "partially_completed"}
+    successful_outcomes = {"improved", "partially_improved"}
     items = []
     for job_id in job_ids:
         job = by_id.get(job_id)
@@ -1796,19 +1859,48 @@ def bulk_improve_status(
             })
             continue
         configuration = job.configuration or {}
+        result = configuration.get("result") or {}
+        outcome = result.get("business_outcome")
+        if not outcome and job.status in terminal:
+            outcome = "failed" if job.status in {"failed", "blocked", "cancelled"} else "partially_improved"
+        product = db.query(CanonicalProduct).filter(
+            CanonicalProduct.id == configuration.get("research_product_id")
+        ).first()
         items.append({
             "research_job_id": str(job.id),
             "product_id": configuration.get("research_product_id"),
+            "product_name": product.product_name if product else None,
             "status": job.status,
+            "waiting_for_rate_limit": bool(configuration.get("waiting_for_rate_limit")),
+            "business_outcome": outcome,
+            "business_status": result.get("business_status"),
             "terminal": job.status in terminal,
-            "successful": job.status in successful,
+            "successful": outcome in successful_outcomes,
             "error": job.error_summary,
-            "result": configuration.get("result"),
+            "before_completeness": result.get("before_completeness"),
+            "after_completeness": result.get("after_completeness"),
+            "fields_added": result.get("fields_added") or [],
+            "fields_still_missing": result.get("fields_still_missing") or [],
+            "sources_discovered": result.get("sources_discovered", 0),
+            "sources_ingested": result.get("sources_ingested", 0),
+            "sources_blocked": result.get("sources_blocked", 0),
+            "image_added": result.get("image_added", False),
+            "review_evidence_added": result.get("review_evidence_added", False),
+            "review_evidence_found_this_run": result.get("review_evidence_found_this_run", False),
+            "failure_reason": result.get("failure_reason"),
+            "result": result,
         })
 
     completed_count = sum(1 for item in items if item["terminal"])
     successful_count = sum(1 for item in items if item["successful"])
     failed_count = sum(1 for item in items if item["terminal"] and not item["successful"])
+    outcome_counts = {
+        outcome: sum(1 for item in items if item.get("business_outcome") == outcome)
+        for outcome in (
+            "improved", "partially_improved", "no_material_improvement",
+            "needs_identity_resolution", "blocked_sources", "rate_limited_retriable", "failed",
+        )
+    }
     return {
         "requested_count": len(job_ids),
         "completed_count": completed_count,
@@ -1817,6 +1909,7 @@ def bulk_improve_status(
         "failed_count": failed_count,
         "progress_percent": round((completed_count / len(job_ids)) * 100),
         "all_terminal": completed_count == len(job_ids),
+        "outcome_counts": outcome_counts,
         "items": items,
     }
 

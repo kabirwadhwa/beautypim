@@ -56,8 +56,9 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
         from app.services.review_aggregate import select_review_aggregate
         review = select_review_aggregate(db, prod.id) or {}
         row.update({
-            "average_rating": review.get("average_rating"),
+            "average_rating": review.get("average_rating") if review.get("business_display_rating", True) else None,
             "review_count": review.get("review_count"),
+            "review_quality": review.get("review_quality"),
             "review_summary": (review.get("review_summary") or {}).get("ai_summary_text"),
             "review_source": review.get("source"),
         })

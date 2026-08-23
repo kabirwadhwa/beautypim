@@ -82,6 +82,16 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
           completed_count: finished ? 2 : 1, pending_count: finished ? 0 : 1,
           successful_count: finished ? 2 : 1, failed_count: 0,
           progress_percent: finished ? 100 : 50, all_terminal: finished,
+          outcome_counts: { improved: finished ? 2 : 1 },
+          items: products.map((product, index) => ({
+            product_id: product.id, product_name: product.product_name,
+            terminal: finished || index === 0,
+            business_outcome: finished || index === 0 ? 'improved' : null,
+            before_completeness: 42, after_completeness: finished || index === 0 ? 84 : null,
+            sources_ingested: finished || index === 0 ? 2 : 0,
+            fields_added: finished || index === 0 ? ['description', 'benefits'] : [],
+            fields_still_missing: [], error: null,
+          })),
         }),
       });
     });
@@ -93,6 +103,8 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     await expect(page.getByLabel('Bulk progress 100%')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('2 / 2 finished')).toBeVisible();
     await expect(page.getByText('2 products improved.')).toBeVisible();
+    await expect(page.getByText('Bulk Product 1')).toBeVisible();
+    await expect(page.getByText('42% → 84%').first()).toBeVisible();
   });
 
   test('User Login, CSV Ingestion, Mapping, Review, Approval, and Catalog Export Flow', async ({ page }) => {

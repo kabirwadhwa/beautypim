@@ -32,7 +32,12 @@ MODULE_TERMS = {
     "fragrance": ("fragrance", "perfume", "parfum", "eau de", "cologne", "duft", "geur"),
     "haircare": ("hair", "shampoo", "conditioner", "scalp", "styling", "cheveux", "haar", "haare"),
     "makeup": ("makeup", "make-up", "maquillage", "foundation", "concealer", "lipstick", "lip", "lips", "lèvres", "lippen", "mascara", "eyeshadow", "blush"),
-    "skincare": ("skincare", "skin care", "moistur", "serum", "cleanser", "cream", "lotion", "toner", "hyaluronic acid", "retinol", "hautpflege", "soin", "huidsverzorging"),
+    "skincare": (
+        "skincare", "skin care", "moistur", "serum", "cleanser", "cream", "lotion", "toner",
+        "hyaluronic acid", "retinol", "hautpflege", "soin", "huidsverzorging",
+        "body milk", "body lotion", "shower gel", "bath & shower", "bath and shower",
+        "hand cream", "hand care", "body care", "bodycare", "duschgel", "körperpflege",
+    ),
 }
 AREA_TERMS = {
     "Lips": ("lip", "lips", "lèvres", "lippen"),
@@ -108,6 +113,10 @@ def infer_product_type(module: str, *values: Any) -> str | None:
         ("Mascara", ("mascara",)),
         ("Shampoo", ("shampoo", "shampoing")),
         ("Conditioner", ("conditioner", "après-shampooing")),
+        ("Body Milk", ("body milk", "bodymilk")),
+        ("Shower Gel", ("shower gel", "duschgel")),
+        ("Hand Cream", ("hand cream", "handcreme")),
+        ("Body Lotion", ("body lotion",)),
         ("Face Serum", ("face serum", "facial serum", "sérum visage")),
         ("Moisturizer", ("moisturizer", "moisturiser", "hydrating cream")),
         ("Eau de Toilette", ("eau de toilette", " edt ")),

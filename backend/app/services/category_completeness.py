@@ -74,7 +74,11 @@ def category_module(snapshot: dict[str, Any]) -> str:
         return "haircare"
     if any(term in text for term in ("makeup", "foundation", "concealer", "lip", "mascara", "eyeshadow", "blush")):
         return "makeup"
-    if any(term in text for term in ("skincare", "skin care", "serum", "moistur", "cleanser", "toner")):
+    if any(term in text for term in (
+        "skincare", "skin care", "serum", "moistur", "cleanser", "toner",
+        "body milk", "body lotion", "shower gel", "bath & shower", "bath and shower",
+        "hand cream", "hand care", "body care", "duschgel", "körperpflege",
+    )):
         return "skincare"
     return "unknown"
 

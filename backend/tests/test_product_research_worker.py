@@ -11,8 +11,19 @@ from app.models import (
 )
 from app.services.product_research_worker import (
     _claim_job, _persist_discovery_market_evidence,
-    recover_product_research_jobs, run_product_research_job,
+    recover_product_research_jobs, run_product_research_job, start_product_research_worker,
 )
+from app.config import settings
+
+
+def test_web_research_uses_provider_specific_concurrency(monkeypatch):
+    monkeypatch.setattr(settings, "MAX_CONCURRENCY", 4)
+    monkeypatch.setattr(settings, "OPENAI_WEB_RESEARCH_CONCURRENCY", 1)
+    with patch("app.services.product_research_worker.threading.Thread") as thread:
+        stop, workers = start_product_research_worker()
+    assert len(workers) == 1
+    assert thread.call_count == 1
+    stop.set()
 
 
 def test_restart_recovery_preserves_paid_response_id(db):
@@ -90,6 +101,45 @@ def test_market_evidence_rejects_sibling_gtin(db):
         FieldValue.canonical_product_id == product.id,
         FieldValue.field_name == "review_count",
     ).one().value == 12
+
+
+def test_resolved_identity_can_retain_exact_market_evidence_without_visible_gtin(db):
+    brand = Brand(id=uuid.uuid4(), name="Lattafa", normalized_name=f"lattafa-{uuid.uuid4()}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand=brand, product_name="Khamrah Dukhan",
+        normalized_name="khamrah dukhan", review_status="imported",
+    )
+    db.add_all([brand, product]); db.flush()
+    db.add_all([
+        ProductVariant(id=uuid.uuid4(), canonical_product_id=product.id, gtin="6290362342373"),
+        FieldValue(
+            id=uuid.uuid4(), canonical_product_id=product.id, field_name="product_understanding",
+            value={
+                "identity_status": "resolved",
+                "identity": {
+                    "consumer_brand": {"value": "Lattafa"},
+                    "product_family": {"value": "Khamrah Dukhan"},
+                },
+                "taxonomy": {"product_type": {"value": "Eau de Parfum"}},
+            },
+            source_type="deterministic_rule", review_status="confirmed", is_current=True,
+        ),
+    ])
+    db.commit()
+
+    accepted = _persist_discovery_market_evidence(db, product, {"market_observations": [{
+        "source_url": "https://retailer.example/khamrah-dukhan",
+        "source_domain": "retailer.example", "matched_gtin": None,
+        "matched_brand": "Lattafa", "matched_product_name": "Lattafa Khamrah Dukhan",
+        "matched_variant": "Eau de Parfum", "image_url": "https://cdn.example/dukhan.jpg",
+        "average_rating": 4.6, "review_count": 84,
+    }]}, expected_gtin="6290362342373")
+
+    assert accepted == {"image_found": True, "review_evidence_found": True}
+    rating = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id, FieldValue.field_name == "rating",
+    ).one()
+    assert rating.evidence[0]["match_scope"] == "exact_resolved_identity"
 
 
 def test_background_research_persists_provider_id_and_completes(tmp_path):

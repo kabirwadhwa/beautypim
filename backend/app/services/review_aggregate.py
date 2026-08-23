@@ -18,6 +18,35 @@ def _integer(value: Any) -> int:
         return 0
 
 
+def classify_review_quality(rating: Any, count: Any) -> str:
+    """Central business-usefulness classification; raw evidence is retained."""
+    total = _integer(count)
+    has_rating = rating not in (None, "")
+    if not has_rating or total <= 1:
+        return "insufficient"
+    if total >= 50:
+        return "strong"
+    if total >= 10:
+        return "moderate"
+    return "weak"
+
+
+def _with_quality(result: dict[str, Any]) -> dict[str, Any]:
+    quality = classify_review_quality(result.get("average_rating"), result.get("review_count"))
+    return {
+        **result,
+        "review_quality": quality,
+        "rating_available": result.get("average_rating") not in (None, ""),
+        "business_display_rating": quality != "insufficient",
+    }
+
+
+def _quality_rank(rating: Any, count: Any) -> int:
+    return {"insufficient": 0, "weak": 1, "moderate": 2, "strong": 3}[
+        classify_review_quality(rating, count)
+    ]
+
+
 def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, count: Any) -> dict[str, Any] | None:
     """Always provide a truthful review summary when aggregate evidence exists.
 
@@ -35,7 +64,10 @@ def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, 
     review_count = _integer(count)
     if numeric_rating is None and not review_count:
         return result or None
-    if numeric_rating is not None and review_count:
+    quality = classify_review_quality(numeric_rating, review_count)
+    if quality == "insufficient" and review_count:
+        opening = f"Review evidence is insufficient for a reliable aggregate: {review_count:,} observed review{'s' if review_count != 1 else ''}."
+    elif numeric_rating is not None and review_count:
         sentiment = "strongly positive" if numeric_rating >= 4 else "mixed" if numeric_rating < 3.5 else "generally positive"
         opening = f"Customer response is {sentiment}, averaging {numeric_rating:.1f}/5 across {review_count:,} reviews."
     elif numeric_rating is not None:
@@ -44,7 +76,8 @@ def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, 
         opening = f"The source reports {review_count:,} customer reviews without a usable average rating."
     lines = [
         opening,
-        "This exact-product aggregate establishes overall customer sentiment without relying on another product's reviews.",
+        ("This exact-product aggregate establishes overall customer sentiment without relying on another product's reviews."
+         if quality != "insufficient" else "The observed rating is retained internally but is not presented as a commercially meaningful score."),
         "Review-level text was unavailable, so reliable praise and complaint themes could not be extracted.",
         "The summary does not invent customer opinions beyond the rating and count evidence.",
     ]
@@ -77,6 +110,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         score = (
             2 if row.match_status == "matched" else 1,
             2 if scope == "exact_variant" else 1,
+            _quality_rank(rating, count),
             1 if summary.get("ai_summary_lines") or summary.get("ai_summary_text") else 0,
             _integer(summary.get("review_sample_count")),
             _integer(count),
@@ -114,7 +148,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             "evidence_reference": source_url or f"field_value:{source_field.id}",
             "observation_id": None,
         }
-        candidates.append(((2, 1, 1 if summary else 0, 0, _integer(count), source_field.created_at), None, result, {}, rating, count, "exact_product"))
+        candidates.append(((2, 1, _quality_rank(rating, count), 1 if summary else 0, 0, _integer(count), source_field.created_at), None, result, {}, rating, count, "exact_product"))
     # Explicit customer-feed aggregates are exact-product evidence too. They
     # participate in the same ranking instead of being selected by a UI loop.
     listings = db.query(SourceListing).filter(
@@ -141,7 +175,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             "observation_date": listing.created_at, "match_scope": "exact_product",
             "evidence_reference": f"source_listing:{listing.id}", "observation_id": None,
         }
-        candidates.append(((2, 1, 1 if summary else 0, 0, _integer(count), listing.created_at), None, result, {}, rating, count, "exact_product"))
+        candidates.append(((2, 1, _quality_rank(rating, count), 1 if summary else 0, 0, _integer(count), listing.created_at), None, result, {}, rating, count, "exact_product"))
     # Imported corpus review aggregates participate only on an exact identity.
     product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
     variant = db.query(ProductVariant).filter(
@@ -168,13 +202,13 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
                 "observation_date": None, "match_scope": "exact_variant",
                 "evidence_reference": "knowledge_corpus:exact_product", "observation_id": None,
             }
-            candidates.append(((2, 2, 1 if summary else 0, 0, _integer(count), product.updated_at), None, result, {}, rating, count, "exact_variant"))
+            candidates.append(((2, 2, _quality_rank(rating, count), 1 if summary else 0, 0, _integer(count), product.updated_at), None, result, {}, rating, count, "exact_variant"))
     if not candidates:
         return None
     _, row, payload, summary, rating, count, scope = max(candidates, key=lambda item: item[0])
     if row is None:
-        return payload
-    return {
+        return _with_quality(payload)
+    return _with_quality({
         "average_rating": float(rating) if rating not in (None, "") else None,
         "review_count": _integer(count) if count not in (None, "") else None,
         "review_summary": summary or None,
@@ -184,4 +218,4 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         "match_scope": scope,
         "evidence_reference": f"scraped_product_observation:{row.id}",
         "observation_id": row.id,
-    }
+    })

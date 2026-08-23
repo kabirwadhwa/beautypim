@@ -157,10 +157,12 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
         summary = observation.get("review_summary")
         lines: list[str] = []
         headline: list[str] = []
-        if rating not in (None, ""):
+        if observation.get("business_display_rating", True) and rating not in (None, ""):
             headline.append(f"{_clean(rating)}/5")
         if count not in (None, ""):
             headline.append(f"{_clean(count)} reviews")
+        if observation.get("review_quality") == "insufficient":
+            headline.append("insufficient review evidence")
         if headline:
             lines.append("  |  ".join(headline))
         if isinstance(summary, dict):

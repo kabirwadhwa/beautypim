@@ -738,13 +738,17 @@ export default function ProductDetailPage() {
   };
 
   const reviewObservation = product?.review_aggregate ? {
-    data: { rating: product.review_aggregate.average_rating, review_count: product.review_aggregate.review_count,
+    data: { rating: product.review_aggregate.business_display_rating === false ? null : product.review_aggregate.average_rating,
+      review_count: product.review_aggregate.review_count, review_quality: product.review_aggregate.review_quality,
       review_summary: product.review_aggregate.review_summary },
     source_domain: product.review_aggregate.source_domain || product.review_aggregate.source,
     observed_at: product.review_aggregate.observation_date,
   } : undefined;
   const reviewSummary = reviewObservation?.data?.review_summary || {};
-  const reviewRating = reviewObservation?.data?.rating ?? reviewSummary.average_rating;
+  const reviewEvidenceInsufficient = reviewObservation?.data?.review_quality === 'insufficient';
+  const reviewRating = reviewEvidenceInsufficient
+    ? null
+    : (reviewObservation?.data?.rating ?? reviewSummary.average_rating);
   const reviewCount = reviewObservation?.data?.review_count ?? reviewSummary.review_count;
   const reviewSummaryLines = Array.isArray(reviewSummary.ai_summary_lines)
     ? reviewSummary.ai_summary_lines.filter((line: any) => String(line || '').trim()).slice(0, 5)

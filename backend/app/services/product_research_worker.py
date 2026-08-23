@@ -15,7 +15,8 @@ from datetime import datetime
 from app.database import SessionLocal
 from app.config import settings
 from app.models import (
-    CanonicalProduct, CrawlJob, ImportJob, ImportJobItem, ProductVariant, User,
+    CanonicalProduct, CrawlJob, FieldValue, Formulation, ImportJob, ImportJobItem,
+    ProductVariant, SourceListing, User,
 )
 
 logger = logging.getLogger("app.product_research_worker")
@@ -50,18 +51,47 @@ def _persist_discovery_market_evidence(
     if normalized_expected_gtin:
         existing_gtins = {normalized_expected_gtin}
 
+    understanding_row = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "product_understanding", FieldValue.is_current == True,
+    ).first()
+    understanding = understanding_row.value if understanding_row and isinstance(understanding_row.value, dict) else {}
+    contract_identity = understanding.get("identity") if isinstance(understanding.get("identity"), dict) else {}
+    resolved_brand = ((contract_identity.get("consumer_brand") or {}).get("value")
+                      if isinstance(contract_identity.get("consumer_brand"), dict) else None)
+    resolved_family = ((contract_identity.get("product_family") or {}).get("value")
+                       if isinstance(contract_identity.get("product_family"), dict) else None)
+    contract_taxonomy = understanding.get("taxonomy") if isinstance(understanding.get("taxonomy"), dict) else {}
+    resolved_format = ((contract_taxonomy.get("product_type") or {}).get("value")
+                       if isinstance(contract_taxonomy.get("product_type"), dict) else None)
+
     def exact_identity(observation: dict) -> bool:
         """Market evidence must prove the identity it is being attached to."""
         observed_gtin = re.sub(r"\D", "", str(observation.get("matched_gtin") or ""))
         if existing_gtins:
-            return bool(observed_gtin and observed_gtin in existing_gtins)
-        target_brand = re.sub(r"[^a-z0-9]", "", product.brand.name.lower()) if product.brand else ""
+            if observed_gtin:
+                return observed_gtin in existing_gtins
+            # Level B exact resolved identity may support market observations
+            # only.  It never authorizes formulation, claims or variant facts.
+            if understanding.get("identity_status") != "resolved":
+                return False
+        target_brand_value = resolved_brand or (product.brand.name if product.brand else "")
+        target_name_value = resolved_family or product.product_name
+        target_brand = re.sub(r"[^a-z0-9]", "", str(target_brand_value).lower())
         observed_brand = re.sub(r"[^a-z0-9]", "", str(observation.get("matched_brand") or "").lower())
-        target_tokens = set(re.findall(r"[a-z0-9]+", product.product_name.lower()))
+        target_tokens = set(re.findall(r"[a-z0-9]+", str(target_name_value).lower()))
         observed_tokens = set(re.findall(r"[a-z0-9]+", str(observation.get("matched_product_name") or "").lower()))
         generic = {"eau", "de", "parfum", "toilette", "edp", "edt", "spray", "perfume", "fragrance", "ml", "oz"}
+        generic.update(re.findall(r"[a-z0-9]+", str(observation.get("matched_brand") or "").lower()))
         extra = observed_tokens - target_tokens - generic
-        return bool(target_brand and target_brand == observed_brand and target_tokens and target_tokens <= observed_tokens and not extra)
+        variant_text = str(observation.get("matched_variant") or "").lower()
+        expected_text = f"{target_name_value} {resolved_format or ''}".lower()
+        conflicting_format = bool(resolved_format) and any(
+            value in variant_text and value not in expected_text
+            for value in ("eau de toilette", "eau de parfum", "parfum", "elixir")
+        )
+        return bool(target_brand and target_brand == observed_brand and target_tokens
+                    and target_tokens <= observed_tokens and not extra and not conflicting_format)
 
     observations = [row for row in observations if isinstance(row, dict) and exact_identity(row)]
     image_found = False
@@ -85,7 +115,7 @@ def _persist_discovery_market_evidence(
             "source_domain": review.get("source_domain"),
             "supporting_text": review.get("evidence_excerpt"),
             "evidence_type": "licensed_web_search_market_observation",
-            "match_scope": "exact_gtin" if existing_gtins else "exact_product",
+            "match_scope": "exact_gtin" if review.get("matched_gtin") else "exact_resolved_identity",
         }]
         for field_name, value in (
             ("rating", review.get("average_rating")),
@@ -119,6 +149,24 @@ def _assign_configuration(job: CrawlJob, **updates) -> dict:
     configuration = {**(job.configuration or {}), **updates}
     job.configuration = configuration
     return configuration
+
+
+def _research_snapshot(db, product) -> dict:
+    from app.services.product_improvement import product_improvement_summary
+    from app.services.research_reliability import snapshot_metrics
+    from app.services.review_aggregate import select_review_aggregate
+    current = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id, FieldValue.is_current == True,
+    ).all()
+    return snapshot_metrics(
+        product_improvement_summary(db, product),
+        field_values={row.field_name: row.value for row in current},
+        image_present=bool(product.image_url),
+        review=select_review_aggregate(db, product.id),
+        formulation_count=db.query(Formulation).filter(
+            Formulation.canonical_product_id == product.id, Formulation.is_deleted == False,
+        ).count(),
+    )
 
 
 def recover_product_research_jobs(db) -> int:
@@ -167,7 +215,7 @@ def _claim_job(db) -> CrawlJob | None:
 def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | None = None) -> None:
     from app.routes.products import _automatic_product_research, _product_expected_format
     from app.services.web_discovery import (
-        poll_product_source_discovery, start_product_source_discovery,
+        SearchRateLimited, poll_product_source_discovery, start_product_source_discovery,
     )
     from app.worker import process_item_enrichment
 
@@ -188,6 +236,10 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         if not product or not user or not item:
             raise RuntimeError("The product, user or source record for background research no longer exists.")
 
+        before_metrics = configuration.get("before_metrics") or _research_snapshot(db, product)
+        _assign_configuration(job, before_metrics=before_metrics)
+        db.commit()
+
         from app.services.product_identity import (
             preferred_product_variant, product_is_fragrance, trusted_product_version,
         )
@@ -198,6 +250,20 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             ProductVariant.is_deleted == False,
         ).first() if requested_variant_id else None
         variant = variant or preferred_product_variant(db, product.id)
+        source_listing = db.query(SourceListing).filter(SourceListing.id == item.source_listing_id).first()
+        from app.services.product_improvement import product_improvement_summary
+        from app.services.research_reliability import build_identity_query_plan
+        initial_quality = product_improvement_summary(db, product)
+        identity_queries = configuration.get("identity_queries") or build_identity_query_plan(
+            brand=product.brand.name if product.brand else "",
+            product_name=product.product_name,
+            product_format=_product_expected_format(db, product),
+            gtin=variant.gtin if variant and variant.gtin else "",
+            raw_data=source_listing.raw_data if source_listing else {},
+            category=initial_quality.get("category") or "",
+            corpus_candidates=initial_quality.get("candidate_products") or [],
+        )
+        _assign_configuration(job, identity_queries=identity_queries)
         research_objectives = list(configuration.get("research_objectives") or [])
         safe_market_only = bool(product_is_fragrance(db, product) and not trusted_product_version(db, product))
         if safe_market_only:
@@ -218,16 +284,48 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 gtin=variant.gtin if variant and variant.gtin else "",
                 approved_domains=[],
                 research_objectives=research_objectives,
+                identity_queries=identity_queries,
             )
             _assign_configuration(job, discovery=discovery)
             job.heartbeat_at = datetime.utcnow()
             db.commit()
 
+        rate_limit_retries = int(configuration.get("rate_limit_retries") or 0)
+        retry_delays = list(configuration.get("retry_delays") or discovery.get("retry_delays") or [])
         while discovery.get("status") in {"queued", "in_progress"}:
             if stop_event and stop_event.is_set():
                 # Leave the persisted provider response ID available for startup recovery.
                 return
-            discovery = poll_product_source_discovery(discovery)
+            try:
+                discovery = poll_product_source_discovery(discovery)
+            except SearchRateLimited as exc:
+                if rate_limit_retries >= int(settings.OPENAI_WEB_RESEARCH_MAX_RETRIES):
+                    raise
+                rate_limit_retries += 1
+                delay = max(
+                    exc.retry_after,
+                    settings.OPENAI_WEB_RESEARCH_BACKOFF_SECONDS * (2 ** (rate_limit_retries - 1)),
+                )
+                retry_delays.append(round(delay, 3))
+                _assign_configuration(
+                    job, rate_limit_retries=rate_limit_retries,
+                    retry_delays=retry_delays, waiting_for_rate_limit=True,
+                )
+                job.heartbeat_at = datetime.utcnow()
+                db.commit()
+                time.sleep(delay)
+                if exc.restart_required:
+                    discovery = start_product_source_discovery(
+                        brand=product.brand.name if product.brand else "",
+                        product_name=product.product_name,
+                        product_format=_product_expected_format(db, product),
+                        gtin=variant.gtin if variant and variant.gtin else "",
+                        approved_domains=[], research_objectives=research_objectives,
+                        identity_queries=identity_queries,
+                    )
+                _assign_configuration(job, discovery=discovery, waiting_for_rate_limit=False)
+                db.commit()
+                continue
             _assign_configuration(job, discovery=discovery)
             job.heartbeat_at = datetime.utcnow()
             db.commit()
@@ -251,6 +349,9 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         result["review_evidence_found"] = bool(
             result.get("review_evidence_found") or discovery_market["review_evidence_found"]
         )
+        result["review_evidence_found_this_run"] = bool(
+            result.get("review_evidence_found_this_run") or discovery_market["review_evidence_found"]
+        )
 
         # Re-run Product Understanding after phase-one evidence. The next plan
         # is calculated from the newly persisted evidence, never from the old
@@ -262,7 +363,6 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 mode=configuration.get("requested_mode") or "missing_only",
                 selected_fields=configuration.get("selected_fields") or [],
             )
-        from app.services.product_improvement import product_improvement_summary
         next_plan = product_improvement_summary(db, product)
         result["identity_phase_completed"] = configuration.get("research_phase") == "identity_resolution"
         result["next_phase"] = next_plan.get("research_phase")
@@ -275,6 +375,17 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                     research_variant_id=variant.id if variant else None,
                 )
                 result["attribute_completion"] = attribute_result
+                result["sources_ingested"] = int(result.get("sources_ingested") or 0) + int(attribute_result.get("sources_ingested") or 0)
+                result["candidates"] = int(result.get("candidates") or 0) + int(attribute_result.get("candidates") or 0)
+                result["errors"] = list(result.get("errors") or []) + list(attribute_result.get("errors") or [])
+                result["image_found"] = bool(result.get("image_found") or attribute_result.get("image_found"))
+                result["review_evidence_found"] = bool(
+                    result.get("review_evidence_found") or attribute_result.get("review_evidence_found")
+                )
+                result["review_evidence_found_this_run"] = bool(
+                    result.get("review_evidence_found_this_run")
+                    or attribute_result.get("review_evidence_found_this_run")
+                )
                 if import_job:
                     process_item_enrichment(
                         db, item, import_job.column_mapping or {},
@@ -306,11 +417,39 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             else:
                 result["review_summary_generated"] = False
             result["identity_unresolved"] = True
-        result["research_status"] = "completed"
+        result["identity_queries_tried"] = discovery.get("identity_queries_tried") or identity_queries
+        result["web_requests_started"] = int(discovery.get("provider_attempts") or 1) + rate_limit_retries
+        result["web_requests_retried"] = rate_limit_retries + len(discovery.get("retry_delays") or [])
+        result["retry_delays"] = retry_delays
+        result["provider"] = discovery.get("provider")
+        result["provider_usage"] = discovery.get("usage") or {}
+        result["blocked_domains"] = sorted({
+            re.sub(r"^www\.", "", match.group(1).lower())
+            for error in (result.get("errors") or [])
+            for match in [re.search(r"(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})", str(error), re.I)] if match
+        })
+        after_metrics = _research_snapshot(db, product)
+        from app.services.research_reliability import evaluate_research_outcome, public_business_status
+        outcome_metrics = evaluate_research_outcome(
+            before_metrics, after_metrics, result=result, errors=result.get("errors") or [],
+        )
+        result.update(outcome_metrics)
+        result["business_status"] = public_business_status(outcome_metrics["business_outcome"])
+        result["research_status"] = outcome_metrics["business_outcome"]
         result["research_job_id"] = str(job.id)
         result["research_pending"] = False
-        _assign_configuration(job, discovery=discovery, result=result)
-        job.status = "completed" if not result.get("errors") else "partially_completed"
+        _assign_configuration(job, discovery=discovery, result=result, after_metrics=after_metrics)
+        outcome = outcome_metrics["business_outcome"]
+        if outcome == "blocked_sources":
+            job.status = "blocked"
+        elif outcome == "failed":
+            job.status = "failed"
+        elif outcome == "partially_improved":
+            job.status = "partially_completed"
+        else:
+            # completed is a technical terminal state only. The business result
+            # remains explicit in configuration.result.business_outcome.
+            job.status = "completed"
         job.completed_at = datetime.utcnow()
         job.heartbeat_at = job.completed_at
         job.error_summary = "\n".join(result.get("errors") or []) or None
@@ -319,14 +458,20 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         db.rollback()
         job = db.query(CrawlJob).filter(CrawlJob.id == job_id).first()
         if job:
+            from app.services.research_reliability import classify_research_error, public_business_status
+            failure_class = classify_research_error(str(exc))
+            outcome = "rate_limited_retriable" if failure_class == "rate_limited" else "failed"
             job.status = "failed"
             job.completed_at = datetime.utcnow()
             job.heartbeat_at = job.completed_at
             job.error_summary = str(exc)
             _assign_configuration(job, result={
-                "research_job_id": str(job.id), "research_status": "failed",
+                "research_job_id": str(job.id), "research_status": outcome,
+                "business_outcome": outcome, "business_status": public_business_status(outcome),
                 "research_pending": False, "sources_ingested": 0,
-                "errors": [str(exc)],
+                "errors": [str(exc)], "failure_class": failure_class,
+                "web_requests_retried": int((job.configuration or {}).get("rate_limit_retries") or 0),
+                "retry_delays": (job.configuration or {}).get("retry_delays") or [],
             })
             db.commit()
         logger.exception("Background product research failed for %s", job_id)
@@ -358,7 +503,7 @@ def run_product_research_worker(stop_event: threading.Event) -> None:
 
 def start_product_research_worker() -> tuple[threading.Event, list[threading.Thread]]:
     stop_event = threading.Event()
-    worker_count = max(1, min(int(settings.MAX_CONCURRENCY), 4))
+    worker_count = max(1, min(int(settings.OPENAI_WEB_RESEARCH_CONCURRENCY), 4))
     threads = []
     for index in range(worker_count):
         thread = threading.Thread(
