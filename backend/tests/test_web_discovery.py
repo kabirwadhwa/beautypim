@@ -113,7 +113,9 @@ def test_openai_market_observations_retain_cited_image_and_review_aggregate(vali
         "type": "message", "content": [{
             "type": "output_text", "text": json.dumps({"market_observations": [{
                 "source_url": "https://retailer.example/product/moon",
-                "source_name": "Retailer", "image_url": "https://cdn.example/moon.jpg",
+                "source_name": "Retailer", "matched_gtin": "1234567890123",
+                "matched_brand": "Example", "matched_product_name": "Moon Serum",
+                "matched_variant": None, "image_url": "https://cdn.example/moon.jpg",
                 "average_rating": 4.7, "review_count": 812,
                 "evidence_excerpt": "Rated 4.7 from 812 reviews",
             }]})

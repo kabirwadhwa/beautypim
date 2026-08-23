@@ -6,12 +6,14 @@ so a process restart resumes the same paid request instead of creating another.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
 from datetime import datetime
 
 from app.database import SessionLocal
+from app.config import settings
 from app.models import (
     CanonicalProduct, CrawlJob, ImportJob, ImportJobItem, ProductVariant, User,
 )
@@ -21,7 +23,9 @@ RESEARCH_DOMAIN = "product-research.internal"
 ACTIVE_STATUSES = {"queued", "discovering", "crawling", "parsing"}
 
 
-def _persist_discovery_market_evidence(db, product, discovery: dict) -> dict:
+def _persist_discovery_market_evidence(
+    db, product, discovery: dict, *, expected_gtin: str = "",
+) -> dict:
     """Persist exact-product image and review aggregates exposed by search.
 
     These are market observations only. They never authorize formulation,
@@ -33,6 +37,33 @@ def _persist_discovery_market_evidence(db, product, discovery: dict) -> dict:
     observations = discovery.get("market_observations") or []
     if not isinstance(observations, list):
         return {"image_found": False, "review_evidence_found": False}
+    existing_gtins = {
+        re.sub(r"\D", "", row.gtin or "")
+        for row in db.query(ProductVariant).filter(
+            ProductVariant.canonical_product_id == product.id,
+            ProductVariant.is_deleted == False,
+            ProductVariant.gtin.isnot(None),
+        ).all()
+        if re.sub(r"\D", "", row.gtin or "")
+    }
+    normalized_expected_gtin = re.sub(r"\D", "", expected_gtin or "")
+    if normalized_expected_gtin:
+        existing_gtins = {normalized_expected_gtin}
+
+    def exact_identity(observation: dict) -> bool:
+        """Market evidence must prove the identity it is being attached to."""
+        observed_gtin = re.sub(r"\D", "", str(observation.get("matched_gtin") or ""))
+        if existing_gtins:
+            return bool(observed_gtin and observed_gtin in existing_gtins)
+        target_brand = re.sub(r"[^a-z0-9]", "", product.brand.name.lower()) if product.brand else ""
+        observed_brand = re.sub(r"[^a-z0-9]", "", str(observation.get("matched_brand") or "").lower())
+        target_tokens = set(re.findall(r"[a-z0-9]+", product.product_name.lower()))
+        observed_tokens = set(re.findall(r"[a-z0-9]+", str(observation.get("matched_product_name") or "").lower()))
+        generic = {"eau", "de", "parfum", "toilette", "edp", "edt", "spray", "perfume", "fragrance", "ml", "oz"}
+        extra = observed_tokens - target_tokens - generic
+        return bool(target_brand and target_brand == observed_brand and target_tokens and target_tokens <= observed_tokens and not extra)
+
+    observations = [row for row in observations if isinstance(row, dict) and exact_identity(row)]
     image_found = False
     if not product.image_url:
         for observation in observations:
@@ -54,7 +85,7 @@ def _persist_discovery_market_evidence(db, product, discovery: dict) -> dict:
             "source_domain": review.get("source_domain"),
             "supporting_text": review.get("evidence_excerpt"),
             "evidence_type": "licensed_web_search_market_observation",
-            "match_scope": "exact_product",
+            "match_scope": "exact_gtin" if existing_gtins else "exact_product",
         }]
         for field_name, value in (
             ("rating", review.get("average_rating")),
@@ -104,10 +135,22 @@ def recover_product_research_jobs(db) -> int:
 
 
 def _claim_job(db) -> CrawlJob | None:
-    query = db.query(CrawlJob).filter(
+    # Read a bounded durable frontier and prioritize direct product actions
+    # over bulk backlog. The row is then claimed under a PostgreSQL lock, so
+    # several worker threads cannot process the same paid request.
+    candidates = db.query(CrawlJob).filter(
         CrawlJob.domain == RESEARCH_DOMAIN,
         CrawlJob.status == "queued",
-    ).order_by(CrawlJob.created_at)
+    ).order_by(CrawlJob.created_at).limit(250).all()
+    if not candidates:
+        return None
+    target = max(
+        candidates,
+        key=lambda row: (int((row.configuration or {}).get("research_priority") or 0), -row.created_at.timestamp()),
+    )
+    query = db.query(CrawlJob).filter(
+        CrawlJob.id == target.id, CrawlJob.status == "queued",
+    )
     if db.bind.dialect.name == "postgresql":
         query = query.with_for_update(skip_locked=True)
     job = query.first()
@@ -148,7 +191,13 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         from app.services.product_identity import (
             preferred_product_variant, product_is_fragrance, trusted_product_version,
         )
-        variant = preferred_product_variant(db, product.id)
+        requested_variant_id = configuration.get("research_variant_id") or item.product_variant_id
+        variant = db.query(ProductVariant).filter(
+            ProductVariant.id == requested_variant_id,
+            ProductVariant.canonical_product_id == product.id,
+            ProductVariant.is_deleted == False,
+        ).first() if requested_variant_id else None
+        variant = variant or preferred_product_variant(db, product.id)
         research_objectives = list(configuration.get("research_objectives") or [])
         safe_market_only = bool(product_is_fragrance(db, product) and not trusted_product_version(db, product))
         if safe_market_only:
@@ -185,7 +234,9 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             if discovery.get("status") in {"queued", "in_progress"}:
                 time.sleep(2)
 
-        discovery_market = _persist_discovery_market_evidence(db, product, discovery)
+        discovery_market = _persist_discovery_market_evidence(
+            db, product, discovery, expected_gtin=variant.gtin if variant else "",
+        )
         db.commit()
 
         job.status = "crawling"
@@ -194,6 +245,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         result = _automatic_product_research(
             db, product, user, candidates=discovery.get("candidates") or [],
             research_objectives=research_objectives,
+            research_variant_id=variant.id if variant else None,
         )
         result["image_found"] = bool(result.get("image_found") or discovery_market["image_found"])
         result["review_evidence_found"] = bool(
@@ -220,6 +272,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 attribute_result = _automatic_product_research(
                     db, product, user, candidates=discovery.get("candidates") or [],
                     research_objectives=attribute_objectives,
+                    research_variant_id=variant.id if variant else None,
                 )
                 result["attribute_completion"] = attribute_result
                 if import_job:
@@ -303,13 +356,18 @@ def run_product_research_worker(stop_event: threading.Event) -> None:
             stop_event.wait(1.0)
 
 
-def start_product_research_worker() -> tuple[threading.Event, threading.Thread]:
+def start_product_research_worker() -> tuple[threading.Event, list[threading.Thread]]:
     stop_event = threading.Event()
-    thread = threading.Thread(
-        target=run_product_research_worker,
-        args=(stop_event,),
-        name="product-research-worker",
-        daemon=True,
-    )
-    thread.start()
-    return stop_event, thread
+    worker_count = max(1, min(int(settings.MAX_CONCURRENCY), 4))
+    threads = []
+    for index in range(worker_count):
+        thread = threading.Thread(
+            target=run_product_research_worker,
+            args=(stop_event,),
+            name=f"product-research-worker-{index + 1}",
+            daemon=True,
+        )
+        thread.start()
+        threads.append(thread)
+    logger.info("Started %s durable product-research workers", worker_count)
+    return stop_event, threads

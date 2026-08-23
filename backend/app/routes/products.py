@@ -482,6 +482,7 @@ def _automatic_product_research(
     db: Session, product: CanonicalProduct, user: User,
     candidates: list[dict] | None = None,
     research_objectives: list[str] | None = None,
+    research_variant_id: uuid.UUID | None = None,
 ) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
@@ -494,7 +495,13 @@ def _automatic_product_research(
     from app.scraping.runner import run_crawl_job
 
     from app.services.product_identity import preferred_product_variant
-    variant = preferred_product_variant(db, product.id)
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.id == research_variant_id,
+        ProductVariant.canonical_product_id == product.id,
+        ProductVariant.is_deleted == False,
+    ).first() if research_variant_id else None
+    variant = variant or preferred_product_variant(db, product.id)
+    expected_gtin = re.sub(r"\D", "", variant.gtin or "") if variant else ""
     expected_format = _product_expected_format(db, product)
     from app.services.product_identity import product_is_fragrance, trusted_product_version
     safe_market_only = bool(product_is_fragrance(db, product) and not trusted_product_version(db, product))
@@ -531,6 +538,12 @@ def _automatic_product_research(
             expected_format,
             " ".join(str(candidate.get(key) or "") for key in ("title", "url", "snippet")),
             product.product_name,
+        )
+        and (
+            not expected_gtin
+            or expected_gtin in " ".join(
+                str(candidate.get(key) or "") for key in ("title", "url", "snippet")
+            ).replace("-", "").replace(" ", "")
         )
     ]
     candidates = sorted(candidates, key=candidate_score, reverse=True)
@@ -613,6 +626,7 @@ def _automatic_product_research(
             crawl_mode="single_url", status="queued",
             configuration={
                 **configuration, "research_product_id": str(product.id),
+                "research_variant_id": str(variant.id) if variant else None,
                 "research_expected_format": expected_format,
                 "research_product_name": product.product_name,
                 # An unresolved EDT/EDP distinction must block formulation and
@@ -658,6 +672,7 @@ def _enqueue_product_research(
     db: Session, product: CanonicalProduct, item: ImportJobItem,
     request: ProductImproveRequest, user: User, research_objectives: list[str] | None = None,
     initial_discovery: dict | None = None,
+    research_priority: int = 100,
 ) -> CrawlJob:
     from app.services.product_improvement import product_improvement_summary
     active = db.query(CrawlJob).filter(
@@ -674,9 +689,11 @@ def _enqueue_product_research(
             "product_research_job": True,
             "research_product_id": str(product.id),
             "research_item_id": str(item.id),
+            "research_variant_id": str(item.product_variant_id) if item.product_variant_id else None,
             "requested_mode": request.mode,
             "selected_fields": request.fields,
             "research_objectives": research_objectives or [],
+            "research_priority": research_priority,
             "research_phase": product_improvement_summary(db, product).get("research_phase"),
             "discovery": initial_discovery,
             "result": None,
@@ -1724,6 +1741,7 @@ def bulk_improve_products(
                 db, product, source_item, improve_request, current_user,
                 objectives,
                 initial_discovery=initial_discovery,
+                research_priority=10,
             )
             db.commit()
             queued_count += 1

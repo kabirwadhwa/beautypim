@@ -6,10 +6,13 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models import (
-    Brand, CanonicalProduct, CrawlJob, ImportJob, ImportJobItem, ProductVariant,
+    Brand, CanonicalProduct, CrawlJob, FieldValue, ImportJob, ImportJobItem, ProductVariant,
     SourceListing, User,
 )
-from app.services.product_research_worker import recover_product_research_jobs, run_product_research_job
+from app.services.product_research_worker import (
+    _claim_job, _persist_discovery_market_evidence,
+    recover_product_research_jobs, run_product_research_job,
+)
 
 
 def test_restart_recovery_preserves_paid_response_id(db):
@@ -28,6 +31,65 @@ def test_restart_recovery_preserves_paid_response_id(db):
     db.refresh(job)
     assert job.status == "queued"
     assert job.configuration["discovery"]["response_id"] == "resp_keep_me"
+
+
+def test_direct_improve_priority_jumps_bulk_research_backlog(db):
+    bulk = CrawlJob(
+        id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
+        crawl_mode="single_url", status="queued",
+        configuration={"product_research_job": True, "research_priority": 10},
+    )
+    direct = CrawlJob(
+        id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
+        crawl_mode="single_url", status="queued",
+        configuration={"product_research_job": True, "research_priority": 100},
+    )
+    db.add_all([bulk, direct]); db.commit()
+
+    claimed = _claim_job(db)
+
+    assert claimed.id == direct.id
+    assert claimed.status == "discovering"
+
+
+def test_market_evidence_rejects_sibling_gtin(db):
+    brand = Brand(id=uuid.uuid4(), name="Lattafa", normalized_name=f"lattafa-{uuid.uuid4()}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand=brand, product_name="Ana Abiyedh",
+        normalized_name="ana abiyedh", review_status="imported",
+    )
+    db.add_all([brand, product]); db.flush()
+    db.add(ProductVariant(
+        id=uuid.uuid4(), canonical_product_id=product.id, gtin="6291106066890",
+    ))
+    db.commit()
+
+    rejected = _persist_discovery_market_evidence(db, product, {"market_observations": [{
+        "source_url": "https://retailer.example/coral",
+        "source_domain": "retailer.example", "matched_gtin": "6290362341826",
+        "matched_brand": "Lattafa", "matched_product_name": "Ana Abiyedh Coral",
+        "image_url": "https://cdn.example/coral.jpg", "average_rating": 4.9,
+        "review_count": 8000,
+    }]}, expected_gtin="6291106066890")
+
+    assert rejected == {"image_found": False, "review_evidence_found": False}
+    assert product.image_url is None
+    assert not db.query(FieldValue).filter(FieldValue.canonical_product_id == product.id).count()
+
+    accepted = _persist_discovery_market_evidence(db, product, {"market_observations": [{
+        "source_url": "https://retailer.example/original",
+        "source_domain": "retailer.example", "matched_gtin": "6291106066890",
+        "matched_brand": "Lattafa", "matched_product_name": "Ana Abiyedh",
+        "image_url": "https://cdn.example/original.jpg", "average_rating": 4.8,
+        "review_count": 12,
+    }]}, expected_gtin="6291106066890")
+
+    assert accepted == {"image_found": True, "review_evidence_found": True}
+    assert product.image_url == "https://cdn.example/original.jpg"
+    assert db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "review_count",
+    ).one().value == 12
 
 
 def test_background_research_persists_provider_id_and_completes(tmp_path):

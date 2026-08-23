@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime
 
@@ -112,6 +113,20 @@ def persist_product(
             CanonicalProduct.is_deleted == False,
         ).first()
         if target:
+            observed_gtin = re.sub(r"\D", "", str(product.gtin or product.ean or product.upc or ""))
+            target_gtins = {
+                re.sub(r"\D", "", str(value or "")) for (value,) in db.query(ProductVariant.gtin).filter(
+                    ProductVariant.canonical_product_id == target.id,
+                    ProductVariant.is_deleted == False,
+                    ProductVariant.gtin.isnot(None),
+                ).all()
+            }
+            target_gtins.discard("")
+            if target_gtins and observed_gtin and observed_gtin not in target_gtins:
+                raise ValueError(
+                    "Discovered page has a different GTIN and was not attached to the requested product "
+                    f"({observed_gtin} not in {sorted(target_gtins)})."
+                )
             expected_format = (job.configuration or {}).get("research_expected_format") or ""
             observed_format = " ".join(filter(None, (
                 product.product_name, product.product_type, product.variant_name,
@@ -126,8 +141,15 @@ def persist_product(
                     f"to the requested product ({expected_format!r} vs {observed_format!r})."
                 )
             canonical_id = target.id
-            from app.services.product_identity import preferred_product_variant
-            target_variant = preferred_product_variant(db, target.id)
+            configured_variant_id = (job.configuration or {}).get("research_variant_id")
+            target_variant = db.query(ProductVariant).filter(
+                ProductVariant.id == configured_variant_id,
+                ProductVariant.canonical_product_id == target.id,
+                ProductVariant.is_deleted == False,
+            ).first() if configured_variant_id else None
+            if not target_variant:
+                from app.services.product_identity import preferred_product_variant
+                target_variant = preferred_product_variant(db, target.id)
             variant_id = target_variant.id if target_variant else None
             match_status, score = "matched", 1.0
     suggested_product_id = canonical_id if match_status == "possible_match" else None

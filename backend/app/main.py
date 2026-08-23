@@ -96,9 +96,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         if research_worker:
-            stop_event, thread = research_worker
+            stop_event, threads = research_worker
             stop_event.set()
-            thread.join(timeout=5)
+            for thread in threads:
+                thread.join(timeout=5)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

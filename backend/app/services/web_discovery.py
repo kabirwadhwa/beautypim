@@ -169,12 +169,16 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
                             "properties": {
                                 "source_url": {"type": "string"},
                                 "source_name": {"type": ["string", "null"]},
+                                "matched_gtin": {"type": ["string", "null"]},
+                                "matched_brand": {"type": ["string", "null"]},
+                                "matched_product_name": {"type": ["string", "null"]},
+                                "matched_variant": {"type": ["string", "null"]},
                                 "image_url": {"type": ["string", "null"]},
                                 "average_rating": {"type": ["number", "null"], "minimum": 0, "maximum": 5},
                                 "review_count": {"type": ["integer", "null"], "minimum": 0},
                                 "evidence_excerpt": {"type": ["string", "null"]},
                             },
-                            "required": ["source_url", "source_name", "image_url", "average_rating", "review_count", "evidence_excerpt"],
+                            "required": ["source_url", "source_name", "matched_gtin", "matched_brand", "matched_product_name", "matched_variant", "image_url", "average_rating", "review_count", "evidence_excerpt"],
                         },
                     },
                 },
@@ -188,7 +192,8 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             "Include results from multiple distinct domains when available: the official page for identity and imagery, "
             "plus public retailer product pages that visibly expose aggregate rating or review-count evidence. "
             "Return a market_observations JSON array containing only exact-product evidence you directly found. "
-            "For each source include its page URL and, when visibly supported, a direct public product image URL, "
+            "For each source include its page URL, the GTIN, brand, exact displayed product name and variant that the "
+            "page itself supports, and, when visibly supported, a direct public product image URL, "
             "average rating, review count, and a short evidence excerpt. Use null for anything not established. "
             "Never transfer ratings, reviews or images from a sibling concentration, shade, size or different product. "
             "When ingredients or INCI is unresolved, prioritize an exact concentration/variant page that visibly exposes "
@@ -273,6 +278,10 @@ def _parse_openai_market_observations(payload: dict, domains: list[str]) -> list
         output.append({
             "source_url": source_url, "source_domain": host,
             "source_name": value.get("source_name"),
+            "matched_gtin": value.get("matched_gtin"),
+            "matched_brand": value.get("matched_brand"),
+            "matched_product_name": value.get("matched_product_name"),
+            "matched_variant": value.get("matched_variant"),
             "image_url": value.get("image_url"),
             "average_rating": value.get("average_rating"),
             "review_count": value.get("review_count"),
