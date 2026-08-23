@@ -254,7 +254,7 @@ def retrieve_corpus_evidence(db: Session, *, gtin: str = "", source_product_id: 
     terms = [term for term in norm_name.split() if len(term) > 3][:3]
     if terms: filters.append(or_(*[KnowledgeProduct.searchable_text.contains(term) for term in terms]))
     if filters: query = query.filter(or_(*filters))
-    products = query.order_by(KnowledgeProduct.normalized_brand, KnowledgeProduct.normalized_product_name).limit(max(40, max_comparables * 12)).all()
+    products = query.order_by(KnowledgeProduct.normalized_brand, KnowledgeProduct.normalized_name).limit(max(40, max_comparables * 12)).all()
     # Comparable evidence must be truly comparable. Broad OR-prefilter matches
     # with no lexical overlap or a contradictory beauty module are rejected.
     target = set(norm_name.split()) | set(category_text.split())

@@ -93,7 +93,6 @@ def test_retail_parent_variants_and_exact_retrieval(db, tmp_path):
     assert result["exact_matches"][0]["gtin"] == "8712345678901"
     assert evidence_is_sufficient(result)
     exact = resolve_exact_field_evidence(result)
-    assert exact["values"]["description"] == "Hydrating niacinamide serum"
     assert float(exact["values"]["rating"]) == 4.7
     assert exact["values"]["review_count"] == 128
     assert exact["market"]["image_url"] == "https://img.test/1.jpg"

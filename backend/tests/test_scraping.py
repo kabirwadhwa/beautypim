@@ -108,7 +108,7 @@ def test_generic_parser_extracts_reviews_from_embedded_application_state():
     </head><body><h1>Evidence Lip Colour</h1></body></html>
     """
     product = GenericJsonLdAdapter().parse(html, "https://brand.example/lip")
-    assert product.rating == 4.6
+    assert str(product.rating) == "4.6"
     assert product.review_count == 81
     assert product.review_summary["review_sample_count"] == 2
     assert "wear" in product.review_summary["frequently_praised_topics"]

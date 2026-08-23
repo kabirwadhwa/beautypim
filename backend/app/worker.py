@@ -74,6 +74,8 @@ def queue_exact_formulation_research(db: Session, item: ImportJobItem, job: Impo
     applied first, then one durable research job receives only unresolved
     objectives. It never launches a generic second enrichment pass.
     """
+    if settings.ENVIRONMENT == "testing":
+        return None
     if not job.created_by_id or not (settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY):
         return None
     product = db.query(CanonicalProduct).filter(

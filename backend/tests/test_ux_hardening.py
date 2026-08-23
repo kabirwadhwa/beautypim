@@ -29,7 +29,7 @@ def test_exact_corpus_values_override_model_copy_with_source_evidence():
     enriched = apply_exact_corpus_evidence(result, exact, "makeup")
     assert enriched["product_positioning"]["value"] == "Velvet-matte liquid lip colour"
     assert enriched["product_positioning"]["value_status"] == "source_supported"
-    assert enriched["makeup"]["coverage"] == "Full"
+    assert enriched["makeup"]["coverage"]["value"] == "Full"
 
 def get_auth_headers(client: TestClient, email: str) -> dict:
     from app.auth import get_password_hash, create_access_token

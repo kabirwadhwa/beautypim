@@ -336,7 +336,7 @@ def generate_deterministic_fallback(name: str, brand: str, description: str, raw
         if token in source and label not in concerns:
             concerns.append(label)
     if not is_makeup and not is_hair and "pigment" in source and any(
-        token in source for token in ("dark spot", "hyperpigment", "uneven tone", "discolor")
+        token in source for token in ("pigmentation", "dark spot", "hyperpigment", "uneven tone", "discolor")
     ):
         concerns.append("Pigmentation")
     if is_fragrance:
