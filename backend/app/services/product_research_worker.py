@@ -21,6 +21,69 @@ RESEARCH_DOMAIN = "product-research.internal"
 ACTIVE_STATUSES = {"queued", "discovering", "crawling", "parsing"}
 
 
+def _persist_discovery_market_evidence(db, product, discovery: dict) -> dict:
+    """Persist exact-product image and review aggregates exposed by search.
+
+    These are market observations only. They never authorize formulation,
+    claims, price, GTIN, concentration, shade, or other variant facts.
+    """
+    from app.models import FieldValue
+    from app.services.image_urls import normalize_public_image_url
+
+    observations = discovery.get("market_observations") or []
+    if not isinstance(observations, list):
+        return {"image_found": False, "review_evidence_found": False}
+    image_found = False
+    if not product.image_url:
+        for observation in observations:
+            image = normalize_public_image_url(observation.get("image_url"))
+            if image:
+                product.image_url = image
+                image_found = True
+                break
+    else:
+        image_found = True
+
+    # Prefer the largest exact-product aggregate because it is generally the
+    # most stable customer signal. The source URL remains attached as evidence.
+    review_rows = [row for row in observations if row.get("average_rating") is not None or row.get("review_count")]
+    review = max(review_rows, key=lambda row: int(row.get("review_count") or 0), default=None)
+    if review:
+        evidence = [{
+            "source_reference": review.get("source_url"),
+            "source_domain": review.get("source_domain"),
+            "supporting_text": review.get("evidence_excerpt"),
+            "evidence_type": "licensed_web_search_market_observation",
+            "match_scope": "exact_product",
+        }]
+        for field_name, value in (
+            ("rating", review.get("average_rating")),
+            ("review_count", review.get("review_count")),
+        ):
+            if value is None:
+                continue
+            current = db.query(FieldValue).filter(
+                FieldValue.canonical_product_id == product.id,
+                FieldValue.field_name == field_name,
+                FieldValue.is_current == True,
+            ).first()
+            if current and current.source_type in {"ai_inference", "web_research"}:
+                current.is_current = False
+                db.flush()
+                current = None
+            if not current:
+                db.add(FieldValue(
+                    canonical_product_id=product.id, field_name=field_name,
+                    value=value, source_type="source_data",
+                    source_reference=review.get("source_url"), confidence_score=0.95,
+                    review_status="inferred", is_current=True, evidence=evidence,
+                    reasoning_summary="Exact-product aggregate retained from cited web-search evidence.",
+                    semantic_status="source_supported", semantic_status_type="market_observation",
+                ))
+    db.flush()
+    return {"image_found": image_found, "review_evidence_found": bool(review)}
+
+
 def _assign_configuration(job: CrawlJob, **updates) -> dict:
     configuration = {**(job.configuration or {}), **updates}
     job.configuration = configuration
@@ -122,12 +185,19 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             if discovery.get("status") in {"queued", "in_progress"}:
                 time.sleep(2)
 
+        discovery_market = _persist_discovery_market_evidence(db, product, discovery)
+        db.commit()
+
         job.status = "crawling"
         job.heartbeat_at = datetime.utcnow()
         db.commit()
         result = _automatic_product_research(
             db, product, user, candidates=discovery.get("candidates") or [],
             research_objectives=research_objectives,
+        )
+        result["image_found"] = bool(result.get("image_found") or discovery_market["image_found"])
+        result["review_evidence_found"] = bool(
+            result.get("review_evidence_found") or discovery_market["review_evidence_found"]
         )
 
         # Re-run Product Understanding after phase-one evidence. The next plan

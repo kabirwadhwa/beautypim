@@ -160,10 +160,15 @@ def run_crawl_job(db: Session, job_id):
             config.browser_page_limit if config.use_browser_rendering else config.maximum_pages,
         )
         if job.pages_fetched >= effective_page_limit or job.product_pages_found >= config.maximum_product_pages:
-            job.status = "partially_completed"
-            job.error_summary = "Configured page or product limit reached."
-            db.commit()
-            return
+            queued = db.query(CrawlUrl).filter(
+                CrawlUrl.crawl_job_id == job.id, CrawlUrl.state == "queued",
+            ).count()
+            if queued:
+                job.status = "partially_completed"
+                job.error_summary = "Configured page or product limit reached."
+                db.commit()
+                return
+            break
         item = _claim_url(db, job.id)
         if not item:
             break

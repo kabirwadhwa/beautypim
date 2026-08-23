@@ -105,6 +105,37 @@ def test_selector_always_exposes_truthful_summary_for_aggregate_only_evidence(db
     assert "does not invent customer opinions" in selected["review_summary"]["ai_summary_text"]
 
 
+def test_selector_uses_cited_web_search_field_evidence_when_retailer_blocks_crawl(db):
+    brand = Brand(id=uuid.uuid4(), name="Search Brand", normalized_name=uuid.uuid4().hex)
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Search Fragrance",
+        normalized_name="searchfragrance",
+    )
+    db.add(brand); db.flush(); db.add(product); db.flush()
+    source_url = "https://retailer.example/product/search-fragrance"
+    db.add_all([
+        FieldValue(
+            canonical_product_id=product.id, field_name="rating", value=4.6,
+            source_type="source_data", source_reference=source_url,
+            review_status="inferred", is_current=True,
+        ),
+        FieldValue(
+            canonical_product_id=product.id, field_name="review_count", value=920,
+            source_type="source_data", source_reference=source_url,
+            review_status="inferred", is_current=True,
+        ),
+    ])
+    db.commit()
+
+    selected = select_review_aggregate(db, product.id)
+
+    assert selected["average_rating"] == 4.6
+    assert selected["review_count"] == 920
+    assert selected["source_domain"] == "retailer.example"
+    assert selected["match_scope"] == "exact_product"
+    assert len(selected["review_summary"]["ai_summary_lines"]) == 4
+
+
 def test_review_synthesis_accepts_top_level_aggregate_rating(db, monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     brand = Brand(id=uuid.uuid4(), name="Aggregate Brand", normalized_name=uuid.uuid4().hex)

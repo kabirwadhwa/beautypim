@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -6,7 +7,8 @@ from app.config import settings
 from app.scraping.url_safety import UnsafeUrl
 from app.services.web_discovery import (
     SearchProviderUnavailable, discover_product_sources,
-    poll_product_source_discovery, start_product_source_discovery,
+    _parse_openai_market_observations, poll_product_source_discovery,
+    start_product_source_discovery,
 )
 
 
@@ -99,6 +101,31 @@ def test_openai_citations_are_discovered_and_unsafe_urls_are_rejected(post, vali
 
     assert [item["url"] for item in results] == ["https://brand.example/product/moon"]
     assert results[0]["title"] == "Moon"
+
+
+@patch("app.services.web_discovery.validate_public_url")
+def test_openai_market_observations_retain_cited_image_and_review_aggregate(validate):
+    payload = {"output": [{
+        "type": "web_search_call", "action": {"sources": [{
+            "url": "https://retailer.example/product/moon", "title": "Moon",
+        }]},
+    }, {
+        "type": "message", "content": [{
+            "type": "output_text", "text": json.dumps({"market_observations": [{
+                "source_url": "https://retailer.example/product/moon",
+                "source_name": "Retailer", "image_url": "https://cdn.example/moon.jpg",
+                "average_rating": 4.7, "review_count": 812,
+                "evidence_excerpt": "Rated 4.7 from 812 reviews",
+            }]})
+        }],
+    }]}
+
+    values = _parse_openai_market_observations(payload, [])
+
+    assert values[0]["image_url"] == "https://cdn.example/moon.jpg"
+    assert values[0]["average_rating"] == 4.7
+    assert values[0]["review_count"] == 812
+    validate.assert_called_once()
 
 
 @patch("app.services.web_discovery.validate_public_url")

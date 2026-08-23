@@ -86,6 +86,35 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             summary = {**summary, **saved_summary.value}
         summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         candidates.append((score, row, payload, summary, rating, count, scope))
+    # Licensed search may expose a cited exact-product aggregate even when the
+    # retailer blocks HTML crawling. It is stored as field-level source
+    # evidence and participates in this same canonical selector.
+    rating_field = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product_id,
+        FieldValue.field_name == "rating", FieldValue.is_current == True,
+    ).first()
+    count_field = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product_id,
+        FieldValue.field_name == "review_count", FieldValue.is_current == True,
+    ).first()
+    if rating_field or count_field:
+        rating = rating_field.value if rating_field else None
+        count = count_field.value if count_field else None
+        source_field = count_field or rating_field
+        source_url = source_field.source_reference if source_field else None
+        summary = saved_summary.value if saved_summary and isinstance(saved_summary.value, dict) else {}
+        summary = _summary_or_aggregate_fallback(summary, rating, count)
+        result = {
+            "average_rating": float(rating) if rating not in (None, "") else None,
+            "review_count": _integer(count) if count not in (None, "") else None,
+            "review_summary": summary, "source": "Web Research",
+            "source_domain": urlparse(source_url).hostname if source_url else None,
+            "observation_date": source_field.created_at if source_field else None,
+            "match_scope": "exact_product",
+            "evidence_reference": source_url or f"field_value:{source_field.id}",
+            "observation_id": None,
+        }
+        candidates.append(((2, 1, 1 if summary else 0, 0, _integer(count), source_field.created_at), None, result, {}, rating, count, "exact_product"))
     # Explicit customer-feed aggregates are exact-product evidence too. They
     # participate in the same ranking instead of being selected by a UI loop.
     listings = db.query(SourceListing).filter(
