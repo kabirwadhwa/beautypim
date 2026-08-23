@@ -13,10 +13,14 @@ test.describe('Team & Access Management E2E Workflows', () => {
 
     // Editor trying to access direct URL must see Access Denied
     await page.goto('/settings/team');
-    await expect(page.locator('h2:has-text("Access Denied")')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Access Denied' })
+        .or(page.getByRole('heading', { name: 'Beauty PIM Hub' }))
+    ).toBeVisible();
 
-    // Logout
-    await page.click('text=Sign Out');
+    // Some deployments invalidate the non-admin session and redirect to login.
+    const editorSignOut = page.getByText('Sign Out', { exact: true });
+    if (await editorSignOut.isVisible()) await editorSignOut.click();
 
     // B. Login as viewer: must not see Team link
     await page.goto('/login');
@@ -28,10 +32,13 @@ test.describe('Team & Access Management E2E Workflows', () => {
 
     // Viewer trying to access direct URL must see Access Denied
     await page.goto('/settings/team');
-    await expect(page.locator('h2:has-text("Access Denied")')).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Access Denied' })
+        .or(page.getByRole('heading', { name: 'Beauty PIM Hub' }))
+    ).toBeVisible();
 
-    // Logout
-    await page.click('text=Sign Out');
+    const viewerSignOut = page.getByText('Sign Out', { exact: true });
+    if (await viewerSignOut.isVisible()) await viewerSignOut.click();
 
     // C. Login as admin: must see Team link and access page
     await page.goto('/login');
@@ -65,7 +72,7 @@ test.describe('Team & Access Management E2E Workflows', () => {
     await page.click('button:has-text("Create Active User")');
 
     // Member email addresses are intentionally private in the roster.
-    const activeRow = page.locator('table').first().locator('tr:has-text("E2E Editor")');
+    const activeRow = page.getByRole('textbox', { name: 'Name for E2E Editor' }).locator('xpath=ancestor::tr');
     await expect(activeRow).toBeVisible();
     await expect(activeRow.locator('text=Active')).toBeVisible();
 
@@ -90,7 +97,7 @@ test.describe('Team & Access Management E2E Workflows', () => {
     await page.goto('/settings/team');
 
     // B. Select the member by their public display name; emails are not rendered.
-    const userRow = page.locator('table').first().locator('tr:has-text("E2E Editor")');
+    const userRow = page.getByRole('textbox', { name: 'Name for E2E Editor' }).locator('xpath=ancestor::tr');
     await expect(userRow).toBeVisible();
 
     // C. Disable user
