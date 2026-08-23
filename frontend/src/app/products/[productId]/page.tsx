@@ -409,13 +409,19 @@ export default function ProductDetailPage() {
           resume_context: { mode: improveMode, fields: improveMode === 'selected' ? selectedImproveFields : [] }
         })
       });
-      const data = await resp.json();
+      const responseText = await resp.text();
+      let data: any = {};
+      try { data = responseText ? JSON.parse(responseText) : {}; } catch { data = {}; }
       if (resp.status === 409 && data?.detail?.code === 'stale_identity_review') {
         setImprovement(data.detail.improvement);
         setIdentityReviewMessage('Product evidence changed while you were reviewing. The review has been refreshed; your typed values remain available.');
         return;
       }
-      if (!resp.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.detail?.message || 'Identity could not be saved.');
+      if (!resp.ok) throw new Error(
+        typeof data.detail === 'string'
+          ? data.detail
+          : data.detail?.message || responseText || `Identity could not be saved (HTTP ${resp.status}).`
+      );
       setIdentityReviewMessage(data.message || 'Identity saved.');
       if (data.resumed && data.research_job_id) {
         setActiveResearchJobId(data.research_job_id);
@@ -710,8 +716,13 @@ export default function ProductDetailPage() {
         })
       });
       if (!resp.ok) {
-        const data = await resp.json();
-        throw new Error(data.detail || "Failed to edit field value.");
+        const responseText = await resp.text();
+        let detail = responseText;
+        try {
+          const data = responseText ? JSON.parse(responseText) : {};
+          detail = typeof data.detail === 'string' ? data.detail : data.detail?.message || responseText;
+        } catch { /* Preserve the server's plain-text response. */ }
+        throw new Error(detail || `Failed to edit field value (HTTP ${resp.status}).`);
       }
       setShowOverride(false);
       fetchDetail();

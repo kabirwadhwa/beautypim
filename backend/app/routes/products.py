@@ -199,7 +199,15 @@ def _clean_classification(value: str, label: str) -> str:
     return cleaned.title()
 
 
-def _set_product_classification(db: Session, product: CanonicalProduct, category: str, subcategory: str, user: User):
+def _set_product_classification(
+    db: Session,
+    product: CanonicalProduct,
+    category: str,
+    subcategory: str,
+    user: User,
+    *,
+    refresh_understanding: bool = True,
+):
     category_name = _clean_classification(category, "Category")
     subcategory_name = _clean_classification(subcategory, "Subcategory")
     root = db.query(Category).filter(func.lower(Category.path) == category_name.lower()).first()
@@ -250,7 +258,8 @@ def _set_product_classification(db: Session, product: CanonicalProduct, category
         changed={"category": [before_category, category_name], "subcategory": [before_subcategory, subcategory_name]},
         user_id=user.id, actor_type="user",
     )
-    _refresh_product_understanding(db, product)
+    if refresh_understanding:
+        _refresh_product_understanding(db, product)
 
 
 @router.get("/metrics")
@@ -1118,6 +1127,11 @@ def _apply_product_identity(
         _set_product_classification(
             db, product, request.category,
             request.subcategory or request.product_type or "Unspecified", current_user,
+            # The identity writer refreshes the contract once after every
+            # foundational field has been applied. Refreshing here as well
+            # queues two current product_understanding rows in one flush and
+            # violates PostgreSQL's uq_current_val_product partial index.
+            refresh_understanding=False,
         )
     for field_name, value in (
         ("product_type", request.product_type),

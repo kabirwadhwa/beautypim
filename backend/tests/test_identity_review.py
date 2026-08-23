@@ -6,6 +6,7 @@ from app.services.identity_review import (
     does_this_product_require_identity_review, persist_review_state,
     synchronize_blocking_issue,
 )
+from app.routes.products import ProductIdentityUpdateRequest, _apply_product_identity
 from app.worker import create_field_value_version
 
 
@@ -128,6 +129,50 @@ def test_later_human_correction_supersedes_older_human_value(db):
     ).one()
     assert current.value == "Makeup"
     assert current.source_type == "human_edit"
+
+
+def test_full_manual_identity_edit_writes_one_current_understanding_and_can_repeat(db):
+    """Regression for the production identity-save PostgreSQL unique violation."""
+    product = _product(db, "Internal Fragrance")
+    _contract(db, product, status="resolved", module="fragrance", fingerprint="before")
+    actor = db.query(User).filter(User.email == "admin@test.com").one()
+
+    first = ProductIdentityUpdateRequest(
+        brand="Lattafa", product_name="Ana Abiyedh", product_family="Ana Abiyedh",
+        category="Fragrance", subcategory="Perfume", product_type="Eau de Parfum",
+        category_module="fragrance", gtin="6290362341826", size="60", unit="ml",
+    )
+    _apply_product_identity(product.id, first, db, actor)
+    db.flush()
+
+    second = ProductIdentityUpdateRequest(
+        brand="Lattafa Perfumes", product_name="Ana Abiyedh Coral",
+        product_family="Ana Abiyedh", category="Fragrance", subcategory="Perfume",
+        product_type="Eau de Parfum", category_module="fragrance",
+        gtin="6290362341826", size="60", unit="ml",
+    )
+    _apply_product_identity(product.id, second, db, actor)
+    db.flush()
+
+    current_understanding = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "product_understanding",
+        FieldValue.is_current == True,
+    ).all()
+    assert len(current_understanding) == 1
+    db.refresh(product)
+    assert product.product_name == "Ana Abiyedh Coral"
+    assert product.brand.name == "Lattafa Perfumes"
+    current_fields = {
+        row.field_name: row.value for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == product.id,
+            FieldValue.is_current == True,
+        ).all()
+    }
+    assert current_fields["category"] == "Fragrance"
+    assert current_fields["subcategory"] == "Perfume"
+    assert current_fields["product_type"] == "Eau de Parfum"
+    assert current_fields["category_module"] == "fragrance"
 
 
 def _admin_headers(client):

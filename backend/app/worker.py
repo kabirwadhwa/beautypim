@@ -544,12 +544,16 @@ def create_field_value_version(
             db.query(FieldValue).filter(
                 FieldValue.canonical_product_id == canonical_product_id,
                 FieldValue.field_name == field_name
-            ).update({"is_current": False})
+            ).update({"is_current": False}, synchronize_session=False)
         elif product_variant_id:
             db.query(FieldValue).filter(
                 FieldValue.product_variant_id == product_variant_id,
                 FieldValue.field_name == field_name
-            ).update({"is_current": False})
+            ).update({"is_current": False}, synchronize_session=False)
+        # Execute the retirement before the replacement INSERT. In particular,
+        # PostgreSQL must never see two rows satisfying the partial unique
+        # current-value index during a multi-field identity transaction.
+        db.flush()
             
     field_record = FieldValue(
         id=uuid.uuid4(),
