@@ -82,8 +82,21 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         if not product or not user or not item:
             raise RuntimeError("The product, user or source record for background research no longer exists.")
 
-        from app.services.product_identity import preferred_product_variant
+        from app.services.product_identity import (
+            preferred_product_variant, product_is_fragrance, trusted_product_version,
+        )
         variant = preferred_product_variant(db, product.id)
+        research_objectives = list(configuration.get("research_objectives") or [])
+        safe_market_only = bool(product_is_fragrance(db, product) and not trusted_product_version(db, product))
+        if safe_market_only:
+            # Continue useful product-family research while preventing the
+            # unresolved concentration from authorizing formulation/claim data.
+            safe = {"consumer_brand", "product_family", "category", "product_type",
+                    "image_url", "reviews", "rating", "review_count", "review_summary"}
+            research_objectives = [field for field in research_objectives if field in safe]
+            for field in ("image_url", "reviews"):
+                if field not in research_objectives:
+                    research_objectives.append(field)
         discovery = configuration.get("discovery")
         if not discovery:
             discovery = start_product_source_discovery(
@@ -92,7 +105,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 product_format=_product_expected_format(db, product),
                 gtin=variant.gtin if variant and variant.gtin else "",
                 approved_domains=[],
-                research_objectives=configuration.get("research_objectives") or [],
+                research_objectives=research_objectives,
             )
             _assign_configuration(job, discovery=discovery)
             job.heartbeat_at = datetime.utcnow()
@@ -114,7 +127,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         db.commit()
         result = _automatic_product_research(
             db, product, user, candidates=discovery.get("candidates") or [],
-            research_objectives=configuration.get("research_objectives") or [],
+            research_objectives=research_objectives,
         )
 
         # Re-run Product Understanding after phase-one evidence. The next plan
@@ -156,7 +169,19 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 result["review_summary_generated"] = False
                 result["review_summary_error"] = str(exc)
         else:
-            result["review_summary_generated"] = False
+            # Aggregate reviews and imagery are safe product-family market
+            # observations even when an EDT/EDP distinction is unresolved.
+            if result.get("review_evidence_found"):
+                try:
+                    from app.services.review_summarization import summarize_product_reviews
+                    review_summary = summarize_product_reviews(db, product.id)
+                    result["review_summary_generated"] = bool(review_summary)
+                except Exception as exc:
+                    logger.warning("Review synthesis failed for %s: %s", product.id, exc)
+                    result["review_summary_generated"] = False
+                    result["review_summary_error"] = str(exc)
+            else:
+                result["review_summary_generated"] = False
             result["identity_unresolved"] = True
         result["research_status"] = "completed"
         result["research_job_id"] = str(job.id)

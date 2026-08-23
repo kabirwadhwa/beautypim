@@ -7,6 +7,7 @@ from unittest.mock import patch
 from app.models import (
     Brand, CanonicalProduct, CrawlConflict, CrawlJob, CrawlUrl, FieldValue,
     Formulation, ProductVariant, RawPageObservation, ScrapedProductObservation,
+    SourcePrice,
 )
 from app.scraping.adapters.generic import GenericJsonLdAdapter
 from app.scraping.persistence import persist_product
@@ -224,6 +225,66 @@ def test_product_research_rejects_conflicting_fragrance_edition(db):
         persist_product(db, job, raw, scraped, GenericJsonLdAdapter())
 
     assert db.query(ScrapedProductObservation).count() == 0
+
+
+def test_unresolved_fragrance_research_keeps_image_and_reviews_but_blocks_exact_facts(db):
+    brand = Brand(id=uuid.uuid4(), name="Maison Test", normalized_name="maisontest")
+    canonical = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Signature Scent",
+        normalized_name="signature scent", review_status="imported",
+    )
+    db.add_all([brand, canonical]); db.flush()
+    config = CrawlConfiguration(
+        domain="retailer.example", crawl_mode="single_url",
+        starting_urls=["https://retailer.example/signature-scent"],
+    ).model_dump(mode="json")
+    config.update({
+        "research_product_id": str(canonical.id),
+        "research_product_name": canonical.product_name,
+        "research_expected_format": "Fragrance",
+        "research_safe_fields_only": True,
+    })
+    job = CrawlJob(
+        id=uuid.uuid4(), domain="retailer.example", starting_urls=config["starting_urls"],
+        crawl_mode="single_url", status="parsing", configuration=config,
+    )
+    url = CrawlUrl(
+        id=uuid.uuid4(), crawl_job_id=job.id, url=config["starting_urls"][0],
+        normalized_url=config["starting_urls"][0], state="fetching", depth=0,
+    )
+    db.add_all([job, url]); db.flush()
+    raw = RawPageObservation(
+        id=uuid.uuid4(), crawl_job_id=job.id, crawl_url_id=url.id,
+        source_url=url.url, final_url=url.url, http_status=200,
+        content_hash="d" * 64, response_size=100, parser_version="1.0.0",
+    )
+    db.add(raw); db.flush()
+    scraped = ScrapedProduct(
+        source_name="Retailer", source_domain="retailer.example",
+        source_url=url.url, canonical_url=url.url,
+        scraped_at=datetime.now(timezone.utc), brand="Maison Test",
+        product_name="Signature Scent Eau de Parfum", gtin="1234567890123",
+        variant_name="EDP 100 ml", size="100", unit="ml", price=Decimal("79.00"),
+        image_urls=["https://retailer.example/signature.jpg"],
+        ingredient_text_raw="Alcohol, Parfum, Limonene",
+        claims=["Long-lasting"], rating=4.6, review_count=321,
+        review_summary={"average_rating": 4.6, "review_count": 321},
+        parser_version="1.0.0",
+    )
+
+    persist_product(db, job, raw, scraped, GenericJsonLdAdapter())
+    db.commit(); db.refresh(canonical)
+
+    assert canonical.image_url == "https://retailer.example/signature.jpg"
+    saved_fields = {row.field_name for row in db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == canonical.id,
+    ).all()}
+    assert {"rating", "review_count", "review_summary"} <= saved_fields
+    assert "claims" not in saved_fields
+    variant = db.query(ProductVariant).filter(ProductVariant.canonical_product_id == canonical.id).one()
+    assert variant.gtin is None and variant.variant_name is None and variant.size is None
+    assert db.query(Formulation).filter(Formulation.canonical_product_id == canonical.id).count() == 0
+    assert db.query(SourcePrice).count() == 0
 
 
 def test_worker_recovers_interrupted_frontier(db):

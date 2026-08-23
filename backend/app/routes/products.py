@@ -424,12 +424,10 @@ def re_enrich_product(
         # exact, trusted EDT could remain without INCI forever even though the
         # missing formulation was researchable.
         from app.services.product_improvement import product_improvement_summary
-        from app.services.product_identity import product_is_fragrance, trusted_product_version
         quality = product_improvement_summary(db, product)
         objectives = [entry["field"] for entry in quality.get("research_objectives") or []]
         research_job = None
-        identity_is_safe = not product_is_fragrance(db, product) or trusted_product_version(db, product)
-        if objectives and identity_is_safe and (settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY):
+        if objectives and (settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY):
             research_job = _enqueue_product_research(
                 db, product, item, ProductImproveRequest(mode="missing_only"), current_user, objectives,
             )
@@ -499,17 +497,7 @@ def _automatic_product_research(
     variant = preferred_product_variant(db, product.id)
     expected_format = _product_expected_format(db, product)
     from app.services.product_identity import product_is_fragrance, trusted_product_version
-    if product_is_fragrance(db, product) and not trusted_product_version(db, product):
-        return {
-            "candidates": 0, "sources_ingested": 0,
-            "image_found": bool(product.image_url), "review_evidence_found": False,
-            "official_evidence_found": False, "formulation_evidence_found": False,
-            "variant_identity_found": False, "identity_required": True,
-            "errors": [
-                "Confirm the fragrance concentration (for example EDT, EDP, Parfum or Elixir) "
-                "before exact-page research so editions are not mixed."
-            ],
-        }
+    safe_market_only = bool(product_is_fragrance(db, product) and not trusted_product_version(db, product))
     if candidates is None:
         candidates = discover_product_sources(
             brand=product.brand.name if product.brand else "",
@@ -627,6 +615,9 @@ def _automatic_product_research(
                 **configuration, "research_product_id": str(product.id),
                 "research_expected_format": expected_format,
                 "research_product_name": product.product_name,
+                # An unresolved EDT/EDP distinction must block formulation and
+                # exact-claim attachment, not safe family-level image/reviews.
+                "research_safe_fields_only": safe_market_only,
             },
             requested_by_id=user.id,
         )
@@ -762,37 +753,29 @@ def improve_product(
             product_name=product.product_name, category=category.path if category else "",
         )
         requested = set(request.fields or []) if request.mode == "selected" else None
-        meaningful_gaps = before_quality.get("missing_high_priority_fields") or []
+        research_objectives = [
+            item["field"] for item in before_quality.get("research_objectives") or []
+        ]
+        meaningful_gaps = research_objectives
         if not meaningful_gaps:
             research_summary = {
                 "web_search_skipped": True, "reason": "No meaningful evidence gaps found.",
                 "sources_ingested": 0, "errors": [],
             }
-        elif evidence_is_sufficient(corpus_result, requested):
+        elif evidence_is_sufficient(corpus_result, requested) and not before_quality.get("market_observation_gaps"):
             research_summary = {
                 "web_search_skipped": True, "reason": "Exact internal retail evidence already covers the requested product fields.",
                 "corpus_match_level": corpus_result.get("match_level"), "sources_ingested": 0, "errors": [],
             }
         elif settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY:
-            from app.services.product_identity import product_is_fragrance, trusted_product_version
-            if product_is_fragrance(db, product) and not trusted_product_version(db, product):
-                research_summary = {
-                    "identity_required": True, "sources_ingested": 0,
-                    "errors": [
-                        "Confirm the fragrance concentration (for example EDT, EDP, Parfum or Elixir) "
-                        "before exact-page research so editions are not mixed."
-                    ],
-                }
-            else:
-                research_job = _enqueue_product_research(
-                    db, product, item, request, current_user,
-                    [item["field"] for item in before_quality.get("research_objectives") or []],
-                )
-                research_summary = {
-                    **_research_job_payload(research_job),
-                    "sources_ingested": 0, "errors": [],
-                    "message": "Catalogue enrichment completed. Image and review research is continuing in the background.",
-                }
+            research_job = _enqueue_product_research(
+                db, product, item, request, current_user, research_objectives,
+            )
+            research_summary = {
+                **_research_job_payload(research_job),
+                "sources_ingested": 0, "errors": [],
+                "message": "Catalogue enrichment completed. Image and review research is continuing in the background.",
+            }
         process_item_enrichment(
             db, item, job.column_mapping or {}, mode=request.mode,
             selected_fields=request.fields,
@@ -1714,8 +1697,9 @@ def bulk_improve_products(
             if not source_item:
                 raise ValueError("No source record is available for enrichment")
             quality = product_improvement_summary(db, product)
+            objectives = [entry["field"] for entry in quality.get("research_objectives") or []]
             gaps = quality.get("missing_high_priority_fields") or []
-            if not gaps:
+            if not objectives:
                 skipped_count += 1
                 items.append({
                     "product_id": str(product_id), "product_name": product.product_name,
@@ -1731,14 +1715,14 @@ def bulk_improve_products(
                 product_name=product.product_name,
                 category=category.path if category else "",
             )
-            local_only = evidence_is_sufficient(corpus, None)
+            local_only = evidence_is_sufficient(corpus, None) and not quality.get("market_observation_gaps")
             initial_discovery = ({
                 "provider": "internal_corpus", "status": "completed", "response_id": None,
                 "domains": [], "candidates": [],
             } if local_only else None)
             research_job = _enqueue_product_research(
                 db, product, source_item, improve_request, current_user,
-                [entry["field"] for entry in quality.get("research_objectives") or []],
+                objectives,
                 initial_discovery=initial_discovery,
             )
             db.commit()

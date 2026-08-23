@@ -83,6 +83,7 @@ def persist_product(
     product: ScrapedProduct, adapter: ProductAdapter, *, create_unmatched_draft: bool = True,
 ) -> ScrapedProductObservation:
     payload = product.model_dump(mode="json", exclude={"fields"})
+    safe_fields_only = bool((job.configuration or {}).get("research_safe_fields_only"))
     structured_hash = stable_hash(payload)
     identity = {
         "domain": product.source_domain, "retailer_id": product.retailer_product_id,
@@ -227,25 +228,26 @@ def persist_product(
         # from the import. Fill blanks only; never silently replace an accepted
         # variant identity with a retailer's conflicting representation.
         observed_gtin = product.gtin or product.ean or product.upc
-        if observed_gtin and not variant.gtin:
+        if observed_gtin and not variant.gtin and not safe_fields_only:
             duplicate = db.query(ProductVariant).filter(
                 ProductVariant.gtin == observed_gtin, ProductVariant.id != variant.id,
             ).first()
             if not duplicate:
                 variant.gtin = observed_gtin
-        if not variant.variant_name and (product.variant_name or product.shade or product.size):
+        if not safe_fields_only and not variant.variant_name and (product.variant_name or product.shade or product.size):
             variant.variant_name = product.variant_name or product.shade or product.size
-        if not variant.size and product.size:
+        if not safe_fields_only and not variant.size and product.size:
             variant.size = product.size
-        if not variant.unit and product.unit:
+        if not safe_fields_only and not variant.unit and product.unit:
             variant.unit = product.unit
         _persist_values_and_conflicts(db, job, observation, product, match_status)
-        _persist_formulation(db, listing, canonical_id, variant_id, product)
+        if not safe_fields_only:
+            _persist_formulation(db, listing, canonical_id, variant_id, product)
         canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == canonical_id).first()
         if canonical and not canonical.image_url and product.image_urls:
             from app.services.image_urls import normalize_public_image_url
             canonical.image_url = normalize_public_image_url(product.image_urls[0])
-    if product.price is not None and variant_id:
+    if product.price is not None and variant_id and not safe_fields_only:
         db.add(SourcePrice(
             id=uuid.uuid4(), source_listing_id=listing.id,
             product_variant_id=variant_id, amount=product.price,
@@ -258,10 +260,13 @@ def persist_product(
 
 def _persist_values_and_conflicts(db, job, observation, product, match_status):
     product_id = observation.canonical_product_id
-    for field in ("description", "product_type", "subtitle", "claims", "benefits",
-                  "usage_instructions", "warnings", "skin_types", "hair_types",
-                  "concerns", "availability", "image_urls", "shade", "rating", "review_count",
-                  "review_summary"):
+    fields = ("description", "product_type", "subtitle", "claims", "benefits",
+              "usage_instructions", "warnings", "skin_types", "hair_types",
+              "concerns", "availability", "image_urls", "shade", "rating", "review_count",
+              "review_summary")
+    if (job.configuration or {}).get("research_safe_fields_only"):
+        fields = ("image_urls", "rating", "review_count", "review_summary")
+    for field in fields:
         value = getattr(product, field)
         if value in (None, "", []):
             continue

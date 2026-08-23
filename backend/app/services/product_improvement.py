@@ -132,6 +132,26 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
             "evidence": row.evidence or [], "researched": bool(row.enrichment_run_id),
         }
     gap_plan = build_gap_plan(snapshot, metadata)
+    # Market observations are completion targets too, but remain separate from
+    # intrinsic product attributes.  Image and aggregate reviews are safe to
+    # research for an identified product family even while a fragrance's exact
+    # EDT/EDP concentration remains unresolved.
+    from app.services.review_aggregate import select_review_aggregate
+    review = select_review_aggregate(db, product.id)
+    market_observation_gaps = []
+    if not product.image_url:
+        market_observation_gaps.append("image_url")
+    if not review or (review.get("average_rating") is None and not review.get("review_count")):
+        market_observation_gaps.append("reviews")
+    research_objectives = list(gap_plan["research_objectives"])
+    existing_objectives = {item.get("field") for item in research_objectives}
+    for field in market_observation_gaps:
+        if field not in existing_objectives:
+            research_objectives.append({
+                "field": field, "objective_type": "market_observation",
+                "requires_direct_evidence": True,
+                "instruction": f"Find exact product-family evidence for {field.replace('_', ' ')}.",
+            })
 
     corpus = retrieve_corpus_evidence(
         db, gtin=identity["gtin"] or "", brand=identity["brand"] or "",
@@ -174,7 +194,8 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "field_states": gap_plan["field_states"],
         "missing_high_priority_fields": gap_plan["missing_high_priority_fields"],
         "missing_optional_fields": gap_plan["missing_optional_fields"],
-        "research_objectives": gap_plan["research_objectives"],
+        "research_objectives": research_objectives,
+        "market_observation_gaps": market_observation_gaps,
         "research_phase": gap_plan["phase"],
         "identity_resolution_required": gap_plan["identity_resolution_required"],
         "blocked_objectives": gap_plan.get("blocked_objectives", []),
