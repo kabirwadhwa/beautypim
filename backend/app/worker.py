@@ -493,10 +493,12 @@ def create_field_value_version(
     """Save a candidate without allowing AI to replace accepted direct evidence."""
     db_status = map_ai_status_to_db(status)
     protected_current = None
-    protected_sources = ["human_edit"]
+    # A new explicit human edit supersedes an older human edit. Automatic
+    # sources remain unable to replace protected human evidence.
+    protected_sources = [] if source_type == "human_edit" else ["human_edit"]
     if source_type == "ai_inference":
         protected_sources.append("source_data")
-    if canonical_product_id:
+    if protected_sources and canonical_product_id:
         protected_current = db.query(FieldValue).filter(
             FieldValue.canonical_product_id == canonical_product_id,
             FieldValue.field_name == field_name,
@@ -504,7 +506,7 @@ def create_field_value_version(
             FieldValue.review_status == "confirmed",
             FieldValue.is_current == True
         ).first()
-    elif product_variant_id:
+    elif protected_sources and product_variant_id:
         protected_current = db.query(FieldValue).filter(
             FieldValue.product_variant_id == product_variant_id,
             FieldValue.field_name == field_name,

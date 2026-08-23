@@ -22,6 +22,15 @@ interface Product {
   validation_issue_count: number;
   highest_issue_severity: string | null;
   tags: string[];
+  identity_review_status?: string | null;
+}
+
+interface IdentityReviewItem {
+  product_id: string; product_name: string; source_product_name?: string | null;
+  brand?: string | null; gtin?: string | null; reason: string; review_status: string;
+  identity_status?: string | null; match_type?: string | null; confidence?: number | null;
+  understanding_fingerprint?: string | null; suggested_identity: Record<string, string | null>;
+  blocked_research_job_id?: string | null; resume_context?: Record<string, any>;
 }
 
 interface BulkProgress {
@@ -70,6 +79,11 @@ export default function ProductsPage() {
   const [error, setError] = useState<string | null>(null);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null);
+  const [identityQueue, setIdentityQueue] = useState<IdentityReviewItem[]>([]);
+  const [identityQueueTotal, setIdentityQueueTotal] = useState(0);
+  const [showIdentityQueue, setShowIdentityQueue] = useState(false);
+  const [identityQueueIndex, setIdentityQueueIndex] = useState(0);
+  const [identityQueueSaving, setIdentityQueueSaving] = useState(false);
 
   const waitForResearchJobs = async (
     jobIds: string[], total: number, alreadyCompleted: number,
@@ -134,6 +148,12 @@ export default function ProductsPage() {
         if (pageProducts.length < pageSize) break;
       }
       setProducts(allProducts);
+      const queueResp = await fetch(`${API_URL}/products/identity-review-queue?limit=100`, { headers, signal });
+      if (queueResp.ok) {
+        const queueData = await queueResp.json();
+        setIdentityQueue(queueData.items || []);
+        setIdentityQueueTotal(queueData.total || 0);
+      }
       setSelectedIds(previous => previous.filter(id => allProducts.some(product => product.id === id)));
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(e?.message || "Unable to load products.");
@@ -314,6 +334,52 @@ export default function ProductsPage() {
     }
   };
 
+  const confirmQueueIdentity = async () => {
+    const item = identityQueue[identityQueueIndex];
+    if (!item) return;
+    setIdentityQueueSaving(true);
+    try {
+      const token = localStorage.getItem('token');
+      const identity = Object.fromEntries(Object.entries(item.suggested_identity || {}).filter(([, value]) => value));
+      const response = await fetch(`${API_URL}/products/${item.product_id}/identity-review/confirm`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identity, action: 'confirm_and_continue',
+          understanding_fingerprint: item.understanding_fingerprint,
+          resume_context: item.resume_context || { mode: 'missing_only', fields: [], blocked_research_job_id: item.blocked_research_job_id } })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.detail?.message || data?.detail || 'Identity could not be confirmed.');
+      setBulkMessage(data.message || 'Identity confirmed; enrichment resumed.');
+      const remaining = identityQueue.filter(row => row.product_id !== item.product_id);
+      setIdentityQueue(remaining);
+      if (!remaining.length) setShowIdentityQueue(false);
+      else setIdentityQueueIndex(Math.min(identityQueueIndex, remaining.length - 1));
+      await fetchProducts();
+    } catch (e: any) { setError(e.message || 'Identity could not be confirmed.'); }
+    finally { setIdentityQueueSaving(false); }
+  };
+
+  const skipQueueIdentity = async () => {
+    const item = identityQueue[identityQueueIndex];
+    if (!item) return;
+    setIdentityQueueSaving(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/products/${item.product_id}/identity-review/skip`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ understanding_fingerprint: item.understanding_fingerprint, resume_context: item.resume_context || {} })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Identity review could not be skipped.');
+      const remaining = identityQueue.filter(row => row.product_id !== item.product_id);
+      setIdentityQueue(remaining);
+      if (!remaining.length) setShowIdentityQueue(false);
+      else setIdentityQueueIndex(Math.min(identityQueueIndex, remaining.length - 1));
+      setBulkMessage('Identity review deferred. The product remains unresolved and enrichment is paused.');
+    } catch (e: any) { setError(e.message || 'Identity review could not be skipped.'); }
+    finally { setIdentityQueueSaving(false); }
+  };
+
   return (
     <Shell>
       <div className={styles.pageHeader}>
@@ -321,6 +387,10 @@ export default function ProductsPage() {
           <h1>Canonical Products Catalog</h1>
           <p>Verify matching records, review AI validations, and publish clean schemas</p>
         </div>
+
+        {identityQueue.length > 0 && <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setIdentityQueueIndex(0); setShowIdentityQueue(true); }}>
+          <AlertTriangle size={15} /> Review identities ({identityQueueTotal})
+        </button>}
 
         {selectedIds.length > 0 && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -408,6 +478,7 @@ export default function ProductsPage() {
             <option value="">All statuses</option>
             <option value="imported">Imported</option>
             <option value="needs_review">Needs Review</option>
+            <option value="needs_identity_review">Needs identity review</option>
             <option value="in_review">In Review</option>
             <option value="enriching">Enriching</option>
             <option value="enrichment_failed">Enrichment Failed</option>
@@ -582,6 +653,7 @@ export default function ProductsPage() {
                 <th>Subcategory</th>
                 <th>Product Type</th>
                 <th>Tags</th>
+                <th>Identity</th>
                 <th>Issues</th>
                 <th>Review State</th>
                 <th style={{ width: 80 }}>Actions</th>
@@ -590,7 +662,7 @@ export default function ProductsPage() {
             <tbody>
               {visibleProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={13} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
+                  <td colSpan={14} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
                     No products found matching active filter parameters.
                   </td>
                 </tr>
@@ -621,6 +693,7 @@ export default function ProductsPage() {
                         )) : <span style={{ color: '#64748b' }}>—</span>}
                       </div>
                     </td>
+                    <td>{p.identity_review_status ? <span className={`${styles.badge} ${styles.badgeWarning}`}>{p.identity_review_status === 'SKIPPED' ? 'Deferred' : p.identity_review_status === 'CONFLICT' ? 'Conflict' : 'Needs review'}</span> : <span style={{ color: '#64748b' }}>—</span>}</td>
                     <td>
                       {p.validation_issue_count > 0 ? (
                         <span className={`${styles.badge} ${p.highest_issue_severity === 'blocking' ? styles.badgeDanger : styles.badgeWarning}`}>
@@ -651,6 +724,38 @@ export default function ProductsPage() {
           </table>
         )}
       </div>
+
+      {showIdentityQueue && identityQueue[identityQueueIndex] && (() => {
+        const item = identityQueue[identityQueueIndex];
+        return <div style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div data-testid="identity-review-queue" style={{ width: 'min(760px,96vw)', background: '#0d1325', border: '1px solid #f59e0b88', borderRadius: 12, padding: 22 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+              <div><div style={{ color: '#fbbf24', fontSize: 11, fontWeight: 800, letterSpacing: '.08em' }}>IDENTITY REVIEW · PRODUCT {identityQueueIndex + 1} OF {identityQueueTotal}</div>
+                <h2 style={{ marginTop: 6 }}>{item.source_product_name || item.product_name}</h2></div>
+              <button className={styles.btnSecondary} onClick={() => setShowIdentityQueue(false)}><X size={16} /></button>
+            </div>
+            <div style={{ marginTop: 14, padding: 12, borderRadius: 8, background: 'rgba(245,158,11,.08)', color: '#fde68a', fontSize: 12 }}>{item.reason}</div>
+            <div style={{ marginTop: 14, border: '1px solid #283756', borderRadius: 8, padding: 14 }}>
+              <strong style={{ color: '#e2e8f0' }}>Suggested identity</strong>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 8, marginTop: 10 }}>
+                {Object.entries(item.suggested_identity || {}).filter(([, value]) => value).map(([field, value]) => <div key={field} style={{ color: '#94a3b8', fontSize: 12 }}><span style={{ textTransform: 'capitalize', color: '#cbd5e1' }}>{field.replaceAll('_', ' ')}</span>: {value}</div>)}
+              </div>
+              <div style={{ color: '#93c5fd', fontSize: 11, marginTop: 10 }}>{(item.match_type || 'No exact match').replaceAll('_', ' ')}{item.confidence != null ? ` · ${Math.round(item.confidence * 100)}%` : ''}</div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 18, flexWrap: 'wrap' }}>
+              <span style={{ display: 'flex', gap: 8 }}>
+                <button className={styles.btnSecondary} disabled={identityQueueIndex === 0} onClick={() => setIdentityQueueIndex(index => Math.max(0, index - 1))}>Previous</button>
+                <button className={styles.btnSecondary} disabled={identityQueueIndex >= identityQueue.length - 1} onClick={() => setIdentityQueueIndex(index => Math.min(identityQueue.length - 1, index + 1))}>Next</button>
+              </span>
+              <span style={{ display: 'flex', gap: 8 }}>
+                <button className={styles.btnSecondary} disabled={identityQueueSaving} onClick={skipQueueIdentity}>Skip</button>
+                <button className={styles.btnSecondary} onClick={() => router.push(`/products/${item.product_id}`)}>Edit</button>
+                <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={identityQueueSaving || !Object.values(item.suggested_identity || {}).some(Boolean)} onClick={confirmQueueIdentity}>{identityQueueSaving ? 'Saving & resuming…' : 'Confirm & continue'}</button>
+              </span>
+            </div>
+          </div>
+        </div>;
+      })()}
     </Shell>
   );
 }

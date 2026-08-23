@@ -139,6 +139,8 @@ interface ProductDetail {
   } | null;
   review_aggregate?: any;
   tags: string[];
+  identity_review?: ImprovementSummary['identity_review'] | null;
+  identity_review_status?: string | null;
 }
 
 interface ImprovementSummary {
@@ -160,6 +162,23 @@ interface ImprovementSummary {
   missing_high_priority_fields?: string[];
   missing_optional_fields?: string[];
   category_module?: string;
+  identity_review_required?: boolean;
+  identity_review_status?: string;
+  understanding_fingerprint?: string | null;
+  identity_review?: {
+    requires_review: boolean;
+    review_status: string;
+    reasons: string[];
+    understanding_fingerprint?: string | null;
+    source_values?: Record<string, unknown>;
+    source_details?: Record<string, unknown>;
+    resolved_values?: Record<string, unknown>;
+    human_confirmed_fields?: string[];
+    match_type?: string;
+    confidence?: number;
+    conflicts?: Array<Record<string, unknown>>;
+    reconciliation_reason?: string;
+  };
 }
 
 export default function ProductDetailPage() {
@@ -205,6 +224,7 @@ export default function ProductDetailPage() {
   const [discoveredSources, setDiscoveredSources] = useState<Array<Record<string, any>>>([]);
   const [researchResults, setResearchResults] = useState<Array<Record<string, any>>>([]);
   const [identityDraft, setIdentityDraft] = useState<Record<string, string>>({});
+  const [identityReviewMessage, setIdentityReviewMessage] = useState<string | null>(null);
   const [activeResearchJobId, setActiveResearchJobId] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState('');
   const [tagSaving, setTagSaving] = useState(false);
@@ -259,6 +279,11 @@ export default function ProductDetailPage() {
         setActiveResearchJobId(null);
         await fetchDetail();
         const result = status.result || {};
+        if (result.business_outcome === 'needs_identity_resolution') {
+          await openImproveProduct();
+          setIdentityReviewMessage('Automatic identity research could not safely resolve this product. Confirm the uncertain fields to continue.');
+          return;
+        }
         if (status.research_status === 'completed' || status.research_status === 'partially_completed') {
           const evidence = [
             result.image_found ? 'image' : null,
@@ -320,7 +345,7 @@ export default function ProductDetailPage() {
     }
   };
 
-  const openImproveProduct = async () => {
+  async function openImproveProduct() {
     setShowImprove(true);
     setImproveLoading(true);
     setError(null);
@@ -334,7 +359,8 @@ export default function ProductDetailPage() {
       setImprovement(data);
       setSelectedImproveFields(data.fields_recommended_for_research || []);
       setIdentityDraft(Object.fromEntries(
-        Object.entries(data.identity || {}).map(([key, value]) => [key, value == null ? '' : String(value)])
+        Object.entries({ ...(data.identity || {}), ...(data.identity_review?.resolved_values || {}) })
+          .map(([key, value]) => [key, value == null ? '' : String(value)])
       ) as Record<string, string>);
       const resultsResp = await fetch(`${API_URL}/products/${productId}/research-results`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -345,7 +371,7 @@ export default function ProductDetailPage() {
     } finally {
       setImproveLoading(false);
     }
-  };
+  }
 
   const discoverSources = async () => {
     setImproveLoading(true);
@@ -369,23 +395,59 @@ export default function ProductDetailPage() {
     }
   };
 
-  const saveIdentity = async () => {
+  const submitIdentityReview = async (action: 'confirm_and_continue' | 'save_only') => {
     setImproveLoading(true);
+    setIdentityReviewMessage(action === 'confirm_and_continue' ? 'Identity confirmed. Recalculating product understanding…' : 'Saving identity…');
     try {
       const token = localStorage.getItem('token');
-      const resp = await fetch(`${API_URL}/products/${productId}/identity`, {
-        method: 'PUT',
+      const resp = await fetch(`${API_URL}/products/${productId}/identity-review/confirm`, {
+        method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(identityDraft)
+        body: JSON.stringify({
+          identity: identityDraft, action,
+          understanding_fingerprint: improvement?.understanding_fingerprint,
+          resume_context: { mode: improveMode, fields: improveMode === 'selected' ? selectedImproveFields : [] }
+        })
       });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || 'Identity could not be saved.');
+      if (resp.status === 409 && data?.detail?.code === 'stale_identity_review') {
+        setImprovement(data.detail.improvement);
+        setIdentityReviewMessage('Product evidence changed while you were reviewing. The review has been refreshed; your typed values remain available.');
+        return;
+      }
+      if (!resp.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.detail?.message || 'Identity could not be saved.');
+      setIdentityReviewMessage(data.message || 'Identity saved.');
+      if (data.resumed && data.research_job_id) {
+        setActiveResearchJobId(data.research_job_id);
+        setNotice('Identity resolved. Continuing enrichment…');
+        setShowImprove(false);
+      }
       await openImproveProduct();
       await fetchDetail();
     } catch (e: any) {
       setError(e.message || 'Identity could not be saved.');
       setImproveLoading(false);
     }
+  };
+
+  const saveIdentity = () => submitIdentityReview('save_only');
+
+  const skipIdentityReview = async () => {
+    setImproveLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/products/${productId}/identity-review/skip`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ understanding_fingerprint: improvement?.understanding_fingerprint,
+          resume_context: { mode: improveMode, fields: selectedImproveFields } })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Identity review could not be deferred.');
+      setNotice('Identity review skipped for now. Product-specific enrichment remains safely paused.');
+      setShowImprove(false);
+      await fetchDetail();
+    } catch (e: any) { setError(e.message || 'Identity review could not be deferred.'); }
+    finally { setImproveLoading(false); }
   };
 
   const runGuidedEnrichment = async () => {
@@ -405,12 +467,14 @@ export default function ProductDetailPage() {
       setImageLoadFailed(false);
       const research = data.improvement_result || {};
       const researchErrors = Array.isArray(research.errors) ? research.errors.filter(Boolean) : [];
-      if (research.identity_required) {
-        setError(researchErrors[0] || 'Confirm the product identity before live source research.');
-      } else if (research.research_pending) {
+      if (research.research_pending) {
         setActiveResearchJobId(research.research_job_id || 'pending');
-        setNotice(research.message || 'Catalogue enrichment is complete. Image and review research is continuing in the background.');
+        setNotice(research.message || 'BeautyPIM is resolving identity and researching the applicable product gaps in the background.');
         setShowImprove(false);
+      } else if (research.identity_required) {
+        setImprovement(data.completeness || research.identity_review || improvement);
+        setIdentityReviewMessage('BeautyPIM needs identity confirmation before product-specific research can continue.');
+        setShowImprove(true);
       } else if (!research.sources_ingested) {
         const before = research.before_completeness;
         const after = research.after_completeness;
@@ -831,6 +895,16 @@ export default function ProductDetailPage() {
       {notice && (
         <div style={{ padding: 12, backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid #10b981', borderRadius: 6, color: '#6ee7b7', fontSize: 13, marginBottom: 20 }}>
           {notice}
+        </div>
+      )}
+
+      {product?.identity_review?.requires_review && (
+        <div data-testid="product-identity-review-banner" style={{ marginBottom: 20, padding: 16, border: '1px solid #f59e0b', borderRadius: 8, background: 'rgba(245,158,11,.1)', display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}>
+          <div>
+            <strong style={{ color: '#fde68a', fontSize: 16 }}>Identity confirmation required</strong>
+            <div style={{ color: '#e2e8f0', fontSize: 12, marginTop: 5 }}>{product.identity_review.reasons?.[0] || 'Foundational identity must be confirmed before product-specific enrichment continues.'}</div>
+          </div>
+          <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={openImproveProduct}>Review identity</button>
         </div>
       )}
 
@@ -1468,6 +1542,16 @@ export default function ProductDetailPage() {
 
             {improveLoading && !improvement ? <p style={{ padding: '40px 0', color: '#94a3b8' }}>Analysing identity and knowledge coverage…</p> : improvement && (
               <div style={{ display: 'grid', gap: 18, marginTop: 20 }}>
+                {improvement.identity_review_required && (
+                  <section data-testid="identity-review-required" style={{ border: '1px solid #f59e0b', borderRadius: 10, padding: 16, background: 'rgba(245,158,11,.1)' }}>
+                    <h3 style={{ color: '#fde68a', fontSize: 17, marginBottom: 6 }}>Identity confirmation required</h3>
+                    <p style={{ color: '#e2e8f0', fontSize: 13 }}>BeautyPIM could not safely establish the complete product identity. Confirm the uncertain fields before identity-dependent enrichment continues.</p>
+                    {!!improvement.identity_review?.reasons?.length && <ul style={{ margin: '10px 0 0 18px', color: '#fcd34d', fontSize: 12 }}>
+                      {improvement.identity_review.reasons.map(reason => <li key={reason} style={{ marginBottom: 4 }}>{reason}</li>)}
+                    </ul>}
+                    {identityReviewMessage && <div role="status" style={{ marginTop: 10, color: '#bfdbfe', fontSize: 12 }}>{identityReviewMessage}</div>}
+                  </section>
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
                   {[
                     ['Identity', improvement.identity_status, improvement.identity_completeness],
@@ -1485,8 +1569,25 @@ export default function ProductDetailPage() {
                 <section style={{ border: '1px solid #283756', borderRadius: 8, padding: 16 }}>
                   <h3 style={{ fontSize: 15, marginBottom: 5 }}>1. Confirm product identity</h3>
                   <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>Exact format, size, market or GTIN unlocks formulation-specific evidence without mixing variants.</p>
+                  {improvement.identity_review && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                      <div style={{ padding: 10, background: '#10192c', borderRadius: 7 }}>
+                        <strong style={{ fontSize: 12, color: '#cbd5e1' }}>Source said</strong>
+                        {Object.entries(improvement.identity_review.source_values || {}).filter(([, value]) => value != null).map(([field, value]) => (
+                          <div key={field} style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}><span style={{ textTransform: 'capitalize' }}>{field.replaceAll('_', ' ')}</span>: {String(value)}</div>
+                        ))}
+                      </div>
+                      <div style={{ padding: 10, background: '#10192c', borderRadius: 7 }}>
+                        <strong style={{ fontSize: 12, color: '#cbd5e1' }}>BeautyPIM resolved</strong>
+                        {Object.entries(improvement.identity_review.resolved_values || {}).filter(([, value]) => value != null).map(([field, value]) => (
+                          <div key={field} style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}><span style={{ textTransform: 'capitalize' }}>{field.replaceAll('_', ' ')}</span>: {String(value)}</div>
+                        ))}
+                        <div style={{ color: '#93c5fd', fontSize: 10, marginTop: 7 }}>{improvement.identity_review.match_type || 'No exact match'}{improvement.identity_review.confidence != null ? ` · ${Math.round(improvement.identity_review.confidence * 100)}%` : ''}</div>
+                      </div>
+                    </div>
+                  )}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                    {['brand', 'product_name', 'product_family', 'format', 'variant', 'size', 'unit', 'gtin', 'market'].map(field => (
+                    {['brand', 'product_name', 'product_family', 'format', 'variant', 'size', 'unit', 'gtin', 'market', 'category', 'subcategory', 'product_type', 'application_area', 'category_module'].map(field => (
                       <label key={field} style={{ color: '#94a3b8', fontSize: 11, textTransform: 'capitalize' }}>{field.replace('_', ' ')}
                         <input className={styles.inputField} value={identityDraft[field] || ''} onChange={e => setIdentityDraft(prev => ({ ...prev, [field]: e.target.value }))} style={{ marginTop: 5 }} />
                       </label>
@@ -1496,30 +1597,43 @@ export default function ProductDetailPage() {
                     <span style={{ color: improvement.missing_identity_fields.length ? '#fbbf24' : '#6ee7b7', fontSize: 12 }}>
                       {improvement.missing_identity_fields.length ? `Missing: ${improvement.missing_identity_fields.join(', ')}` : 'Identity is sufficiently complete.'}
                     </span>
-                    <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={saveIdentity} disabled={improveLoading}>Save identity</button>
+                    <span style={{ display: 'flex', gap: 8 }}>
+                      {improvement.identity_review_required && <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={skipIdentityReview} disabled={improveLoading}>Skip for now</button>}
+                      <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={saveIdentity} disabled={improveLoading}>Save identity</button>
+                      {improvement.identity_review_required && <button data-testid="confirm-identity-continue" className={`${styles.btn} ${styles.btnPrimary}`} onClick={() => submitIdentityReview('confirm_and_continue')} disabled={improveLoading}>Confirm identity &amp; continue enrichment</button>}
+                    </span>
                   </div>
                   {improvement.candidate_products.length > 0 && (
                     <div style={{ marginTop: 14 }}>
                       <div style={{ color: '#cbd5e1', fontSize: 12, fontWeight: 600, marginBottom: 7 }}>Possible catalogue versions — compare before importing formulation facts</div>
                       <div style={{ display: 'grid', gap: 7 }}>
-                        {improvement.candidate_products.slice(0, 4).map(candidate => (
-                          <div key={candidate.observation_id} style={{ padding: 10, background: '#10192c', borderRadius: 6, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                        {improvement.candidate_products.slice(0, 4).map((candidate, candidateIndex) => (
+                          <div key={candidate.observation_id || candidate.knowledge_variant_id || candidate.knowledge_product_id || candidateIndex} style={{ padding: 10, background: '#10192c', borderRadius: 6, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
                             <span style={{ fontSize: 12 }}>{candidate.brand} {candidate.product_name} · {candidate.format || 'format unknown'} · {candidate.size || 'size unknown'}</span>
                             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span style={{ color: '#93c5fd', fontSize: 11 }}>{Math.round(candidate.match_score * 100)}% candidate</span>
-                              <button className={styles.btnSecondary} style={{ padding: '4px 8px', fontSize: 10 }} onClick={() => setIdentityDraft(prev => ({
+                              <span style={{ color: '#93c5fd', fontSize: 11 }}>{Math.round((candidate.confidence || candidate.match_score || 0) * 100)}% · {candidate.evidence_summary || 'candidate'}</span>
+                              <button disabled={candidate.match_type === 'comparable'} className={styles.btnSecondary} style={{ padding: '4px 8px', fontSize: 10, opacity: candidate.match_type === 'comparable' ? .5 : 1 }} onClick={() => setIdentityDraft(prev => ({
                                 ...prev,
+                                brand: candidate.brand || prev.brand || '',
+                                product_name: candidate.product_name || prev.product_name || '',
+                                product_family: candidate.product_name || prev.product_family || '',
                                 format: candidate.format || prev.format || '',
-                                size: candidate.size || prev.size || '',
-                                gtin: candidate.gtin || prev.gtin || '',
+                                size: candidate.match_type === 'exact_product' ? (candidate.size || prev.size || '') : prev.size || '',
+                                gtin: candidate.match_type === 'exact_product' ? (candidate.gtin || prev.gtin || '') : prev.gtin || '',
                                 market: candidate.country || prev.market || '',
-                              }))}>Use version</button>
+                              }))}>{candidate.match_type === 'comparable' ? 'Context only' : 'Use suggestion'}</button>
                             </span>
                           </div>
                         ))}
                       </div>
                     </div>
                   )}
+                  {!!Object.keys(improvement.identity_review?.source_details || {}).length && <details style={{ marginTop: 12 }}>
+                    <summary style={{ cursor: 'pointer', color: '#93c5fd', fontSize: 11 }}>Show source details</summary>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 5, marginTop: 8 }}>
+                      {Object.entries(improvement.identity_review?.source_details || {}).map(([key, value]) => <div key={key} style={{ fontSize: 10, color: '#94a3b8' }}><strong>{key}:</strong> {String(value)}</div>)}
+                    </div>
+                  </details>}
                 </section>
 
                 <section style={{ border: '1px solid #283756', borderRadius: 8, padding: 16 }}>

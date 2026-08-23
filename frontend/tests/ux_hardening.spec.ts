@@ -2,6 +2,35 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
 
+  test('bulk identity review queue supports rapid confirm navigation', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('token', 'test-token'));
+    await page.route('**/api/products?**', route => route.fulfill({ json: [] }));
+    await page.route('**/api/products/identity-review-queue?**', route => route.fulfill({ json: {
+      total: 2, page: 1, limit: 100, items: [
+        { product_id: '11111111-1111-1111-1111-111111111111', product_name: 'LAT KHAMRAH DUKH',
+          source_product_name: 'LAT KHAMRAH DUKH', reason: 'Product family identified but exact version unresolved.',
+          review_status: 'NEEDS_REVIEW', match_type: 'product_family', confidence: .82,
+          understanding_fingerprint: 'one', suggested_identity: { brand: 'Lattafa', product_family: 'Khamrah Dukhan', category: 'Fragrance' } },
+        { product_id: '22222222-2222-2222-2222-222222222222', product_name: 'M DG SHOWER GEL FLORAL',
+          reason: 'Consumer brand could not be established.', review_status: 'NEEDS_REVIEW',
+          understanding_fingerprint: 'two', suggested_identity: {} },
+      ]
+    }}));
+    await page.route('**/api/products/*/identity-review/confirm', route => route.fulfill({ json: {
+      review_status: 'REVIEWED', resumed: true, research_job_id: 'job-1', message: 'Identity resolved. Continuing enrichment...'
+    }}));
+    await page.goto('/products');
+    await page.getByRole('button', { name: 'Review identities (2)' }).click();
+    await expect(page.getByTestId('identity-review-queue')).toContainText('PRODUCT 1 OF 2');
+    await expect(page.getByTestId('identity-review-queue')).toContainText('Khamrah Dukhan');
+    await page.getByRole('button', { name: 'Next' }).click();
+    await expect(page.getByTestId('identity-review-queue')).toContainText('PRODUCT 2 OF 2');
+    await expect(page.getByRole('button', { name: 'Confirm & continue' })).toBeDisabled();
+    await page.getByRole('button', { name: 'Previous' }).click();
+    await page.getByRole('button', { name: 'Confirm & continue' }).click();
+    await expect(page.getByText('Identity resolved. Continuing enrichment...')).toBeVisible();
+  });
+
   test('Validation Alerts, Value Overrides, AI Metadata, Key Ingredients, and Dynamic Concerns Flow', async ({ page }) => {
     // 1. Login
     await page.goto('/login');

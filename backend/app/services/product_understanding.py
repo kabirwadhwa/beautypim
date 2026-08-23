@@ -275,11 +275,19 @@ def resolve_product_understanding(
         product_value and brand_value and re.sub(r"\D", "", str(gtin or ""))
         and module != "unknown"
     )
-    identity_status = "resolved" if exact_safe or source_identity_sufficient else "partial" if product_value and brand_value else "unresolved"
+    # GTIN is the strongest route, but it is not universally available. A
+    # human-confirmed taxonomy/type plus an established brand and product can
+    # also safely resolve the foundational gate without fabricating an ID.
+    human_identity_sufficient = bool(
+        product_value and brand_value and module != "unknown"
+        and (human.get("category") or human.get("category_module"))
+        and (human.get("product_type") or human.get("subcategory"))
+    )
+    identity_status = "resolved" if exact_safe or source_identity_sufficient or human_identity_sufficient else "partial" if product_value and brand_value else "unresolved"
     if corpus.get("match_level") == "conflict":
         identity_status = "conflicting"
-    confidence = 0.99 if exact_safe else 0.9 if source_identity_sufficient else 0.82 if identity_status == "partial" else 0.0
-    source_status = "source_supported" if exact_safe or source_identity_sufficient else "source_interpreted" if identity_status == "partial" else "unresolved"
+    confidence = 0.99 if exact_safe else 0.96 if human_identity_sufficient else 0.9 if source_identity_sufficient else 0.82 if identity_status == "partial" else 0.0
+    source_status = "source_supported" if exact_safe or source_identity_sufficient else "human_confirmed" if human_identity_sufficient else "source_interpreted" if identity_status == "partial" else "unresolved"
     taxonomy_confidence = 0.98 if exact_safe and category_value else 0.82 if module != "unknown" else 0.0
     taxonomy_status = "source_supported" if exact_safe else "inferred" if module != "unknown" else "unresolved"
     research = []
@@ -312,6 +320,8 @@ def resolve_product_understanding(
             if human and evidence_conflicts else
             "Exact product evidence resolved identity and taxonomy before enrichment."
             if exact_safe else
+            "Human-confirmed foundational identity and taxonomy resolved the enrichment dependency gate."
+            if human_identity_sufficient else
             "Customer source identity was used; unresolved identity/taxonomy fields require targeted research."
         ),
         "source_interpretation": {

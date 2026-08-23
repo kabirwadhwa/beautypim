@@ -240,9 +240,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         _assign_configuration(job, before_metrics=before_metrics)
         db.commit()
 
-        from app.services.product_identity import (
-            preferred_product_variant, product_is_fragrance, trusted_product_version,
-        )
+        from app.services.product_identity import preferred_product_variant
         requested_variant_id = configuration.get("research_variant_id") or item.product_variant_id
         variant = db.query(ProductVariant).filter(
             ProductVariant.id == requested_variant_id,
@@ -254,6 +252,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         from app.services.product_improvement import product_improvement_summary
         from app.services.research_reliability import build_identity_query_plan
         initial_quality = product_improvement_summary(db, product)
+        identity_only = bool(initial_quality.get("identity_review_required"))
         identity_queries = configuration.get("identity_queries") or build_identity_query_plan(
             brand=product.brand.name if product.brand else "",
             product_name=product.product_name,
@@ -265,16 +264,11 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         )
         _assign_configuration(job, identity_queries=identity_queries)
         research_objectives = list(configuration.get("research_objectives") or [])
-        safe_market_only = bool(product_is_fragrance(db, product) and not trusted_product_version(db, product))
-        if safe_market_only:
-            # Continue useful product-family research while preventing the
-            # unresolved concentration from authorizing formulation/claim data.
-            safe = {"consumer_brand", "product_family", "category", "product_type",
-                    "image_url", "reviews", "rating", "review_count", "review_summary"}
+        if identity_only:
+            # Foundational research is operationally separate. Market evidence,
+            # claims, formulation and commercial synthesis wait for resolution.
+            safe = {"consumer_brand", "product_family", "variant", "category", "subcategory", "product_type"}
             research_objectives = [field for field in research_objectives if field in safe]
-            for field in ("image_url", "reviews"):
-                if field not in research_objectives:
-                    research_objectives.append(field)
         discovery = configuration.get("discovery")
         if not discovery:
             discovery = start_product_source_discovery(
@@ -332,9 +326,10 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             if discovery.get("status") in {"queued", "in_progress"}:
                 time.sleep(2)
 
-        discovery_market = _persist_discovery_market_evidence(
-            db, product, discovery, expected_gtin=variant.gtin if variant else "",
-        )
+        discovery_market = ({"image_found": False, "review_evidence_found": False} if identity_only else
+            _persist_discovery_market_evidence(
+                db, product, discovery, expected_gtin=variant.gtin if variant else "",
+            ))
         db.commit()
 
         job.status = "crawling"
@@ -344,6 +339,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             db, product, user, candidates=discovery.get("candidates") or [],
             research_objectives=research_objectives,
             research_variant_id=variant.id if variant else None,
+            identity_only=identity_only,
         )
         result["image_found"] = bool(result.get("image_found") or discovery_market["image_found"])
         result["review_evidence_found"] = bool(
@@ -364,6 +360,8 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 selected_fields=configuration.get("selected_fields") or [],
             )
         next_plan = product_improvement_summary(db, product)
+        from app.services.identity_review import synchronize_blocking_issue
+        synchronize_blocking_issue(db, product, next_plan.get("identity_review") or {})
         result["identity_phase_completed"] = configuration.get("research_phase") == "identity_resolution"
         result["next_phase"] = next_plan.get("research_phase")
         if next_plan.get("research_phase") == "attribute_completion":

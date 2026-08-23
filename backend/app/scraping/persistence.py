@@ -85,6 +85,7 @@ def persist_product(
 ) -> ScrapedProductObservation:
     payload = product.model_dump(mode="json", exclude={"fields"})
     safe_fields_only = bool((job.configuration or {}).get("research_safe_fields_only"))
+    identity_only = bool((job.configuration or {}).get("research_identity_only"))
     structured_hash = stable_hash(payload)
     identity = {
         "domain": product.source_domain, "retailer_id": product.retailer_product_id,
@@ -190,7 +191,7 @@ def persist_product(
     db.add(listing)
     db.flush()
     prior = None
-    if canonical_id:
+    if canonical_id and not identity_only:
         prior = db.query(ScrapedProductObservation).filter(
             ScrapedProductObservation.canonical_product_id == canonical_id,
             ScrapedProductObservation.source_domain == product.source_domain,
@@ -269,7 +270,7 @@ def persist_product(
         if canonical and not canonical.image_url and product.image_urls:
             from app.services.image_urls import normalize_public_image_url
             canonical.image_url = normalize_public_image_url(product.image_urls[0])
-    if product.price is not None and variant_id and not safe_fields_only:
+    if product.price is not None and variant_id and not safe_fields_only and not identity_only:
         db.add(SourcePrice(
             id=uuid.uuid4(), source_listing_id=listing.id,
             product_variant_id=variant_id, amount=product.price,
@@ -288,6 +289,8 @@ def _persist_values_and_conflicts(db, job, observation, product, match_status):
               "review_summary")
     if (job.configuration or {}).get("research_safe_fields_only"):
         fields = ("image_urls", "rating", "review_count", "review_summary")
+    if (job.configuration or {}).get("research_identity_only"):
+        fields = ()
     for field in fields:
         value = getattr(product, field)
         if value in (None, "", []):

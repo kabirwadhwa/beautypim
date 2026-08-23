@@ -176,10 +176,16 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     ambiguous = bool((product_is_fragrance(db, product) and not trusted_product_version(db, product)) or (candidates and (
         not identity["gtin"] or len({(c.get("format"), c.get("size")) for c in candidates}) > 1
     )))
+    authoritative_identity_status = (snapshot.get("product_understanding") or {}).get("identity_status")
+    if authoritative_identity_status == "resolved":
+        # The Product Understanding contract is authoritative and may safely
+        # resolve products without a GTIN through protected human identity.
+        missing_identity = []
+        ambiguous = False
     completeness = round(100 * (len(required_identity_fields) - len(missing_identity)) /
                          len(required_identity_fields))
     status = "complete" if completeness >= 85 and not ambiguous else "ambiguous" if ambiguous else "incomplete"
-    return {
+    result = {
         "identity_status": status,
         "identity_completeness": completeness,
         "identity": identity,
@@ -212,3 +218,21 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "corpus_match_level": corpus.get("match_level"),
         "category": category.path if category else None,
     }
+    from app.services.identity_review import does_this_product_require_identity_review
+    review = does_this_product_require_identity_review(db, product, result)
+    result["identity_review"] = review
+    result["identity_review_required"] = review["requires_review"]
+    result["identity_review_status"] = review["review_status"]
+    result["identity_review_reasons"] = review["reasons"]
+    result["understanding_fingerprint"] = review["understanding_fingerprint"]
+    # Candidates are presentation data only. Comparable candidates remain
+    # visibly scoped and can never be confirmed as exact facts implicitly.
+    for candidate in result["candidate_products"]:
+        candidate.setdefault("confidence", candidate.get("match_score"))
+        candidate.setdefault("evidence_summary", {
+            "exact_product": "Exact product corpus evidence",
+            "product_family": "Strong product-family evidence",
+            "comparable": "Comparable product context — not exact identity evidence",
+        }.get(candidate.get("match_type"), "Existing identity evidence"))
+        candidate.setdefault("source_reference", candidate.get("source_type"))
+    return result

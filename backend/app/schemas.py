@@ -412,6 +412,7 @@ class ProductOut(BaseModel):
     validation_issue_count: int = 0
     highest_issue_severity: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    identity_review_status: Optional[str] = None
     is_deleted: bool
     created_at: datetime
     updated_at: datetime
@@ -438,6 +439,7 @@ class ProductDetailOut(ProductOut):
     product_understanding: Optional[dict] = None
     completeness: Optional[dict] = None
     improvement_result: Optional[dict] = None
+    identity_review: Optional[dict] = None
 
     class Config:
         from_attributes = True

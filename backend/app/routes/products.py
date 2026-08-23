@@ -58,6 +58,23 @@ class ProductIdentityUpdateRequest(BaseModel):
     unit: Optional[str] = None
     gtin: Optional[str] = None
     market: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    product_type: Optional[str] = None
+    application_area: Optional[str] = None
+    category_module: Optional[str] = None
+
+
+class IdentityReviewConfirmRequest(BaseModel):
+    identity: ProductIdentityUpdateRequest
+    action: str = "confirm_and_continue"
+    understanding_fingerprint: Optional[str] = None
+    resume_context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class IdentityReviewSkipRequest(BaseModel):
+    understanding_fingerprint: Optional[str] = None
+    resume_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ProductResearchRequest(BaseModel):
@@ -166,6 +183,15 @@ def _refresh_product_understanding(db: Session, product: CanonicalProduct) -> di
     return contract
 
 
+def _refresh_identity_review_gate(db: Session, product: CanonicalProduct) -> tuple[dict, dict]:
+    from app.services.product_improvement import product_improvement_summary
+    from app.services.identity_review import does_this_product_require_identity_review, synchronize_blocking_issue
+    quality = product_improvement_summary(db, product)
+    decision = does_this_product_require_identity_review(db, product, quality)
+    synchronize_blocking_issue(db, product, decision)
+    return quality, decision
+
+
 def _clean_classification(value: str, label: str) -> str:
     cleaned = " ".join(value.split()).strip()
     if not cleaned:
@@ -243,6 +269,91 @@ def product_metrics(
         "unresolved_issues": unresolved_issues,
     }
 
+
+@router.get("/identity-review-queue")
+def identity_review_queue(
+    page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above),
+):
+    """Efficient persisted queue; opening it never starts AI or web research."""
+    issue_query = db.query(ValidationIssue).filter(
+        ValidationIssue.issue_type == "foundational_identity_unresolved",
+        ValidationIssue.resolved == False,
+        ValidationIssue.canonical_product_id.isnot(None),
+    )
+    total = issue_query.count()
+    issues = issue_query.order_by(ValidationIssue.created_at.asc()).offset((page - 1) * limit).limit(limit).all()
+    product_ids = [row.canonical_product_id for row in issues]
+    products = {row.id: row for row in db.query(CanonicalProduct).filter(
+        CanonicalProduct.id.in_(product_ids), CanonicalProduct.is_deleted == False,
+    ).all()} if product_ids else {}
+    contracts = {
+        row.canonical_product_id: dict(row.value or {})
+        for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id.in_(product_ids),
+            FieldValue.field_name == "product_understanding", FieldValue.is_current == True,
+        ).all()
+    } if product_ids else {}
+    review_states = {
+        row.canonical_product_id: dict(row.value or {})
+        for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id.in_(product_ids),
+            FieldValue.field_name == "identity_review_state", FieldValue.is_current == True,
+        ).all()
+        if isinstance(row.value, dict)
+    } if product_ids else {}
+    variants = {
+        row.canonical_product_id: row for row in db.query(ProductVariant).filter(
+            ProductVariant.canonical_product_id.in_(product_ids), ProductVariant.is_deleted == False,
+        ).order_by(ProductVariant.created_at.asc()).all()
+    } if product_ids else {}
+    latest_jobs: dict[str, CrawlJob] = {}
+    if product_ids:
+        wanted = {str(value) for value in product_ids}
+        for job in db.query(CrawlJob).filter(
+            CrawlJob.domain == "product-research.internal",
+        ).order_by(CrawlJob.created_at.desc()).limit(max(500, len(product_ids) * 10)).all():
+            research_product_id = str((job.configuration or {}).get("research_product_id") or "")
+            if research_product_id in wanted and research_product_id not in latest_jobs:
+                latest_jobs[research_product_id] = job
+    rows = []
+    for issue in issues:
+        product = products.get(issue.canonical_product_id)
+        if not product:
+            continue
+        contract = contracts.get(product.id, {})
+        identity = contract.get("identity") or {}
+        taxonomy = contract.get("taxonomy") or {}
+        variant = variants.get(product.id)
+        blocked_job = latest_jobs.get(str(product.id))
+        rows.append({
+            "product_id": str(product.id), "product_name": product.product_name,
+            "source_product_name": (contract.get("source_interpretation") or {}).get("source_product_family") or product.product_name,
+            "brand": product.brand.name if product.brand else None,
+            "gtin": variant.gtin if variant else None,
+            "reason": issue.message.removeprefix("Identity confirmation required: ").strip(),
+            "review_status": review_states.get(product.id, {}).get("status") or "NEEDS_REVIEW",
+            "identity_status": contract.get("identity_status"),
+            "match_type": contract.get("match_type"), "confidence": contract.get("confidence"),
+            "understanding_fingerprint": contract.get("foundational_fingerprint"),
+            "blocked_research_job_id": str(blocked_job.id) if blocked_job else None,
+            "resume_context": {
+                "mode": (blocked_job.configuration or {}).get("requested_mode", "missing_only") if blocked_job else "missing_only",
+                "fields": (blocked_job.configuration or {}).get("selected_fields", []) if blocked_job else [],
+                "blocked_research_job_id": str(blocked_job.id) if blocked_job else None,
+            },
+            "suggested_identity": {
+                "brand": (identity.get("consumer_brand") or {}).get("value"),
+                "product_family": (identity.get("product_family") or {}).get("value"),
+                "variant": (identity.get("variant") or {}).get("value"),
+                "category": (taxonomy.get("category") or {}).get("value"),
+                "subcategory": (taxonomy.get("subcategory") or {}).get("value"),
+                "product_type": (taxonomy.get("product_type") or {}).get("value"),
+                "category_module": contract.get("category_module"),
+            },
+        })
+    return {"total": total, "page": page, "limit": limit, "items": rows}
+
 @router.get("", response_model=List[ProductOut])
 def list_products(
     page: int = Query(1, ge=1),
@@ -277,7 +388,12 @@ def list_products(
                 pass
         query = query.filter(or_(*search_conditions))
 
-    if status_filter:
+    if status_filter == "needs_identity_review":
+        query = query.filter(CanonicalProduct.id.in_(db.query(ValidationIssue.canonical_product_id).filter(
+            ValidationIssue.issue_type == "foundational_identity_unresolved",
+            ValidationIssue.resolved == False,
+        )))
+    elif status_filter:
         query = query.filter(CanonicalProduct.review_status == status_filter)
 
     if brand_filter:
@@ -320,6 +436,14 @@ def list_products(
         .all()
     ) if product_ids else {}
     tags_by_product: dict[uuid.UUID, list[str]] = {product_id: [] for product_id in product_ids}
+    identity_review_states = {
+        row.canonical_product_id: dict(row.value or {}).get("status")
+        for row in db.query(FieldValue).filter(
+            FieldValue.canonical_product_id.in_(product_ids),
+            FieldValue.field_name == "identity_review_state", FieldValue.is_current == True,
+        ).all()
+        if isinstance(row.value, dict)
+    } if product_ids else {}
     if product_ids:
         for product_id, tag_name in db.query(
             ProductTag.canonical_product_id, ProductTag.name,
@@ -384,6 +508,9 @@ def list_products(
             validation_issue_count=len(issues),
             highest_issue_severity=highest_severity,
             tags=tags_by_product.get(prod.id, []),
+            identity_review_status=((identity_review_states.get(prod.id) or "NEEDS_REVIEW") if any(
+                issue.issue_type == "foundational_identity_unresolved" for issue in issues
+            ) else None),
             is_deleted=prod.is_deleted,
             created_at=prod.created_at,
             updated_at=prod.updated_at
@@ -483,6 +610,7 @@ def _automatic_product_research(
     candidates: list[dict] | None = None,
     research_objectives: list[str] | None = None,
     research_variant_id: uuid.UUID | None = None,
+    identity_only: bool = False,
 ) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
@@ -685,6 +813,7 @@ def _automatic_product_research(
                 # An unresolved EDT/EDP distinction must block formulation and
                 # exact-claim attachment, not safe family-level image/reviews.
                 "research_safe_fields_only": safe_market_only,
+                "research_identity_only": identity_only,
             },
             requested_by_id=user.id,
         )
@@ -823,6 +952,8 @@ def improve_product(
         # failures remain non-fatal so imported data can still be improved.
         from app.services.product_improvement import product_improvement_summary
         before_quality = product_improvement_summary(db, product)
+        from app.services.identity_review import synchronize_blocking_issue
+        synchronize_blocking_issue(db, product, before_quality.get("identity_review") or {})
         research_summary = None
         from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
         from app.services.product_identity import preferred_product_variant
@@ -856,17 +987,24 @@ def improve_product(
                 "sources_ingested": 0, "errors": [],
                 "message": "Catalogue enrichment completed. Image and review research is continuing in the background.",
             }
-        process_item_enrichment(
-            db, item, job.column_mapping or {}, mode=request.mode,
-            selected_fields=request.fields,
-        )
-        try:
-            from app.services.review_summarization import summarize_product_reviews
-            summarize_product_reviews(db, product.id)
-        except Exception:
-            # Review synthesis is additive and must never turn otherwise useful
-            # product enrichment into a failed customer action.
-            pass
+        if not before_quality.get("identity_review_required"):
+            process_item_enrichment(
+                db, item, job.column_mapping or {}, mode=request.mode,
+                selected_fields=request.fields,
+            )
+            try:
+                from app.services.review_summarization import summarize_product_reviews
+                summarize_product_reviews(db, product.id)
+            except Exception:
+                # Review synthesis is additive and must never turn otherwise useful
+                # product enrichment into a failed customer action.
+                pass
+        elif research_summary is None:
+            research_summary = {
+                "identity_required": True, "research_pending": False,
+                "business_outcome": "needs_identity_resolution",
+                "message": "Identity confirmation is required before product-specific enrichment can continue.",
+            }
         record_audit(
             db, "CanonicalProduct", product.id, product.product_name, "update",
             {"enrichment": "existing"},
@@ -889,22 +1027,27 @@ def improve_product(
         "still_unavailable": after_quality.get("missing_high_priority_fields") or [],
         "conflicting": [name for name, state in (after_quality.get("field_states") or {}).items()
                         if state.get("state") == "conflicting"],
+        "identity_required": bool(after_quality.get("identity_review_required")),
+        "identity_review": after_quality.get("identity_review"),
     }
     return detail
 
 
-@router.put("/{product_id}/identity")
-def update_product_identity(
+def _apply_product_identity(
     product_id: uuid.UUID,
     request: ProductIdentityUpdateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_editor_or_admin),
+    db: Session,
+    current_user: User,
 ):
     product = db.query(CanonicalProduct).filter(
         CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
     ).first()
     if not product:
         raise HTTPException(404, "Product not found")
+    if request.category_module and request.category_module.strip().lower() not in {
+        "skincare", "haircare", "makeup", "fragrance", "unknown",
+    }:
+        raise HTTPException(422, "Category module must be skincare, haircare, makeup, fragrance or unknown")
     if request.brand and request.brand.strip():
         brand_name = request.brand.strip()
         normalized_brand = normalize_text(brand_name)
@@ -969,9 +1112,176 @@ def update_product_identity(
         db.query(SourcePrice).filter(SourcePrice.product_variant_id == variant.id).update(
             {"country": request.market.strip()}, synchronize_session=False
         )
-    _refresh_product_understanding(db, product)
+    if request.category and request.category.strip():
+        # Reuse the canonical taxonomy writer; a missing subcategory is
+        # represented explicitly instead of inventing one.
+        _set_product_classification(
+            db, product, request.category,
+            request.subcategory or request.product_type or "Unspecified", current_user,
+        )
+    for field_name, value in (
+        ("product_type", request.product_type),
+        ("application_area", request.application_area),
+        ("category_module", request.category_module),
+    ):
+        if value and value.strip():
+            create_field_value_version(
+                db, product.id, None, field_name, value.strip(), "human_edit",
+                f"user:{current_user.id}", 1.0, "confirmed", None, [],
+                "Identity confirmed during enrichment review.", "confirmed", "identity",
+            )
+    contract = _refresh_product_understanding(db, product)
+    return contract
+
+
+@router.put("/{product_id}/identity")
+def update_product_identity(
+    product_id: uuid.UUID,
+    request: ProductIdentityUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    contract = _apply_product_identity(product_id, request, db, current_user)
     db.commit()
-    return {"updated": True, "product_id": str(product.id)}
+    return {"updated": True, "product_id": str(product_id), "product_understanding": contract}
+
+
+@router.post("/{product_id}/identity-review/confirm")
+def confirm_identity_review(
+    product_id: uuid.UUID,
+    request: IdentityReviewConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    """Persist protected human identity and optionally resume blocked work."""
+    if request.action not in {"confirm_and_continue", "save_only"}:
+        raise HTTPException(422, "Action must be confirm_and_continue or save_only")
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    from app.services.identity_review import (
+        current_understanding, does_this_product_require_identity_review,
+        persist_review_state, synchronize_blocking_issue,
+    )
+    from app.services.product_improvement import product_improvement_summary
+    current = current_understanding(db, product.id)
+    current_fingerprint = current.get("foundational_fingerprint")
+    if (request.understanding_fingerprint and current_fingerprint
+            and request.understanding_fingerprint != current_fingerprint):
+        quality = product_improvement_summary(db, product)
+        decision = does_this_product_require_identity_review(db, product, quality)
+        raise HTTPException(status_code=409, detail={
+            "code": "stale_identity_review", "message": "Product Understanding changed; review refreshed.",
+            "identity_review": decision, "improvement": quality,
+        })
+
+    before = {
+        "product_understanding": current,
+        "identity": request.identity.model_dump(exclude_none=True),
+    }
+    # Reuse the existing protected human-edit path. It validates GTIN,
+    # maintains variants, writes FieldValue versions and refreshes Product Understanding.
+    _apply_product_identity(product_id, request.identity, db, current_user)
+    db.refresh(product)
+    quality, decision = _refresh_identity_review_gate(db, product)
+    status_value = "REVIEWED" if not decision["requires_review"] else "NEEDS_REVIEW"
+    persist_review_state(
+        db, product, status=status_value,
+        fingerprint=decision.get("understanding_fingerprint"), actor_id=current_user.id,
+        reason="Identity confirmed during enrichment review.",
+        resume_context=request.resume_context,
+    )
+    resumed = False
+    research_job = None
+    if request.action == "confirm_and_continue" and not decision["requires_review"]:
+        source_item = db.query(ImportJobItem).filter(
+            ImportJobItem.canonical_product_id == product.id,
+            ImportJobItem.source_listing_id.isnot(None),
+        ).order_by(ImportJobItem.created_at.desc()).first()
+        if source_item:
+            mode = str(request.resume_context.get("mode") or "missing_only")
+            fields = list(request.resume_context.get("fields") or [])
+            if mode not in {"missing_only", "selected", "full"}:
+                mode = "missing_only"
+            applicable = {entry["field"] for entry in quality.get("research_objectives") or []}
+            if mode == "selected":
+                fields = [field for field in fields if field in applicable]
+                if not fields:
+                    mode = "missing_only"
+            objectives = [entry["field"] for entry in quality.get("research_objectives") or []]
+            if objectives:
+                blocked_job_id = request.resume_context.get("blocked_research_job_id")
+                blocked_job = None
+                try:
+                    blocked_job = db.query(CrawlJob).filter(CrawlJob.id == uuid.UUID(str(blocked_job_id))).first() if blocked_job_id else None
+                except (TypeError, ValueError):
+                    blocked_job = None
+                if (blocked_job and blocked_job.domain == "product-research.internal"
+                        and str((blocked_job.configuration or {}).get("research_product_id")) == str(product.id)
+                        and ((blocked_job.configuration or {}).get("result") or {}).get("business_outcome") == "needs_identity_resolution"):
+                    from app.services.product_research_worker import _research_snapshot
+                    blocked_job.status = "queued"
+                    blocked_job.completed_at = None
+                    blocked_job.error_summary = None
+                    blocked_job.configuration = {
+                        **(blocked_job.configuration or {}), "requested_mode": mode,
+                        "selected_fields": fields, "research_objectives": objectives,
+                        "research_phase": quality.get("research_phase"),
+                        "before_metrics": _research_snapshot(db, product), "result": None,
+                        "discovery": None,
+                    }
+                    research_job = blocked_job
+                else:
+                    research_job = _enqueue_product_research(
+                        db, product, source_item, ProductImproveRequest(mode=mode, fields=fields),
+                        current_user, objectives, research_priority=5,
+                    )
+                resumed = True
+    record_audit(
+        db, "CanonicalProduct", product.id, product.product_name, "update", before,
+        {"identity_review": status_value, "resumed": resumed},
+        {"identity_review": ["pending", status_value]}, current_user.id, "user",
+        "Identity confirmed during enrichment review.",
+    )
+    db.commit()
+    return {
+        "product_id": str(product.id), "review_status": status_value,
+        "product_understanding": current_understanding(db, product.id),
+        "completeness": quality,
+        "identity_review": does_this_product_require_identity_review(db, product, quality),
+        "remaining_identity_requirements": quality.get("missing_identity_fields") or [],
+        "resumed": resumed, "research_job_id": str(research_job.id) if research_job else None,
+        "message": (
+            "Identity resolved. Continuing enrichment..." if resumed else
+            "Identity confirmed and saved." if not decision["requires_review"] else
+            "Identity saved, but additional foundational information is still required."
+        ),
+    }
+
+
+@router.post("/{product_id}/identity-review/skip")
+def skip_identity_review(
+    product_id: uuid.UUID, request: IdentityReviewSkipRequest,
+    db: Session = Depends(get_db), current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(404, "Product not found")
+    from app.services.identity_review import current_understanding, persist_review_state
+    current = current_understanding(db, product.id)
+    fingerprint = current.get("foundational_fingerprint")
+    if request.understanding_fingerprint and fingerprint and request.understanding_fingerprint != fingerprint:
+        raise HTTPException(409, "Product Understanding changed; refresh the review before skipping.")
+    persist_review_state(
+        db, product, status="SKIPPED", fingerprint=fingerprint, actor_id=current_user.id,
+        reason="Identity review deferred by user.", resume_context=request.resume_context,
+    )
+    db.commit()
+    return {"product_id": str(product.id), "review_status": "SKIPPED", "resumed": False}
 
 
 @router.post(
@@ -1366,6 +1676,7 @@ def get_product_detail(
     ))
     from app.services.product_improvement import product_improvement_summary
     completeness = product_improvement_summary(db, prod)
+    identity_review = completeness.get("identity_review") or {}
 
     from app.services.review_aggregate import select_review_aggregate
     review_aggregate = select_review_aggregate(db, product_id)
@@ -1394,6 +1705,7 @@ def get_product_detail(
             default=None,
         ),
         tags=_tag_names(db, prod.id),
+        identity_review_status=identity_review.get("review_status"),
         reviewer_id=prod.reviewer_id,
         is_deleted=prod.is_deleted,
         created_at=prod.created_at,
@@ -1413,6 +1725,7 @@ def get_product_detail(
             if fv.is_current and fv.field_name == "product_understanding" and isinstance(fv.value, dict)
         ), None),
         completeness=completeness,
+        identity_review=identity_review,
     )
 
 @router.put("/{product_id}/image", response_model=ProductDetailOut)
@@ -1669,6 +1982,18 @@ def approve_product(
     if not prod:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    from app.services.product_improvement import product_improvement_summary
+    from app.services.identity_review import current_understanding, does_this_product_require_identity_review
+    understanding = current_understanding(db, prod.id)
+    identity_decision = does_this_product_require_identity_review(
+        db, prod, product_improvement_summary(db, prod),
+    ) if understanding else {"requires_review": False}
+    if identity_decision["requires_review"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot approve product while foundational identity requires confirmation.",
+        )
+
     # Enforce Check: Blocking validation issue must prevent approval
     blocking_issue = db.query(ValidationIssue).filter(
         ValidationIssue.canonical_product_id == product_id,
@@ -1777,6 +2102,8 @@ def bulk_improve_products(
             if not source_item:
                 raise ValueError("No source record is available for enrichment")
             quality = product_improvement_summary(db, product)
+            from app.services.identity_review import synchronize_blocking_issue
+            synchronize_blocking_issue(db, product, quality.get("identity_review") or {})
             objectives = [entry["field"] for entry in quality.get("research_objectives") or []]
             gaps = quality.get("missing_high_priority_fields") or []
             if not objectives:
