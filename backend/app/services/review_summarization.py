@@ -13,7 +13,7 @@ from typing import Any
 import requests
 
 from app.config import settings
-from app.models import Brand, CanonicalProduct, ScrapedProductObservation
+from app.models import Brand, CanonicalProduct, FieldValue, ScrapedProductObservation
 
 
 def _number(value: Any) -> float | None:
@@ -123,8 +123,28 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
         product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
         brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None
         lines, model = _ai_lines(summary, product.product_name if product else "", brand.name if brand else "")
-        return {**summary, "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines), "summary": "\n".join(lines),
-                "summary_model": model, "summary_generated_at": datetime.now(timezone.utc).isoformat()}
+        enriched = {**summary, "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines),
+                    "summary": "\n".join(lines), "summary_model": model,
+                    "summary_generated_at": datetime.now(timezone.utc).isoformat()}
+        current = db.query(FieldValue).filter(
+            FieldValue.canonical_product_id == product_id,
+            FieldValue.field_name == "review_summary", FieldValue.is_current == True,
+        ).first()
+        if current:
+            current.is_current = False
+        db.flush()
+        db.add(FieldValue(
+            canonical_product_id=product_id, product_variant_id=None,
+            field_name="review_summary", value=enriched, source_type="ai_inference",
+            source_reference=aggregate.get("evidence_reference"), confidence_score=0.9,
+            review_status="inferred", is_current=True,
+            evidence=[{"source": aggregate.get("source"), "source_domain": aggregate.get("source_domain"),
+                       "match_scope": aggregate.get("match_scope")}],
+            reasoning_summary="Review summary generated from the canonical exact-product aggregate.",
+            semantic_status="inferred", semantic_status_type="review_summary",
+        ))
+        db.flush()
+        return enriched
     observation = db.query(ScrapedProductObservation).filter(
         ScrapedProductObservation.id == aggregate["observation_id"]
     ).one()

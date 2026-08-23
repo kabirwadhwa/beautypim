@@ -2,8 +2,8 @@ import uuid
 
 from app.config import settings
 from app.models import (
-    Brand, CanonicalProduct, CrawlJob, CrawlUrl, RawPageObservation,
-    ScrapedProductObservation,
+    Brand, CanonicalProduct, CrawlJob, CrawlUrl, FieldValue, ImportJob, RawPageObservation,
+    ScrapedProductObservation, SourceListing,
 )
 from app.services.review_summarization import summarize_product_reviews
 from app.services.review_aggregate import select_review_aggregate
@@ -153,3 +153,22 @@ def test_review_synthesis_accepts_top_level_aggregate_rating(db, monkeypatch):
     assert len(summary["ai_summary_lines"]) == 4
     assert "4.5/5" in summary["ai_summary_lines"][0]
     assert observation.normalized_payload["review_summary"]["summary_model"] == "deterministic-evidence-summary"
+
+
+def test_source_listing_review_summary_is_persisted_and_reused(db, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    brand = Brand(id=uuid.uuid4(), name="Source Brand", normalized_name=uuid.uuid4().hex)
+    product = CanonicalProduct(id=uuid.uuid4(), brand_id=brand.id, product_name="Source Lip", normalized_name="sourcelip")
+    job = ImportJob(id=uuid.uuid4(), filename="reviews.csv", source_name="Company Feed", file_hash=uuid.uuid4().hex,
+                    status="completed", column_mapping={"rating": "stars", "review_count": "reviews"})
+    listing = SourceListing(id=uuid.uuid4(), import_job_id=job.id, canonical_product_id=product.id,
+                            raw_data={"stars": "4.8", "reviews": "210"}, source_hash=uuid.uuid4().hex)
+    db.add_all([brand, job]); db.flush(); db.add(product); db.flush(); db.add(listing); db.commit()
+    summary = summarize_product_reviews(db, product.id)
+    db.commit()
+    saved = db.query(FieldValue).filter(FieldValue.canonical_product_id == product.id,
+                                        FieldValue.field_name == "review_summary", FieldValue.is_current == True).one()
+    selected = select_review_aggregate(db, product.id)
+    assert summary == saved.value
+    assert selected["review_summary"]["summary"] == saved.value["summary"]
+    assert selected["average_rating"] == 4.8

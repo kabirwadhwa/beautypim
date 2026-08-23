@@ -109,6 +109,42 @@ def _embedded_ingredient_text(soup: BeautifulSoup):
     return max(candidates, default=None)
 
 
+def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
+    """Find public review aggregates/samples in embedded application state."""
+    aggregates: list[dict] = []
+    review_sets: list[list] = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            lower = {str(key).lower(): child for key, child in value.items()}
+            aggregate = lower.get("aggregaterating") or lower.get("aggregate_rating")
+            if isinstance(aggregate, dict):
+                aggregates.append(aggregate)
+            reviews = lower.get("reviews") or lower.get("review")
+            if isinstance(reviews, list) and any(isinstance(row, dict) for row in reviews):
+                review_sets.append(reviews)
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                if isinstance(child, (dict, list)):
+                    walk(child)
+
+    for script in soup.select('script[type="application/ld+json"], script[type="application/json"], script#__NEXT_DATA__'):
+        try:
+            walk(json.loads(script.string or script.get_text() or "{}"))
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            continue
+    def review_total(row):
+        value = str(row.get("reviewCount") or row.get("ratingCount") or 0).replace(",", "")
+        match = re.search(r"\d+(?:\.\d+)?", value)
+        return float(match.group()) if match else 0
+    aggregate = max(aggregates, key=review_total, default={})
+    reviews = max(review_sets, key=len, default=[])
+    return aggregate, reviews
+
+
 def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
     """Aggregate review signals without copying customer review text."""
     reviews = node.get("review") or []
@@ -199,6 +235,11 @@ class GenericJsonLdAdapter(ProductAdapter):
         if isinstance(offers, list):
             offers = offers[0] if offers else {}
         aggregate = node.get("aggregateRating") or {}
+        embedded_aggregate, embedded_reviews = _embedded_review_evidence(soup)
+        if not aggregate and embedded_aggregate:
+            aggregate = embedded_aggregate
+        if not node.get("review") and embedded_reviews:
+            node = {**node, "review": embedded_reviews[:250]}
         images = node.get("image") or []
         if isinstance(images, (str, dict)):
             images = [images]

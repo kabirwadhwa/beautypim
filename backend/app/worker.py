@@ -68,12 +68,11 @@ def merge_structured_module(existing: Any, candidate: Any) -> Any:
 
 
 def queue_exact_formulation_research(db: Session, item: ImportJobItem, job: ImportJob) -> CrawlJob | None:
-    """Queue one evidence search when an exact fragrance variant lacks INCI.
+    """Queue targeted completion for a resolved product's valuable gaps.
 
-    Initial feed enrichment previously had no bridge to the durable research
-    worker.  Keep this deliberately narrow (trusted fragrance version + GTIN +
-    missing formulation) so a large feed does not launch generic web searches
-    for every sparse row.
+    This is intentionally evidence- and gap-driven: exact local corpus data is
+    applied first, then one durable research job receives only unresolved
+    objectives. It never launches a generic second enrichment pass.
     """
     if not job.created_by_id or not (settings.OPENAI_API_KEY or settings.BRAVE_SEARCH_API_KEY):
         return None
@@ -87,14 +86,21 @@ def queue_exact_formulation_research(db: Session, item: ImportJobItem, job: Impo
     ).first()
     if not product or not variant or not variant.gtin:
         return None
-    from app.services.product_identity import product_is_fragrance, trusted_product_version
-    if not product_is_fragrance(db, product) or not trusted_product_version(db, product):
+    from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
+    corpus = retrieve_corpus_evidence(
+        db, gtin=variant.gtin or "", brand=product.brand.name if product.brand else "",
+        product_name=product.product_name, size=f"{variant.size or ''} {variant.unit or ''}".strip(),
+        category=product.category.path if product.category else "",
+    )
+    if corpus.get("match_level") != "exact_product":
         return None
-    existing = db.query(Formulation).filter(
-        Formulation.canonical_product_id == product.id,
-        Formulation.is_deleted == False,
-    ).all()
-    if any((row.raw_inci_text or "").strip() for row in existing):
+    from app.services.product_improvement import product_improvement_summary
+    quality = product_improvement_summary(db, product)
+    objectives = [
+        row.get("field") for row in (quality.get("research_objectives") or [])
+        if row.get("field")
+    ][:10]
+    if not objectives:
         return None
     active = db.query(CrawlJob).filter(
         CrawlJob.domain == "product-research.internal",
@@ -102,13 +108,19 @@ def queue_exact_formulation_research(db: Session, item: ImportJobItem, job: Impo
     ).all()
     if any(str((row.configuration or {}).get("research_product_id")) == str(product.id) for row in active):
         return None
+    recent = db.query(CrawlJob).filter(
+        CrawlJob.domain == "product-research.internal",
+        CrawlJob.created_at >= datetime.utcnow() - timedelta(hours=24),
+    ).all()
+    if any(str((row.configuration or {}).get("research_product_id")) == str(product.id) for row in recent):
+        return None
     research = CrawlJob(
         id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
         crawl_mode="single_url", status="queued", requested_by_id=job.created_by_id,
         configuration={
             "product_research_job": True, "research_product_id": str(product.id),
             "research_item_id": str(item.id), "requested_mode": "missing_only",
-            "selected_fields": [], "research_objectives": ["inci"],
+            "selected_fields": [], "research_objectives": objectives,
             "discovery": None, "result": None,
         },
     )
@@ -137,6 +149,107 @@ def source_alias_value(raw_data: Dict[str, Any], *aliases: str) -> str:
         if value is not None and str(value).strip().lower() not in {"", "none", "nan", "null"}:
             return str(value).strip()
     return ""
+
+
+def semantic_source_row(raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Expose every non-empty uploaded column to semantic enrichment, bounded."""
+    def bounded(value: Any) -> Any:
+        compact = compact_enrichment_value(value)
+        return compact[:750] if isinstance(compact, str) else compact
+    return {
+        str(key): bounded(value)
+        for key, value in (raw_data or {}).items()
+        if value not in (None, "", [], {}) and str(value).strip().lower() not in {"nan", "null", "none"}
+    }
+
+
+def apply_exact_corpus_evidence(enrichment_result: Dict[str, Any], exact: Dict[str, Any], module: str) -> Dict[str, Any]:
+    """Materialize unambiguous exact-source facts deterministically."""
+    values, evidence = exact.get("values") or {}, exact.get("evidence") or {}
+
+    def evidence_rows(field_name: str) -> List[Dict[str, Any]]:
+        return [{
+            "source_field": field_name,
+            "supporting_text": str(row.get("raw_value") or row.get("value"))[:1000],
+            "evidence_type": "exact_product_retail_data",
+            "source_url": row.get("source_url"), "match_type": "exact_product",
+        } for row in (evidence.get(field_name) or [])[:5]]
+
+    for field_name in ("subcategory", "product_type", "application_area", "product_positioning", "sensory_description"):
+        value = values.get(field_name)
+        if value not in (None, "", [], {}) and field_name not in exact.get("conflicts", []):
+            enrichment_result[field_name] = {
+                "value": value, "value_status": "source_supported", "confidence": 0.98,
+                "evidence": evidence_rows(field_name),
+                "reasoning_summary": "Copied from unambiguous exact-product retail evidence.",
+            }
+
+    benefits = values.get("benefits")
+    if benefits not in (None, "", [], {}) and "benefits" not in exact.get("conflicts", []):
+        entries = benefits if isinstance(benefits, list) else [benefits]
+        enrichment_result["benefits"] = [{
+            "statement": str(entry), "source_type": "exact_product_retail_data",
+            "confidence": 0.98, "evidence": str((evidence_rows("benefits") or [{}])[0].get("supporting_text") or entry),
+        } for entry in entries if entry not in (None, "")]
+    concerns = values.get("targeted_concerns")
+    if concerns not in (None, "", [], {}) and "targeted_concerns" not in exact.get("conflicts", []):
+        entries = concerns if isinstance(concerns, list) else [concerns]
+        enrichment_result["targeted_concerns"] = {
+            "values": [str(entry) for entry in entries if entry not in (None, "")],
+            "value_status": "source_supported", "confidence": 0.98,
+            "evidence": evidence_rows("targeted_concerns"),
+            "reasoning_summary": "Copied from exact-product retail evidence.",
+        }
+
+    directions = values.get("directions") or values.get("usage_instructions")
+    if directions not in (None, "", [], {}) and "directions" not in exact.get("conflicts", []):
+        enrichment_result["directions"] = {
+            "value": directions, "value_status": "source_supported", "confidence": 0.98,
+            "evidence": evidence_rows("directions") or evidence_rows("usage_instructions"),
+            "reasoning_summary": "Copied from exact-product retail evidence.",
+        }
+
+    module_map = {
+        "skincare": ("skin_types", "texture", "finish", "key_ingredients"),
+        "haircare": ("hair_types", "texture_format", "key_ingredients"),
+        "makeup": ("shade_colour", "coverage", "finish", "texture_format"),
+        "fragrance": ("concentration", "fragrance_family", "top_notes", "heart_notes", "base_notes",
+                      "longevity", "sillage_projection", "seasonal_fit", "occasion_fit"),
+    }
+    block = dict(enrichment_result.get(module) or {}) if module in module_map else {}
+    for field_name in module_map.get(module, ()):
+        value = values.get(field_name)
+        if value not in (None, "", [], {}) and field_name not in exact.get("conflicts", []):
+            if field_name in {"texture", "texture_format", "finish", "coverage", "shade_colour"}:
+                block[field_name] = {
+                    "value": value, "value_status": "source_supported", "confidence": 0.98,
+                    "evidence": evidence_rows(field_name),
+                    "reasoning_summary": "Copied from exact-product retail evidence.",
+                }
+            elif field_name in {"skin_types", "hair_types"}:
+                entries = value if isinstance(value, list) else [value]
+                block[field_name] = {
+                    "applicable": True, "recommended_for": [str(entry) for entry in entries],
+                    "not_recommended_for": [], "unknown_for": [],
+                    "evidence": evidence_rows(field_name), "confidence": 0.98,
+                }
+            elif field_name == "key_ingredients":
+                entries = value if isinstance(value, list) else [value]
+                block[field_name] = [{
+                    "ingredient_name": str(entry), "inci_position": None,
+                    "short_description": None, "functions": [], "benefits": [],
+                    "possible_concerns": [], "is_key_ingredient": True,
+                    "key_ingredient_status": "source_supported",
+                } for entry in entries if entry not in (None, "")]
+            else:
+                block[field_name] = value
+    if block:
+        block["evidence"] = list(block.get("evidence") or []) + [
+            row for field_name in module_map.get(module, ()) for row in evidence_rows(field_name)
+        ]
+        block["confidence"] = max(float(block.get("confidence") or 0), 0.98)
+        enrichment_result[module] = block
+    return enrichment_result
 
 
 def normalize_gtin_value(value: Any) -> Optional[str]:
@@ -501,8 +614,13 @@ def process_item_enrichment(
     raw_data = listing.raw_data
     raw_name = source_value(raw_data, mapping, "product_name")
     raw_brand = source_value(raw_data, mapping, "brand")
-    raw_desc = source_value(raw_data, mapping, "description")
-    raw_ingr = source_value(raw_data, mapping, "ingredients")
+    raw_desc = source_value(raw_data, mapping, "description") or source_alias_value(
+        raw_data, "description", "product description", "long description", "marketing description",
+        "marketing copy", "product information", "prod info descript",
+    )
+    raw_ingr = source_value(raw_data, mapping, "ingredients") or source_alias_value(
+        raw_data, "ingredients", "ingredient list", "ingredients list", "inci", "inci list", "composition",
+    )
     raw_ean = normalize_gtin_value(source_value(raw_data, mapping, "ean"))
     raw_size, raw_unit = split_size_and_unit(
         source_value(raw_data, mapping, "size"), source_value(raw_data, mapping, "unit")
@@ -512,11 +630,17 @@ def process_item_enrichment(
     raw_product_type = source_value(raw_data, mapping, "product_type") or source_alias_value(
         raw_data, "product_type", "product type", "type", "format", "concentration",
     )
-    raw_claims = source_value(raw_data, mapping, "claims")
-    raw_directions = source_value(raw_data, mapping, "directions")
+    raw_claims = source_value(raw_data, mapping, "claims") or source_alias_value(
+        raw_data, "claims", "product claims", "marketing claims", "features",
+    )
+    raw_directions = source_value(raw_data, mapping, "directions") or source_alias_value(
+        raw_data, "directions", "usage instructions", "how to use", "application",
+    )
     raw_market = source_value(raw_data, mapping, "market") or "global"
     raw_language = source_value(raw_data, mapping, "language") or "en"
-    raw_image_url = source_value(raw_data, mapping, "image_url") or None
+    raw_image_url = source_value(raw_data, mapping, "image_url") or source_alias_value(
+        raw_data, "image url", "image", "main image", "product image", "image link",
+    ) or None
 
     # Exact-product web observations outrank a sparse import row. They supply
     # attributable copy, INCI and imagery to the enrichment prompt.
@@ -629,6 +753,29 @@ def process_item_enrichment(
     if not is_placeholder(understood.get("product_type")):
         raw_product_type = understood["product_type"]
 
+    # Retrieve the indexed corpus once and resolve exact, conflict-free values
+    # before the prompt. Customer-uploaded facts remain first priority.
+    from app.knowledge_corpus.retrieval import retrieve_corpus_evidence, resolve_exact_field_evidence
+    corpus_result = retrieve_corpus_evidence(
+        db, gtin=raw_ean or "", brand=raw_brand, product_name=raw_name,
+        size=f"{raw_size or ''} {raw_unit or ''}".strip(), category=raw_category,
+    )
+    exact_corpus = resolve_exact_field_evidence(corpus_result)
+    exact_values = exact_corpus.get("values") or {}
+    exact_applied_fields = set(exact_values) - set(exact_corpus.get("conflicts") or [])
+    exact_formulation = exact_corpus.get("formulation") or {}
+    exact_market = exact_corpus.get("market") or {}
+    raw_desc = raw_desc or str(exact_values.get("description") or "")
+    raw_ingr = raw_ingr or str(exact_formulation.get("raw_inci_text") or exact_values.get("ingredient_text_raw") or "")
+    corpus_claims = exact_values.get("claims")
+    if not raw_claims and corpus_claims:
+        raw_claims = "; ".join(str(value) for value in corpus_claims) if isinstance(corpus_claims, list) else str(corpus_claims)
+    raw_directions = raw_directions or str(exact_values.get("directions") or exact_values.get("usage_instructions") or "")
+    raw_image_url = raw_image_url or exact_market.get("image_url")
+    if raw_image_url and product:
+        from app.services.image_urls import normalize_public_image_url
+        product.image_url = normalize_public_image_url(raw_image_url) or product.image_url
+
     # Start Enrichment Run
     item.enrichment_status = "processing"
     item.started_at = datetime.utcnow()
@@ -645,6 +792,8 @@ def process_item_enrichment(
             "market": raw_market, "language": raw_language, "image_url": raw_image_url,
         },
         "_beautypim_product_understanding": product_understanding,
+        "_complete_original_source_row": semantic_source_row(raw_data),
+        "_exact_corpus_resolution": compact_enrichment_value(exact_corpus),
     }
     from app.services.category_completeness import build_gap_plan
     gap_snapshot = {
@@ -789,6 +938,9 @@ def process_item_enrichment(
         enrichment_result = apply_category_specific_enrichment(
             enrichment_result, product_identity_text, raw_ingr,
         )
+        enrichment_result = apply_exact_corpus_evidence(
+            enrichment_result, exact_corpus, authoritative_module,
+        )
     for module_name in CATEGORY_MODULE_FIELDS:
         if module_name != authoritative_module:
             enrichment_result.pop(module_name, None)
@@ -889,7 +1041,7 @@ def process_item_enrichment(
             product_variant_id=None,
             field_name=field,
             value=field_data.get("value"),
-            source_type="source_data" if status in {"explicit_source", "normalized_source"} else "ai_inference",
+            source_type="source_data" if status in {"explicit_source", "normalized_source", "source_supported"} else "ai_inference",
             source_ref=source_ref,
             confidence=field_data.get("confidence", 0.0),
             status=status,
@@ -928,7 +1080,10 @@ def process_item_enrichment(
             product_variant_id=None,
             field_name=field,
             value=field_data,
-            source_type="ai_inference",
+            source_type="source_data" if (
+                field in exact_applied_fields
+                or field in CATEGORY_MODULE_FIELDS and bool(set(CATEGORY_MODULE_FIELDS[field]) & exact_applied_fields)
+            ) else "ai_inference",
             source_ref=source_ref,
             confidence=confidence,
             status="inferred",
@@ -977,7 +1132,10 @@ def process_item_enrichment(
         db.query(FormulationIngredient).filter(
             FormulationIngredient.formulation_id == formulation.id
         ).delete(synchronize_session=False)
-        formulation.source_listing_id = listing.id
+        formulation.source_listing_id = None if exact_formulation else listing.id
+        formulation.source_reference = (
+            f"knowledge_corpus:{exact_formulation.get('formulation_hash')}" if exact_formulation else source_ref
+        )
         formulation.market = raw_market
         formulation.language = raw_language
     elif refresh_formulation and content_hash:
@@ -985,11 +1143,14 @@ def process_item_enrichment(
             id=uuid.uuid4(),
             canonical_product_id=item.canonical_product_id,
             product_variant_id=item.product_variant_id,
-            source_listing_id=listing.id,
+            source_listing_id=None if exact_formulation else listing.id,
             raw_inci_text=raw_ingr,
             market=raw_market,
             language=raw_language,
-            content_hash=content_hash
+            content_hash=content_hash,
+            source_reference=(
+                f"knowledge_corpus:{exact_formulation.get('formulation_hash')}" if exact_formulation else source_ref
+            ),
         )
         db.add(formulation)
         db.flush()

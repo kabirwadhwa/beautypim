@@ -113,6 +113,9 @@ class RetailFeedAdapter(CorpusAdapter):
                 "product_type": clean_text(row.get("product_type")),
                 "specifications": clean_text(row.get("specifications")),
                 "images": [clean_text(row.get(key)) for key in ("merchant_image_url", "large_image", "alternate_image", "alternate_image_two", "alternate_image_three", "alternate_image_four") if clean_text(row.get(key))],
+                "rating": decimal_value(row.get("rating") or row.get("average_rating") or row.get("review_rating")),
+                "review_count": row.get("review_count") or row.get("reviews_count") or row.get("number_of_reviews"),
+                "review_summary": clean_text(row.get("review_summary") or row.get("reviews_summary")),
             }
             fields = {key: value for key, value in fields.items() if value not in (None, "", [], {})}
             stock_value = row.get("in_stock")

@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from app.models import ImportJob, ScrapedProductObservation, SourceListing
+from app.models import Brand, CanonicalProduct, ImportJob, ProductVariant, ScrapedProductObservation, SourceListing
 
 
 def _integer(value: Any) -> int:
@@ -21,9 +21,8 @@ def _integer(value: Any) -> int:
 def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, count: Any) -> dict[str, Any] | None:
     """Always provide a truthful review summary when aggregate evidence exists.
 
-    Topic-level praise/complaint text still requires review samples. Aggregate
-    rating/count alone can nevertheless support a useful, explicit four-line
-    summary without another AI call or invented product characteristics.
+    Topic-level praise/complaint text requires review samples. Aggregate-only
+    evidence gets a concise disclosure, never four repetitive filler lines.
     """
     result = dict(summary or {})
     if any(result.get(key) for key in ("ai_summary_lines", "ai_summary_text", "summary", "text")):
@@ -45,9 +44,9 @@ def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, 
         opening = f"The source reports {review_count:,} customer reviews without a usable average rating."
     lines = [
         opening,
-        "The available evidence supports the overall rating and review count but does not include review-level text.",
-        "Recurring praise or complaint themes therefore cannot be established reliably from this source.",
-        "This summary is limited to exact-product aggregate review evidence and does not invent customer opinions.",
+        "This exact-product aggregate establishes overall customer sentiment without relying on another product's reviews.",
+        "Review-level text was unavailable, so reliable praise and complaint themes could not be extracted.",
+        "The summary does not invent customer opinions beyond the rating and count evidence.",
     ]
     return {**result, "average_rating": numeric_rating, "review_count": review_count or None,
             "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines),
@@ -55,6 +54,11 @@ def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, 
 
 
 def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
+    from app.models import FieldValue
+    saved_summary = db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product_id,
+        FieldValue.field_name == "review_summary", FieldValue.is_current == True,
+    ).first()
     rows = db.query(ScrapedProductObservation).filter(
         ScrapedProductObservation.canonical_product_id == product_id,
         ScrapedProductObservation.match_status.in_(["matched", "conflict"]),
@@ -78,6 +82,8 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             _integer(count),
             row.scraped_at,
         )
+        if saved_summary and isinstance(saved_summary.value, dict):
+            summary = {**summary, **saved_summary.value}
         summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         candidates.append((score, row, payload, summary, rating, count, scope))
     # Explicit customer-feed aggregates are exact-product evidence too. They
@@ -95,6 +101,8 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         if rating in (None, "") and count in (None, "") and not summary:
             continue
         summary = summary if isinstance(summary, dict) else ({"summary": summary} if summary else {})
+        if saved_summary and isinstance(saved_summary.value, dict):
+            summary = {**summary, **saved_summary.value}
         summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         result = {
             "average_rating": float(rating) if rating not in (None, "") else None,
@@ -105,6 +113,32 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             "evidence_reference": f"source_listing:{listing.id}", "observation_id": None,
         }
         candidates.append(((2, 1, 1 if summary else 0, 0, _integer(count), listing.created_at), None, result, {}, rating, count, "exact_product"))
+    # Imported corpus review aggregates participate only on an exact identity.
+    product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id == product_id, ProductVariant.is_deleted == False,
+    ).order_by(ProductVariant.created_at.desc()).first()
+    if product and variant:
+        brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product.brand_id else None
+        from app.knowledge_corpus.retrieval import retrieve_corpus_evidence, resolve_exact_field_evidence
+        corpus = resolve_exact_field_evidence(retrieve_corpus_evidence(
+            db, gtin=variant.gtin or "", brand=brand.name if brand else "",
+            product_name=product.product_name, size=f"{variant.size or ''} {variant.unit or ''}".strip(),
+            category=product.category.path if product.category else "",
+        ))
+        values = corpus.get("values") or {}
+        rating, count, summary = values.get("rating"), values.get("review_count"), values.get("review_summary")
+        if rating not in (None, "") or count not in (None, "") or summary:
+            summary = summary if isinstance(summary, dict) else ({"summary": summary} if summary else {})
+            result = {
+                "average_rating": float(rating) if rating not in (None, "") else None,
+                "review_count": _integer(count) if count not in (None, "") else None,
+                "review_summary": _summary_or_aggregate_fallback(summary, rating, count),
+                "source": "Retail Data", "source_domain": None,
+                "observation_date": None, "match_scope": "exact_variant",
+                "evidence_reference": "knowledge_corpus:exact_product", "observation_id": None,
+            }
+            candidates.append(((2, 2, 1 if summary else 0, 0, _integer(count), product.updated_at), None, result, {}, rating, count, "exact_variant"))
     if not candidates:
         return None
     _, row, payload, summary, rating, count, scope = max(candidates, key=lambda item: item[0])

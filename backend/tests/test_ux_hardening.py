@@ -10,7 +10,26 @@ from app.models import (
     FormulationIngredient, IngredientDefinition, EnrichmentRun
 )
 from app.config import settings
-from app.worker import process_item_enrichment
+from app.worker import apply_exact_corpus_evidence, process_item_enrichment, semantic_source_row
+
+
+def test_complete_unmapped_source_row_is_available_to_enrichment():
+    row = semantic_source_row({"Product Name": "Lip Maestro", "Unmapped Marketing Copy": "Velvet liquid colour", "empty": ""})
+    assert row == {"Product Name": "Lip Maestro", "Unmapped Marketing Copy": "Velvet liquid colour"}
+
+
+def test_exact_corpus_values_override_model_copy_with_source_evidence():
+    result = {"product_positioning": {"value": "Generic lipstick", "value_status": "inferred"}}
+    exact = {
+        "values": {"product_positioning": "Velvet-matte liquid lip colour", "coverage": "Full"},
+        "evidence": {"product_positioning": [{"raw_value": "Velvet-matte liquid lip colour"}],
+                     "coverage": [{"raw_value": "Full"}]},
+        "conflicts": [],
+    }
+    enriched = apply_exact_corpus_evidence(result, exact, "makeup")
+    assert enriched["product_positioning"]["value"] == "Velvet-matte liquid lip colour"
+    assert enriched["product_positioning"]["value_status"] == "source_supported"
+    assert enriched["makeup"]["coverage"] == "Full"
 
 def get_auth_headers(client: TestClient, email: str) -> dict:
     from app.auth import get_password_hash, create_access_token

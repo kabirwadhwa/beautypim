@@ -19,12 +19,11 @@ BALANCED_INFERENCE_GUIDANCE = (
     "Return useful universal catalogue fields and exactly one applicable category module. For classification fields "
     "such as subcategory, product type and application area, make a reasonable inference "
     "when the product title or description strongly implies one. For concern targeting, skin or "
-    "hair fit, benefits, directions and fragrance intelligence, infer typical values when they "
-    "are reasonably supported by the product type, wording or ingredient functions. Mark these "
+    "hair fit, benefits, directions and fragrance intelligence, infer values only when product-specific "
+    "evidence supports them. Mark these "
     "as inferred and normally use confidence between 0.55 and 0.79; use 0.80 or higher for direct "
     "source statements or exact reference matches. Populate each schema field with the best "
-    "supported answer. If the source is sparse, make a transparent best-fit catalogue inference "
-    "instead of returning unknown or not provided. A "
+    "supported answer. If the source is sparse, leave factual fields unknown and avoid generic catalogue filler. A "
     "plausible inference must never be worded as a verified brand claim. Ethical claims, "
     "free-from claims, safety, medical conclusions and legal compliance still require explicit "
     "support. The presence of Parfum/Fragrance may support fragrance_present=yes, but ingredient "
@@ -262,14 +261,13 @@ def ensure_catalogue_coverage(
     model_type = str((data.get("product_type") or {}).get("value") or "")
     model_subcategory = str((data.get("subcategory") or {}).get("value") or "")
     fallback = generate_deterministic_fallback(name, brand, " ".join(filter(None, (description, model_type, model_subcategory))), raw_ingredients)
-    for field in ("subcategory", "product_type", "application_area", "product_positioning", "sensory_description"):
+    for field in ("subcategory", "product_type", "application_area"):
         if _is_missing_field(data.get(field), "value"):
             data[field] = fallback[field]
     audience = (data.get("target_audience") or {}).get("value")
     if not isinstance(audience, list) or len([x for x in audience if str(x).strip()]) != 3:
         data["target_audience"] = fallback["target_audience"]
-    for field in ("benefits", "directions", "targeted_concerns", "claims", "warnings_considerations",
-                  "skincare", "haircare", "makeup", "fragrance", "ingredients_intelligence"):
+    for field in ("claims", "warnings_considerations", "ingredients_intelligence"):
         if data.get(field) in (None, []):
             data[field] = fallback.get(field)
     return consolidate_enrichment_payload(data)
@@ -330,15 +328,17 @@ def generate_deterministic_fallback(name: str, brand: str, description: str, raw
                                                 ("balm", "Balm"), ("spray", "Spray"), ("foam", "Foam"))
                     if token in source), "Product-appropriate format")
     concern_rules = (("hydrat", "Dehydration"), ("moistur", "Dryness"), ("wrinkle", "Fine lines"),
-                     ("anti-age", "Visible ageing"), ("bright", "Dullness"), ("pigment", "Pigmentation"),
+                     ("anti-age", "Visible ageing"), ("bright", "Dullness"),
                      ("acne", "Acne"), ("blemish", "Blemishes"), ("sensitive", "Sensitivity"),
                      ("redness", "Redness"), ("scalp", "Scalp comfort"), ("thinning", "Hair thinning"))
     concerns = []
     for token, label in concern_rules:
         if token in source and label not in concerns:
             concerns.append(label)
-    if not concerns:
-        concerns = ["Personal scent expression"] if is_fragrance else [f"Everyday {category.lower()} care"]
+    if not is_makeup and not is_hair and "pigment" in source and any(
+        token in source for token in ("dark spot", "hyperpigment", "uneven tone", "discolor")
+    ):
+        concerns.append("Pigmentation")
     if is_fragrance:
         audience = [
             f"Shoppers seeking a polished {lower_type} that can serve as a dependable personal signature.",
@@ -347,7 +347,7 @@ def generate_deterministic_fallback(name: str, brand: str, description: str, raw
         ]
     elif is_hair:
         audience = [
-            f"Haircare shoppers seeking {concerns[0].lower()} support from a straightforward {lower_type}.",
+            f"Haircare shoppers seeking the documented performance of {name} in a {lower_type} format.",
             f"Consumers who prefer a {texture.lower()} format compatible with their hair or scalp routine.",
             f"Busy users wanting an easy-to-integrate {lower_type} with clear application guidance.",
         ]
@@ -359,14 +359,10 @@ def generate_deterministic_fallback(name: str, brand: str, description: str, raw
         ]
     else:
         audience = [
-            f"Skincare shoppers seeking {concerns[0].lower()} support from a focused {lower_type}.",
+            f"Skincare shoppers seeking the documented benefits of {name} in a focused {lower_type}.",
             f"Consumers who prefer the documented {texture.lower()} texture and product-specific skin experience of {name}.",
             f"Routine-focused users wanting an easy-to-layer {lower_type} with straightforward directions.",
         ]
-    benefit = ("Creates a personal fragrance signature" if is_fragrance else
-               "Helps cleanse and care for hair and scalp" if is_hair else
-               "Supports colour, definition or complexion enhancement" if is_makeup else
-               "Supports an effective everyday skincare routine")
     direction_map = {"fragrance": "Apply sparingly to pulse points; do not rub after application.",
                      "haircare": "Apply as directed to hair or scalp and rinse when the format requires it.",
                      "makeup": "Apply to the intended area and build or blend to the desired result.",
@@ -398,15 +394,14 @@ def generate_deterministic_fallback(name: str, brand: str, description: str, raw
         "application_area": categorical(area, "Application area inferred from product type."),
         "target_audience": {"value": audience, "value_status": "inferred", "evidence": [],
                             "reasoning_summary": "Three distinct commercial profiles inferred from product evidence.", "confidence": 0.62},
-        "product_positioning": categorical(f"{product_type} for {concerns[0].lower()}", "Merchandising positioning inferred from the product profile."),
-        "sensory_description": categorical(f"{texture} format with a product-appropriate application experience.", "Sensory wording inferred from format."),
+        "product_positioning": None,
+        "sensory_description": None,
         "routine_time": categorical("As appropriate for the product and pack directions", "Controlled routine timing."),
         "routine_step": categorical("Product-specific routine step", "Controlled routine step."),
         "targeted_concerns": {"values": concerns, "value_status": "inferred", "evidence": [],
                               "reasoning_summary": "Consolidated concerns inferred from supplied wording.", "confidence": 0.62},
         "claims": claims,
-        "benefits": [{"statement": benefit, "source_type": "catalogue_inference",
-                      "evidence": f"Inferred from product type {product_type}.", "confidence": 0.55}],
+        "benefits": [],
         "directions": {"text": direction_map[category.lower()], "source_status": "inferred", "evidence": [], "confidence": 0.55},
         "warnings_considerations": [], "ingredients_intelligence": ingredients,
         "skincare": None, "haircare": None, "makeup": None, "fragrance": None,

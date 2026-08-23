@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from app.knowledge_corpus.adapters import RetailFeedAdapter, RichBeautyWorkbookAdapter
 from app.knowledge_corpus.import_service import create_import_job, import_corpus
 from app.knowledge_corpus.normalization import normalized_brand, normalized_gtin, normalized_text, split_size
-from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
+from app.knowledge_corpus.retrieval import evidence_is_sufficient, resolve_exact_field_evidence, retrieve_corpus_evidence
 from app.knowledge_corpus.evaluation import evaluate_holdout, evaluate_non_ean_matching
 from app.models import KnowledgeFormulation, KnowledgeMarketObservation, KnowledgeProduct, KnowledgeSourceObservation, KnowledgeVariant
 
@@ -19,15 +19,16 @@ def _retail_fixture(path: Path):
     ws.append(["aw_deep_link", "product_name", "merchant_product_id", "merchant_image_url", "description",
                "merchant_category", "search_price", "merchant_name", "currency", "merchant_deep_link",
                "language", "last_updated", "brand_name", "colour", "product_type",
-               "merchant_product_category_path", "rrp_price", "ean", "parent_product_id", "in_stock", "ShoppingNL:size"])
+               "merchant_product_category_path", "rrp_price", "ean", "parent_product_id", "in_stock", "ShoppingNL:size",
+               "average_rating", "review_count"])
     ws.append(["https://example.test/p/1", "Evidence Serum 30 ml", "SKU-1", "https://img.test/1.jpg",
                "Hydrating niacinamide serum", "Gezichtsverzorging", "24.95", "Retail", "EUR",
                "https://example.test/p/1", "nl", "2024-11-25", "Proof Lab", "", "Serum",
-               "Beauty > Gezichtsverzorging > Serum", "29.95", "8712345678901", "PARENT-1", True, "30 ml"])
+               "Beauty > Gezichtsverzorging > Serum", "29.95", "8712345678901", "PARENT-1", True, "30 ml", "4.7", 128])
     ws.append(["https://example.test/p/2", "Evidence Serum Rose 30 ml", "SKU-2", "https://img.test/2.jpg",
                "Rose variant", "Gezichtsverzorging", "25.95", "Retail", "EUR", "https://example.test/p/2",
                "nl", "2024-11-25", "Proof Lab", "Rose", "Serum", "Beauty > Gezichtsverzorging > Serum",
-               "30.95", "8712345678918", "PARENT-1", False, "30 ml"])
+               "30.95", "8712345678918", "PARENT-1", False, "30 ml", "4.4", 64])
     wb.save(path)
 
 
@@ -91,6 +92,22 @@ def test_retail_parent_variants_and_exact_retrieval(db, tmp_path):
     assert result["match_level"] == "exact_product"
     assert result["exact_matches"][0]["gtin"] == "8712345678901"
     assert evidence_is_sufficient(result)
+    exact = resolve_exact_field_evidence(result)
+    assert exact["values"]["description"] == "Hydrating niacinamide serum"
+    assert float(exact["values"]["rating"]) == 4.7
+    assert exact["values"]["review_count"] == 128
+    assert exact["market"]["image_url"] == "https://img.test/1.jpg"
+
+
+def test_weak_same_category_row_is_not_returned_as_comparable(db, tmp_path):
+    path = tmp_path / "retail.xlsx"; _retail_fixture(path)
+    adapter = RetailFeedAdapter("fixture_feed")
+    import_corpus(db, create_import_job(db, str(path), adapter, "fixture_feed", "Retail Data"), str(path), adapter)
+    result = retrieve_corpus_evidence(
+        db, brand="Different Brand", product_name="Unrelated Night Balm", category="Skin Care",
+    )
+    assert result["match_level"] == "unmatched"
+    assert result["diagnostics"]["qualified_candidate_count"] == 0
 
 
 def test_exact_ean_bridge_reconciles_cross_dataset_parent_families(db, tmp_path):
