@@ -1,7 +1,7 @@
 import uuid
 from unittest.mock import patch
 
-from app.models import AuditLog, Brand, CanonicalProduct, FieldValue, ValidationIssue
+from app.models import AuditLog, Brand, CanonicalProduct, FieldValue, User, ValidationIssue
 from app.services.identity_review import (
     does_this_product_require_identity_review, persist_review_state,
     synchronize_blocking_issue,
@@ -69,8 +69,9 @@ def test_ambiguous_identity_creates_blocking_review_issue(db):
 def test_skip_is_persisted_but_identity_remains_unresolved(db):
     product = _product(db)
     _contract(db, product, fingerprint="same")
+    actor = db.query(User).filter(User.email == "admin@test.com").one()
     persist_review_state(
-        db, product, status="SKIPPED", fingerprint="same", actor_id=uuid.uuid4(),
+        db, product, status="SKIPPED", fingerprint="same", actor_id=actor.id,
         reason="deferred", resume_context={"mode": "missing_only"},
     )
     db.flush()
