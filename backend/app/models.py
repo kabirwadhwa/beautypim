@@ -437,7 +437,8 @@ class AuditLog(Base):
         CheckConstraint(action.in_([
             'create', 'update', 'merge', 'approve', 'reject', 'override',
             'invitation_created', 'invitation_resent', 'invitation_revoked', 'invitation_accepted',
-            'user_role_changed', 'user_disabled', 'user_enabled'
+            'user_role_changed', 'user_disabled', 'user_enabled',
+            'user_name_changed', 'tags_updated'
         ]), name='check_audit_action_type'),
     )
 
