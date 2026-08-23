@@ -24,6 +24,9 @@ def test_users(db: Session):
     editor.is_active = True
     viewer.role = "viewer"
     viewer.is_active = True
+    admin.display_name = "Admin Member"
+    editor.display_name = "Editor Member"
+    viewer.display_name = "Viewer Member"
     
     # Delete test invitations
     db.query(UserInvitation).delete()
@@ -400,8 +403,9 @@ def test_list_users_endpoints(client: TestClient, test_users, auth_headers):
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] >= 3
-    emails = [u["email"] for u in data["users"]]
-    assert "admin@test.com" in emails
+    assert all("email" not in user for user in data["users"])
+    names = [u["display_name"] for u in data["users"]]
+    assert "Admin Member" in names
     
     # 3. Filter by role
     resp = client.get(f"{settings.API_V1_STR}/admin/users?role=admin", headers=admin_headers)
@@ -415,10 +419,37 @@ def test_list_users_endpoints(client: TestClient, test_users, auth_headers):
     assert all(u["is_active"] is True for u in resp.json()["users"])
     
     # 5. Search filter
-    resp = client.get(f"{settings.API_V1_STR}/admin/users?search=admin", headers=admin_headers)
+    resp = client.get(f"{settings.API_V1_STR}/admin/users?search=Admin%20Member", headers=admin_headers)
     assert resp.status_code == 200
     assert len(resp.json()["users"]) >= 1
-    assert "admin@test.com" in [u["email"] for u in resp.json()["users"]]
+    assert "Admin Member" in [u["display_name"] for u in resp.json()["users"]]
+
+
+def test_admin_can_rename_member_without_exposing_email(client: TestClient, test_users, auth_headers, db: Session):
+    admin_headers = auth_headers("admin@test.com")
+    viewer_id = test_users["viewer"].id
+
+    forbidden = client.patch(
+        f"{settings.API_V1_STR}/admin/users/{viewer_id}/name",
+        json={"display_name": "Hidden Account"},
+        headers=auth_headers("editor@test.com"),
+    )
+    assert forbidden.status_code == 403
+
+    renamed = client.patch(
+        f"{settings.API_V1_STR}/admin/users/{viewer_id}/name",
+        json={"display_name": "  Retail   Reviewer  "},
+        headers=admin_headers,
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["display_name"] == "Retail Reviewer"
+
+    db.expire_all()
+    assert db.query(User).filter(User.id == viewer_id).one().display_name == "Retail Reviewer"
+    listed = client.get(f"{settings.API_V1_STR}/admin/users?search=Retail", headers=admin_headers)
+    assert listed.status_code == 200
+    assert listed.json()["users"][0]["display_name"] == "Retail Reviewer"
+    assert "email" not in listed.json()["users"][0]
 
 def test_list_invitations_endpoint(client: TestClient, test_users, auth_headers, db: Session):
     admin_headers = auth_headers("admin@test.com")

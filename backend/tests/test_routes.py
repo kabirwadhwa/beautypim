@@ -4,7 +4,7 @@ import json
 import uuid
 from unittest.mock import patch
 from app.config import settings
-from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing
+from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing, ProductTag
 
 def test_database_dialect_matches_environment(db):
     dialect_name = db.bind.dialect.name
@@ -112,6 +112,137 @@ def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(cli
     assert str(product.id) not in [row["id"] for row in clear.json()]
     status_filtered = client.get("/api/products?status_filter=needs_review", headers=headers)
     assert str(product.id) in [row["id"] for row in status_filtered.json()]
+
+
+def test_product_tags_single_and_bulk_workflows(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Tag Test", normalized_name=f"tagtest{uuid.uuid4().hex}")
+    products = [
+        CanonicalProduct(
+            id=uuid.uuid4(), brand=brand, product_name=f"Tagged Product {index}",
+            normalized_name=f"taggedproduct{index}{uuid.uuid4().hex}",
+        )
+        for index in range(2)
+    ]
+    db.add_all([brand, *products])
+    db.commit()
+
+    updated = client.put(
+        f"/api/products/{products[0].id}/tags",
+        json={"tags": ["Investor Ready", "  Launch  ", "investor ready"]},
+        headers=headers,
+    )
+    assert updated.status_code == 200, updated.text
+    assert set(updated.json()["tags"]) == {"Investor Ready", "Launch"}
+
+    listing = client.get("/api/products", headers=headers)
+    listed = next(row for row in listing.json() if row["id"] == str(products[0].id))
+    assert set(listed["tags"]) == {"Investor Ready", "Launch"}
+
+    added = client.post(
+        "/api/products/bulk/actions",
+        json={
+            "product_ids": [str(product.id) for product in products],
+            "action": "add_tags", "tags": ["Priority"],
+        },
+        headers=headers,
+    )
+    assert added.status_code == 200, added.text
+    assert added.json()["success_count"] == 2
+    db.expire_all()
+    assert db.query(ProductTag).filter(ProductTag.normalized_name == "priority").count() == 2
+
+    removed = client.post(
+        "/api/products/bulk/actions",
+        json={
+            "product_ids": [str(product.id) for product in products],
+            "action": "remove_tags", "tags": ["priority"],
+        },
+        headers=headers,
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["success_count"] == 2
+    assert db.query(ProductTag).filter(ProductTag.normalized_name == "priority").count() == 0
+
+
+def test_product_tag_permissions_and_validation(client: TestClient, db):
+    token = get_admin_token(client)
+    admin_headers = {"Authorization": f"Bearer {token}"}
+    viewer_login = client.post(
+        "/api/auth/token", data={"username": "viewer@test.com", "password": "securepassword123"},
+    )
+    viewer_headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+    brand = Brand(id=uuid.uuid4(), name="Tag Guard", normalized_name=f"tagguard{uuid.uuid4().hex}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand=brand, product_name="Guarded Product",
+        normalized_name=f"guardedproduct{uuid.uuid4().hex}",
+    )
+    db.add_all([brand, product])
+    db.commit()
+
+    assert client.put(
+        f"/api/products/{product.id}/tags", json={"tags": ["Blocked"]}, headers=viewer_headers,
+    ).status_code == 403
+    too_long = client.put(
+        f"/api/products/{product.id}/tags", json={"tags": ["x" * 51]}, headers=admin_headers,
+    )
+    assert too_long.status_code == 422
+    empty_bulk = client.post(
+        "/api/products/bulk/actions",
+        json={"product_ids": [str(product.id)], "action": "add_tags", "tags": []},
+        headers=admin_headers,
+    )
+    assert empty_bulk.status_code == 400
+
+
+def test_bulk_approve_reject_and_classification_actions(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Bulk Controls", normalized_name=f"bulkcontrols{uuid.uuid4().hex}")
+    products = [
+        CanonicalProduct(
+            id=uuid.uuid4(), brand=brand, product_name=f"Bulk Control {index}",
+            normalized_name=f"bulkcontrol{index}{uuid.uuid4().hex}", review_status="imported",
+        )
+        for index in range(2)
+    ]
+    db.add_all([brand, *products])
+    db.commit()
+    product_ids = [str(product.id) for product in products]
+
+    approved = client.post(
+        "/api/products/bulk/actions",
+        json={"product_ids": product_ids, "action": "approve"}, headers=headers,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["success_count"] == 2
+    db.expire_all()
+    assert {db.query(CanonicalProduct).filter(CanonicalProduct.id == product.id).one().review_status for product in products} == {"approved"}
+
+    rejected = client.post(
+        "/api/products/bulk/actions",
+        json={"product_ids": product_ids, "action": "reject"}, headers=headers,
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["success_count"] == 2
+    db.expire_all()
+    assert {db.query(CanonicalProduct).filter(CanonicalProduct.id == product.id).one().review_status for product in products} == {"rejected"}
+
+    classified = client.post(
+        "/api/products/bulk/actions",
+        json={
+            "product_ids": product_ids, "action": "set_classification",
+            "category": "Makeup", "subcategory": "Lips",
+        },
+        headers=headers,
+    )
+    assert classified.status_code == 200, classified.text
+    assert classified.json()["success_count"] == 2
+    for product in products:
+        detail = client.get(f"/api/products/{product.id}", headers=headers)
+        assert detail.json()["product_category"] == "Makeup"
+        assert detail.json()["subcategory"] == "Lips"
 
 
 def test_improve_product_summary_opens_without_canonical_description_column(client: TestClient, db):

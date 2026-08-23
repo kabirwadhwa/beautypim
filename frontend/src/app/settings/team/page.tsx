@@ -11,7 +11,7 @@ import {
 
 interface TeamUser {
   id: string;
-  email: string;
+  display_name: string;
   role: string;
   is_active: boolean;
   last_login_at: string | null;
@@ -23,7 +23,6 @@ interface TeamUser {
 
 interface TeamInvitation {
   id: string;
-  email: string;
   role: string;
   status: string;
   expires_at: string;
@@ -53,6 +52,7 @@ export default function TeamAccessPage() {
   // Invite Modal
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
   const [invitePassword, setInvitePassword] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
@@ -74,6 +74,7 @@ export default function TeamAccessPage() {
   });
   
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; error: boolean } | null>(null);
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
 
   const fetchUsers = async () => {
     try {
@@ -94,6 +95,10 @@ export default function TeamAccessPage() {
       if (!resp.ok) throw new Error("Failed to load users");
       const data = await resp.json();
       setUsers(data.users);
+      setNameDrafts((current) => ({
+        ...current,
+        ...Object.fromEntries(data.users.map((user: TeamUser) => [user.id, user.display_name]))
+      }));
       setTotalUsers(data.total);
       setIsAdmin(true);
     } catch (err) {
@@ -154,7 +159,7 @@ export default function TeamAccessPage() {
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ email: inviteEmail, role: inviteRole, password: invitePassword })
+        body: JSON.stringify({ display_name: inviteName, email: inviteEmail, role: inviteRole, password: invitePassword })
       });
 
       if (!resp.ok) {
@@ -164,6 +169,7 @@ export default function TeamAccessPage() {
 
       triggerFeedback("User account created and activated successfully!");
       setInviteEmail('');
+      setInviteName('');
       setInvitePassword('');
       setInviteModalOpen(false);
       fetchUsers();
@@ -179,7 +185,7 @@ export default function TeamAccessPage() {
     setConfirmModal({
       open: true,
       title: "Resend Invitation",
-      message: `Are you sure you want to resend the invitation to ${invite.email}? The previous invitation link will stop working immediately.`,
+      message: `Resend this pending invitation? The previous invitation link will stop working immediately.`,
       danger: false,
       action: async () => {
         try {
@@ -203,7 +209,7 @@ export default function TeamAccessPage() {
     setConfirmModal({
       open: true,
       title: "Revoke Invitation",
-      message: `Are you sure you want to revoke the invitation for ${invite.email}? They will no longer be able to set up their account.`,
+      message: `Revoke this pending invitation? The recipient will no longer be able to set up their account.`,
       danger: true,
       action: async () => {
         try {
@@ -237,8 +243,8 @@ export default function TeamAccessPage() {
       open: true,
       title: isGrantingAdmin ? "Grant Admin Access" : "Revoke Admin Access",
       message: isGrantingAdmin
-        ? `Are you sure you want to grant Administrator access to ${user.email}? Admins have full access to team management, system settings, and exports.`
-        : `Are you sure you want to revoke Administrator access from ${user.email}? They will lose admin-only page views.`,
+        ? `Are you sure you want to grant Administrator access to ${user.display_name}? Admins have full access to team management, system settings, and exports.`
+        : `Are you sure you want to revoke Administrator access from ${user.display_name}? They will lose admin-only page views.`,
       danger: isRemovingAdmin,
       action: () => {
         executeRoleChange(user.id, newRole);
@@ -269,12 +275,31 @@ export default function TeamAccessPage() {
     }
   };
 
+  const saveDisplayName = async (user: TeamUser) => {
+    const displayName = (nameDrafts[user.id] || '').trim();
+    if (!displayName) return triggerFeedback('Member name cannot be empty.', true);
+    try {
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${API_URL}/admin/users/${user.id}/name`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: displayName })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || 'Failed to update member name.');
+      triggerFeedback('Member name updated.');
+      await fetchUsers();
+    } catch (err: any) {
+      triggerFeedback(err.message || 'Failed to update member name.', true);
+    }
+  };
+
   const handleDisableToggle = (user: TeamUser) => {
     const actionName = user.is_active ? "disable" : "enable";
     const title = user.is_active ? "Disable User Access" : "Enable User Access";
     const message = user.is_active
-      ? `Are you sure you want to disable ${user.email}? They will be logged out and blocked from future logins immediately.`
-      : `Are you sure you want to reactivate access for ${user.email}? They will be able to log in again.`;
+      ? `Are you sure you want to disable ${user.display_name}? They will be logged out and blocked from future logins immediately.`
+      : `Are you sure you want to reactivate access for ${user.display_name}? They will be able to log in again.`;
 
     setConfirmModal({
       open: true,
@@ -387,7 +412,7 @@ export default function TeamAccessPage() {
           <input 
             type="text" 
             className={styles.inputField} 
-            placeholder="Search team by email..."
+            placeholder="Search team by member name..."
             value={search}
             onChange={(e) => { setSearch(e.target.value); setUserPage(1); }}
             style={{ paddingLeft: 38 }}
@@ -425,7 +450,7 @@ export default function TeamAccessPage() {
         <table className={styles.productTable}>
           <thead>
             <tr>
-              <th>Email</th>
+              <th>Member Name</th>
               <th>Role</th>
               <th>Status</th>
               <th>Invited By</th>
@@ -442,7 +467,27 @@ export default function TeamAccessPage() {
             ) : (
               users.map((user) => (
                 <tr key={user.id}>
-                  <td style={{ fontWeight: 500, color: '#f8fafc' }}>{user.email}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 230 }}>
+                      <input
+                        className={styles.inputField}
+                        aria-label={`Name for ${user.display_name}`}
+                        value={nameDrafts[user.id] ?? user.display_name}
+                        maxLength={120}
+                        onChange={(event) => setNameDrafts(current => ({ ...current, [user.id]: event.target.value }))}
+                        style={{ minWidth: 150, padding: '6px 8px' }}
+                      />
+                      <button
+                        type="button"
+                        className={`${styles.btn} ${styles.btnSecondary}`}
+                        onClick={() => saveDisplayName(user)}
+                        disabled={!nameDrafts[user.id]?.trim() || nameDrafts[user.id]?.trim() === user.display_name}
+                        style={{ padding: '5px 8px', fontSize: 11 }}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </td>
                   <td>
                     <select
                       value={user.role}
@@ -525,7 +570,7 @@ export default function TeamAccessPage() {
         <table className={styles.productTable}>
           <thead>
             <tr>
-              <th>Invited Email</th>
+              <th>Invitation</th>
               <th>Role</th>
               <th>Invited By</th>
               <th>Sent Date</th>
@@ -542,7 +587,7 @@ export default function TeamAccessPage() {
             ) : (
               invitations.map((inv) => (
                 <tr key={inv.id}>
-                  <td style={{ color: '#e2e8f0' }}>{inv.email}</td>
+                  <td style={{ color: '#e2e8f0' }}>Pending member · {inv.id.slice(0, 8)}</td>
                   <td>
                     <span style={{ textTransform: 'capitalize', color: '#a5b4fc', fontSize: 12 }}>{inv.role}</span>
                   </td>
@@ -626,6 +671,18 @@ export default function TeamAccessPage() {
             )}
 
             <form onSubmit={handleAddUser}>
+              <div className={styles.formGroup}>
+                <label>Member Name</label>
+                <input
+                  type="text"
+                  className={styles.inputField}
+                  required
+                  maxLength={120}
+                  placeholder="e.g. Priya Sharma"
+                  value={inviteName}
+                  onChange={(e) => setInviteName(e.target.value)}
+                />
+              </div>
               <div className={styles.formGroup}>
                 <label>Email Address</label>
                 <input 

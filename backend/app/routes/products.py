@@ -11,15 +11,16 @@ from app.auth import get_current_user, require_editor_or_admin, require_viewer_o
 from app.models import (
     CanonicalProduct, ProductVariant, Brand, Category, FieldValue, 
     ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem, SourceListing,
-    ScrapedProductObservation, CrawlJob, SourcePrice
+    ScrapedProductObservation, CrawlJob, SourcePrice, ProductTag
 )
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
     FieldValueOut, EnrichmentMetadataSchema, KeyIngredientOut, DynamicConcernOut,
-    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate, ProductClassificationUpdate, ProductImageUpdate
+    EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate, ProductClassificationUpdate, ProductImageUpdate,
+    ProductTagsUpdate,
 )
 from app.worker import record_audit, process_item_enrichment, create_field_value_version
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.limiter import rate_limit
 from app.config import settings
@@ -30,6 +31,7 @@ class BulkActionRequest(BaseModel):
     action: str
     category: Optional[str] = None
     subcategory: Optional[str] = None
+    tags: List[str] = Field(default_factory=list, max_length=20)
 
 
 class BulkImproveRequest(BaseModel):
@@ -39,7 +41,7 @@ class BulkImproveRequest(BaseModel):
 
 class ProductImproveRequest(BaseModel):
     mode: str = "missing_only"
-    fields: List[str] = []
+    fields: List[str] = Field(default_factory=list)
 
 
 class ProductIdentityUpdateRequest(BaseModel):
@@ -64,6 +66,51 @@ class ProductSourceDiscoveryRequest(BaseModel):
     approved_domains: List[str] = []
 
 router = APIRouter(prefix="/products", tags=["Product PIM Center"])
+
+
+def _normalize_tags(tags: List[str]) -> list[tuple[str, str]]:
+    normalized: dict[str, str] = {}
+    for raw in tags:
+        name = " ".join(str(raw or "").strip().split())
+        if not name:
+            continue
+        if len(name) > 50:
+            raise HTTPException(422, detail="Tags must be 50 characters or fewer.")
+        key = name.casefold()
+        normalized.setdefault(key, name)
+    if len(normalized) > 20:
+        raise HTTPException(422, detail="A product can have at most 20 tags.")
+    return list(normalized.items())
+
+
+def _tag_names(db: Session, product_id: uuid.UUID) -> list[str]:
+    return [row.name for row in db.query(ProductTag).filter(
+        ProductTag.canonical_product_id == product_id,
+    ).order_by(ProductTag.normalized_name).all()]
+
+
+def _replace_product_tags(
+    db: Session, product: CanonicalProduct, tags: List[str], current_user: User,
+) -> list[str]:
+    desired = _normalize_tags(tags)
+    before = _tag_names(db, product.id)
+    db.query(ProductTag).filter(ProductTag.canonical_product_id == product.id).delete(
+        synchronize_session=False,
+    )
+    for normalized_name, name in desired:
+        db.add(ProductTag(
+            id=uuid.uuid4(), canonical_product_id=product.id, name=name,
+            normalized_name=normalized_name, created_by_id=current_user.id,
+        ))
+    after = [name for _, name in desired]
+    record_audit(
+        db=db, entity_type="CanonicalProduct", entity_id=product.id,
+        display_label=product.product_name, action="tags_updated",
+        before={"tags": before}, after={"tags": after},
+        changed={"tags": [before, after]}, user_id=current_user.id,
+        actor_type="user", reason="Updated product tags.",
+    )
+    return after
 
 
 def _product_expected_format(db: Session, product: CanonicalProduct) -> str:
@@ -268,6 +315,14 @@ def list_products(
         .group_by(ProductVariant.canonical_product_id)
         .all()
     ) if product_ids else {}
+    tags_by_product: dict[uuid.UUID, list[str]] = {product_id: [] for product_id in product_ids}
+    if product_ids:
+        for product_id, tag_name in db.query(
+            ProductTag.canonical_product_id, ProductTag.name,
+        ).filter(ProductTag.canonical_product_id.in_(product_ids)).order_by(
+            ProductTag.normalized_name,
+        ).all():
+            tags_by_product.setdefault(product_id, []).append(tag_name)
 
     # Format output items with Brand and Category titles
     out = []
@@ -324,6 +379,7 @@ def list_products(
             review_status=prod.review_status,
             validation_issue_count=len(issues),
             highest_issue_severity=highest_severity,
+            tags=tags_by_product.get(prod.id, []),
             is_deleted=prod.is_deleted,
             created_at=prod.created_at,
             updated_at=prod.updated_at
@@ -1270,6 +1326,7 @@ def get_product_detail(
             key=lambda value: {"blocking": 3, "error": 2, "warning": 1, "info": 0}.get(value, 0),
             default=None,
         ),
+        tags=_tag_names(db, prod.id),
         reviewer_id=prod.reviewer_id,
         is_deleted=prod.is_deleted,
         created_at=prod.created_at,
@@ -1324,6 +1381,24 @@ def update_product_image(
         actor_type="user",
         reason="Updated product image URL.",
     )
+    db.commit()
+    return get_product_detail(product_id, db, current_user)
+
+
+@router.put("/{product_id}/tags", response_model=ProductDetailOut)
+def update_product_tags(
+    product_id: uuid.UUID,
+    payload: ProductTagsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    product = db.query(CanonicalProduct).filter(
+        CanonicalProduct.id == product_id,
+        CanonicalProduct.is_deleted == False,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    _replace_product_tags(db, product, payload.tags, current_user)
     db.commit()
     return get_product_detail(product_id, db, current_user)
 
@@ -1609,8 +1684,8 @@ def bulk_improve_products(
     product_ids = list(dict.fromkeys(req.product_ids))
     if not product_ids:
         raise HTTPException(422, "Select at least one product.")
-    if len(product_ids) > 50:
-        raise HTTPException(422, "Bulk Improve supports up to 50 products per request.")
+    if len(product_ids) > 100:
+        raise HTTPException(422, "Bulk Improve supports up to 100 products per request.")
     if req.mode != "missing_only":
         raise HTTPException(422, "Bulk Improve currently supports missing_only mode.")
 
@@ -1690,13 +1765,19 @@ def bulk_product_action(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor_or_admin)
 ):
-    product_ids = req.product_ids
+    product_ids = list(dict.fromkeys(req.product_ids))
     action = req.action
 
-    if action not in ["approve", "reject", "re_enrich", "set_classification"]:
+    if not product_ids:
+        raise HTTPException(status_code=422, detail="Select at least one product.")
+    if len(product_ids) > 100:
+        raise HTTPException(status_code=422, detail="Bulk actions support up to 100 products per request.")
+    if action not in ["approve", "reject", "re_enrich", "set_classification", "add_tags", "remove_tags"]:
         raise HTTPException(status_code=400, detail="Invalid action name")
     if action == "set_classification" and (not req.category or not req.subcategory):
         raise HTTPException(status_code=400, detail="Category and subcategory are required.")
+    if action in {"add_tags", "remove_tags"} and not _normalize_tags(req.tags):
+        raise HTTPException(status_code=400, detail="Enter at least one tag.")
 
     success_count = 0
     errors = []
@@ -1715,10 +1796,27 @@ def bulk_product_action(
                     raise HTTPException(status_code=404, detail="Product not found")
                 _set_product_classification(db, product, req.category or "", req.subcategory or "", current_user)
                 db.commit()
+            elif action in {"add_tags", "remove_tags"}:
+                product = db.query(CanonicalProduct).filter(
+                    CanonicalProduct.id == pid, CanonicalProduct.is_deleted == False,
+                ).first()
+                if not product:
+                    raise HTTPException(status_code=404, detail="Product not found")
+                existing = _tag_names(db, product.id)
+                requested = [name for _, name in _normalize_tags(req.tags)]
+                if action == "add_tags":
+                    target = existing + requested
+                else:
+                    removed = {name.casefold() for name in requested}
+                    target = [name for name in existing if name.casefold() not in removed]
+                _replace_product_tags(db, product, target, current_user)
+                db.commit()
             success_count += 1
         except HTTPException as e:
+            db.rollback()
             errors.append({"product_id": str(pid), "error": e.detail})
         except Exception as e:
+            db.rollback()
             errors.append({"product_id": str(pid), "error": str(e)})
 
     return {

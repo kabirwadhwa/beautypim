@@ -4,7 +4,7 @@ import { API_URL, BACKEND_URL } from '../../config';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Shell from '../../components/Shell';
-import { Search, Filter, AlertTriangle, ArrowRight, X, Sparkles } from 'lucide-react';
+import { Search, Filter, AlertTriangle, ArrowRight, X, Sparkles, Tag } from 'lucide-react';
 import styles from '../page.module.css';
 
 interface Product {
@@ -21,6 +21,7 @@ interface Product {
   review_status: string;
   validation_issue_count: number;
   highest_issue_severity: string | null;
+  tags: string[];
 }
 
 export default function ProductsPage() {
@@ -32,11 +33,13 @@ export default function ProductsPage() {
   const [issueFilter, setIssueFilter] = useState<boolean | null>(null);
   const [categoryFilter, setCategoryFilter] = useState('');
   const [productTypeFilter, setProductTypeFilter] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
   const [bulkCategory, setBulkCategory] = useState('');
   const [bulkSubcategory, setBulkSubcategory] = useState('');
+  const [bulkTag, setBulkTag] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
 
@@ -96,9 +99,11 @@ export default function ProductsPage() {
 
   const categoryOptions = Array.from(new Set(products.map(p => p.product_category).filter(Boolean) as string[])).sort();
   const productTypeOptions = Array.from(new Set(products.map(p => p.product_type).filter(Boolean) as string[])).sort();
+  const tagOptions = Array.from(new Set(products.flatMap(p => p.tags || []))).sort((a, b) => a.localeCompare(b));
   const visibleProducts = products.filter(product =>
     (!categoryFilter || product.product_category === categoryFilter) &&
-    (!productTypeFilter || product.product_type === productTypeFilter)
+    (!productTypeFilter || product.product_type === productTypeFilter) &&
+    (!tagFilter || (product.tags || []).includes(tagFilter))
   );
   const visibleVariantCount = visibleProducts.reduce((total, product) => total + (product.variant_count || 0), 0);
 
@@ -110,12 +115,14 @@ export default function ProductsPage() {
     }
   };
 
-  const handleBulkAction = async (action: 'approve' | 'reject' | 're_enrich' | 'set_classification') => {
+  const handleBulkAction = async (action: 'approve' | 'reject' | 're_enrich' | 'set_classification' | 'add_tags' | 'remove_tags') => {
     if (selectedIds.length === 0) return;
     setActionLoading(true);
+    setError(null);
+    setBulkMessage(null);
     try {
       const token = localStorage.getItem("token");
-      const chunkSize = action === 're_enrich' ? 2 : selectedIds.length;
+      const chunkSize = action === 're_enrich' ? 2 : 50;
       let successful = 0;
       const failures: string[] = [];
       for (let offset = 0; offset < selectedIds.length; offset += chunkSize) {
@@ -128,7 +135,8 @@ export default function ProductsPage() {
           body: JSON.stringify({
             product_ids: selectedIds.slice(offset, offset + chunkSize), action,
             category: action === 'set_classification' ? bulkCategory : undefined,
-            subcategory: action === 'set_classification' ? bulkSubcategory : undefined
+            subcategory: action === 'set_classification' ? bulkSubcategory : undefined,
+            tags: action === 'add_tags' || action === 'remove_tags' ? [bulkTag] : undefined
           })
         });
         const data = await resp.json().catch(() => null);
@@ -138,6 +146,8 @@ export default function ProductsPage() {
       }
       if (failures.length) throw new Error(`${successful} updated; ${failures.length} failed. ${failures[0]}`);
       setSelectedIds([]);
+      if (action === 'add_tags' || action === 'remove_tags') setBulkTag('');
+      setBulkMessage(`${successful} product${successful === 1 ? '' : 's'} updated.`);
       await fetchProducts();
     } catch (e: any) {
       setError(e?.message || `Bulk ${action} failed.`);
@@ -153,23 +163,34 @@ export default function ProductsPage() {
     setBulkMessage(`Queueing ${selectedIds.length} selected products…`);
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch(`${API_URL}/products/bulk/actions/improve`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ product_ids: selectedIds, mode: "missing_only" })
-      });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok) throw new Error(data?.detail || "Bulk Improve failed.");
-      const message = `${data.queued_count || 0} queued for background improvement` +
-        `${data.skipped_count ? ` · ${data.skipped_count} already complete` : ''}` +
-        `${data.failed_count ? ` · ${data.failed_count} failed` : ''}.`;
+      let queued = 0;
+      let skipped = 0;
+      let failed = 0;
+      let firstFailure = '';
+      for (let offset = 0; offset < selectedIds.length; offset += 100) {
+        const resp = await fetch(`${API_URL}/products/bulk/actions/improve`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ product_ids: selectedIds.slice(offset, offset + 100), mode: "missing_only" })
+        });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) throw new Error(data?.detail || "Bulk Improve failed.");
+        queued += data.queued_count || 0;
+        skipped += data.skipped_count || 0;
+        failed += data.failed_count || 0;
+        if (!firstFailure && data.failed_count) {
+          firstFailure = (data.items || []).find((item: any) => item.status === 'failed')?.error || '';
+        }
+      }
+      const message = `${queued} queued for background improvement` +
+        `${skipped ? ` · ${skipped} already complete` : ''}` +
+        `${failed ? ` · ${failed} failed` : ''}.`;
       setBulkMessage(message);
-      if (data.failed_count) {
-        const firstFailure = (data.items || []).find((item: any) => item.status === 'failed');
-        setError(`${message} ${firstFailure?.error || ''}`.trim());
+      if (failed) {
+        setError(`${message} ${firstFailure}`.trim());
       }
       setSelectedIds([]);
       await fetchProducts();
@@ -208,6 +229,21 @@ export default function ProductsPage() {
               disabled={actionLoading || !bulkCategory.trim() || !bulkSubcategory.trim()}
             >
               Bulk edit category ({selectedIds.length})
+            </button>
+            <input className={styles.inputField} value={bulkTag} onChange={e => setBulkTag(e.target.value)} placeholder="Tag" maxLength={50} style={{ width: 130 }} />
+            <button
+              onClick={() => handleBulkAction('add_tags')}
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              disabled={actionLoading || !bulkTag.trim()}
+            >
+              <Tag size={15} /> Add tag ({selectedIds.length})
+            </button>
+            <button
+              onClick={() => handleBulkAction('remove_tags')}
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              disabled={actionLoading || !bulkTag.trim()}
+            >
+              Remove tag
             </button>
             <button 
               onClick={() => handleBulkAction('approve')} 
@@ -286,6 +322,15 @@ export default function ProductsPage() {
             {categoryOptions.map(category => <option key={category} value={category}>{category}</option>)}
           </select>
           <select
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+            className={styles.inputField}
+            style={{ backgroundColor: '#0b0f19', width: '150px' }}
+          >
+            <option value="">All tags</option>
+            {tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}
+          </select>
+          <select
             value={productTypeFilter}
             onChange={(e) => setProductTypeFilter(e.target.value)}
             className={styles.inputField}
@@ -308,7 +353,7 @@ export default function ProductsPage() {
             <option value="true">Has validation issues</option>
             <option value="false">Clear of issues</option>
           </select>
-          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter) && (
+          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter || tagFilter) && (
             <button
               type="button"
               className={`${styles.btn} ${styles.btnSecondary}`}
@@ -318,6 +363,7 @@ export default function ProductsPage() {
                 setIssueFilter(null);
                 setCategoryFilter('');
                 setProductTypeFilter('');
+                setTagFilter('');
               }}
               title="Clear all filters"
             >
@@ -373,6 +419,7 @@ export default function ProductsPage() {
                 <th>Category</th>
                 <th>Subcategory</th>
                 <th>Product Type</th>
+                <th>Tags</th>
                 <th>Issues</th>
                 <th>Review State</th>
                 <th style={{ width: 80 }}>Actions</th>
@@ -381,7 +428,7 @@ export default function ProductsPage() {
             <tbody>
               {visibleProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={12} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
+                  <td colSpan={13} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
                     No products found matching active filter parameters.
                   </td>
                 </tr>
@@ -405,6 +452,13 @@ export default function ProductsPage() {
                     <td>{p.product_category || "—"}</td>
                     <td style={{ color: '#c4b5fd' }}>{p.subcategory || "—"}</td>
                     <td style={{ color: '#94a3b8' }}>{p.product_type || "—"}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', minWidth: 110 }}>
+                        {(p.tags || []).length ? p.tags.map(tag => (
+                          <span key={tag} className={`${styles.badge} ${styles.badgeNeutral}`}>{tag}</span>
+                        )) : <span style={{ color: '#64748b' }}>—</span>}
+                      </div>
+                    </td>
                     <td>
                       {p.validation_issue_count > 0 ? (
                         <span className={`${styles.badge} ${p.highest_issue_severity === 'blocking' ? styles.badgeDanger : styles.badgeWarning}`}>

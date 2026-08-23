@@ -15,6 +15,7 @@ class UserLogin(UserBase):
 
 class UserOut(UserBase):
     id: uuid.UUID
+    display_name: Optional[str] = None
     role: str
     is_active: bool
     last_login_at: Optional[datetime] = None
@@ -71,10 +72,14 @@ class UserInvitationAccept(BaseModel):
 class AdminUserUpdateRole(BaseModel):
     role: str
 
+class AdminUserUpdateName(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+
 class AdminUserCreate(BaseModel):
     email: EmailStr
     password: str
     role: str = "admin"
+    display_name: Optional[str] = Field(default=None, max_length=120)
 
 # Mapping Templates
 class MappingTemplateBase(BaseModel):
@@ -406,6 +411,7 @@ class ProductOut(BaseModel):
     review_status: str
     validation_issue_count: int = 0
     highest_issue_severity: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
     is_deleted: bool
     created_at: datetime
     updated_at: datetime
@@ -438,6 +444,9 @@ class ProductDetailOut(ProductOut):
 
 class ProductImageUpdate(BaseModel):
     image_url: Optional[str] = None
+
+class ProductTagsUpdate(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=20)
 
 EDITABLE_FIELDS_REGISTRY = {
     "subcategory": str,

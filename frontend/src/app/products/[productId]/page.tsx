@@ -8,7 +8,7 @@ import {
   ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle, 
   History, Settings, Sparkles, BookOpen, User,
   ChevronDown, ChevronUp, Info, ExternalLink, RefreshCw, AlertCircle
-  , Download, Image as ImageIcon, WandSparkles, Search, X, Star
+  , Download, Image as ImageIcon, WandSparkles, Search, X, Star, Tag
 } from 'lucide-react';
 import styles from '../../page.module.css';
 
@@ -138,6 +138,7 @@ interface ProductDetail {
     reconciliation_reason?: string;
   } | null;
   review_aggregate?: any;
+  tags: string[];
 }
 
 interface ImprovementSummary {
@@ -205,6 +206,8 @@ export default function ProductDetailPage() {
   const [researchResults, setResearchResults] = useState<Array<Record<string, any>>>([]);
   const [identityDraft, setIdentityDraft] = useState<Record<string, string>>({});
   const [activeResearchJobId, setActiveResearchJobId] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagSaving, setTagSaving] = useState(false);
 
   const fetchDetail = async () => {
     try {
@@ -566,6 +569,34 @@ export default function ProductDetailPage() {
     }
   };
 
+  const saveTags = async (tags: string[]) => {
+    setTagSaving(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/products/${productId}/tags`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Product tags could not be saved.');
+      setProduct(data);
+      setTagDraft('');
+      setNotice('Product tags updated.');
+    } catch (e: any) {
+      setError(e.message || 'Product tags could not be saved.');
+    } finally {
+      setTagSaving(false);
+    }
+  };
+
+  const addTag = () => {
+    const name = tagDraft.trim();
+    if (!name || !product) return;
+    saveTags([...(product.tags || []), name]);
+  };
+
   const openOverrideModal = (fieldName: string, currentValue: any) => {
     setOverrideField(fieldName);
     setOverrideValue(
@@ -886,6 +917,41 @@ export default function ProductDetailPage() {
           </label>
           <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSaveClassification} disabled={classificationSaving || !categoryDraft.trim() || !subcategoryDraft.trim()}>
             {classificationSaving ? 'Saving...' : 'Save classification'}
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+        <div className={styles.panelTitle}><Tag size={18} color="#a78bfa" /><span>Product Tags</span></div>
+        <p style={{ color: '#94a3b8', fontSize: 13, margin: '8px 0 12px' }}>
+          Add operational labels for campaigns, collections, workflows, or internal organisation.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          {(product?.tags || []).length ? product!.tags.map(tag => (
+            <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #4f46e5', background: '#312e8126', color: '#c7d2fe', borderRadius: 999, padding: '6px 10px', fontSize: 12 }}>
+              {tag}
+              <button
+                type="button"
+                aria-label={`Remove tag ${tag}`}
+                onClick={() => saveTags((product?.tags || []).filter(item => item !== tag))}
+                disabled={tagSaving}
+                style={{ border: 0, background: 'transparent', color: '#a5b4fc', cursor: 'pointer', padding: 0, lineHeight: 0 }}
+              ><X size={13} /></button>
+            </span>
+          )) : <span style={{ color: '#64748b', fontSize: 12 }}>No tags yet.</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 10, maxWidth: 520 }}>
+          <input
+            className={styles.inputField}
+            value={tagDraft}
+            maxLength={50}
+            onChange={event => setTagDraft(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addTag(); } }}
+            placeholder="e.g. Investor shortlist"
+            aria-label="New product tag"
+          />
+          <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={addTag} disabled={tagSaving || !tagDraft.trim()}>
+            {tagSaving ? 'Saving…' : 'Add tag'}
           </button>
         </div>
       </div>

@@ -69,7 +69,7 @@ DENSITY_PRESETS = {
     ),
     "high": DensityPreset(
         "high", 15, 22, 10.5, 10.2, 9.8, 9.4, 10.2, 8.8, 11.2, 7.7,
-        40 * mm, 40 * mm, 2.2 * mm, 6, 5, 4,
+        38 * mm, 38 * mm, 1.2 * mm, 6, 4, 4,
     ),
 }
 
@@ -185,6 +185,38 @@ def _claims(current: dict[str, Any]) -> list[str]:
         and str(item.get("value", "")).lower() not in {"no", "false"}
         and _clean(item.get("name"))
     ]
+
+
+def _warnings(current: dict[str, Any]) -> list[str]:
+    warnings = []
+    for item in current.get("warnings_considerations") or []:
+        if isinstance(item, dict):
+            warning_type = _clean(item.get("type"))
+            observation = _clean(item.get("observation") or item.get("value") or item.get("text"))
+            if observation:
+                warnings.append(f"{warning_type.title()}: {observation}" if warning_type else observation)
+        elif _clean(item):
+            warnings.append(_clean(item))
+    return warnings
+
+
+def _append_overview(story: list[Any], data: dict[str, Any]) -> None:
+    description = _clean(data.get("description"))
+    if description:
+        _append(story, _card("Product Overview", _p(description), CONTENT_W))
+
+
+def _append_claims_and_warnings(story: list[Any], current: dict[str, Any]) -> None:
+    claims = _claims(current)
+    warnings = _warnings(current)
+    lines = ([f"Supported claim: {claim}" for claim in claims]
+             + [f"Consideration: {warning}" for warning in warnings])
+    if lines:
+        _append(story, _card(
+            "Claims & Considerations",
+            _bullet_table(lines, CONTENT_W - 2 * _DENSITY.get().card_pad_x),
+            CONTENT_W,
+        ))
 
 
 def _bullet_table(values: Iterable[str], width: float, *, numbered: bool = False,
@@ -386,10 +418,16 @@ def _build_fragrance_pdf(data: dict[str, Any], current: dict[str, Any]) -> bytes
     family = _clean(module.get("fragrance_family"))
     sensory = _safe_fragrance_sensory(current.get("sensory_description"), concentration)
     category_line = " · ".join(filter(None, (concentration, size))) or "Fragrance"
+    variant = (data.get("variants") or [{}])[0]
     story: list[Any] = []
     _append(story, _hero(data, current, category_line, [
-        ("Fragrance family", family), ("GTIN / EAN", gtin), ("Sensory profile", sensory),
+        ("Category", data.get("product_category") or "Fragrance"),
+        ("Subcategory", data.get("subcategory")), ("Product type", concentration),
+        ("Variant", variant.get("variant_name")), ("Fragrance family", family),
+        ("GTIN / EAN", gtin), ("Sensory profile", sensory),
+        ("Tags", data.get("tags")),
     ]))
+    _append_overview(story, data)
 
     note_width = (CONTENT_W - 2 * gap) / 3
     note_cards = []
@@ -424,12 +462,11 @@ def _build_fragrance_pdf(data: dict[str, Any], current: dict[str, Any]) -> bytes
         placeholder="Consumer profiles require stronger product evidence.",
     ), CONTENT_W))
 
+    _append_claims_and_warnings(story, current)
     reviews = _review_lines(data)
-    claims = _claims(current)
-    if reviews or claims:
-        review_claim_lines = reviews + (["Supported claims: " + "; ".join(claims)] if claims else [])
-        _append(story, _card("Ratings, Reviews & Claims", _bullet_table(
-            review_claim_lines, CONTENT_W - 2 * card_pad,
+    if reviews:
+        _append(story, _card("Ratings & Reviews", _bullet_table(
+            reviews, CONTENT_W - 2 * card_pad,
         ), CONTENT_W))
 
     formulation = (data.get("formulations") or [{}])[0]
@@ -459,6 +496,7 @@ def _category_profile(module_name: str, module: dict[str, Any], concerns: list[s
         return "Makeup Profile", [
         ("Shade / colour", module.get("shade_colour")), ("Coverage", module.get("coverage")),
         ("Finish", module.get("finish")), ("Texture / format", module.get("texture_format")),
+        ("Targeted concerns", concerns),
         ]
     return "Product Profile", []
 
@@ -479,11 +517,16 @@ def _build_category_pdf(data: dict[str, Any], current: dict[str, Any], module_na
     concerns = _items(concerns_value.get("values") if isinstance(concerns_value, dict) else concerns_value)
     profile_title, profile_rows = _category_profile(module_name, module, concerns)
     sensory = _clean(current.get("sensory_description"))
+    variant = (data.get("variants") or [{}])[0]
     story: list[Any] = []
     _append(story, _hero(data, current, category_line, [
         ("Category", _clean(data.get("product_category"), module_name.title())),
-        ("GTIN / EAN", gtin), ("Sensory profile", sensory),
+        ("Subcategory", data.get("subcategory")), ("Product type", product_type),
+        ("Application area", current.get("application_area")),
+        ("Variant", variant.get("variant_name")), ("GTIN / EAN", gtin),
+        ("Sensory profile", sensory), ("Tags", data.get("tags")),
     ]))
+    _append_overview(story, data)
 
     profile_width = CONTENT_W * .42
     benefits_width = CONTENT_W - profile_width - gap
@@ -518,13 +561,11 @@ def _build_category_pdf(data: dict[str, Any], current: dict[str, Any], module_na
                 ingredient_rows, CONTENT_W - 2 * card_pad, 40 * mm,
             ), CONTENT_W))
 
+    _append_claims_and_warnings(story, current)
     reviews = _review_lines(data)
-    claims = _claims(current)
-    if reviews or claims:
-        heading = "Ratings, Reviews & Claims" if module_name == "skincare" else "Ratings & Reviews"
-        review_claim_lines = reviews + (["Supported claims: " + "; ".join(claims)] if claims else [])
-        _append(story, _card(heading, _bullet_table(
-            review_claim_lines, CONTENT_W - 2 * card_pad,
+    if reviews:
+        _append(story, _card("Ratings & Reviews", _bullet_table(
+            reviews, CONTENT_W - 2 * card_pad,
         ), CONTENT_W))
 
     formulation = (data.get("formulations") or [{}])[0]

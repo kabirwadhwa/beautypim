@@ -11,6 +11,7 @@ class User(Base):
     __tablename__ = 'users'
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False, index=True)
+    display_name = Column(String(120), nullable=True, index=True)
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False) # admin, editor, viewer
     is_active = Column(Boolean, default=True, nullable=False)
@@ -176,6 +177,26 @@ class CanonicalProduct(Base):
             'in_review', 'approved', 'rejected', 'published', 'exported', 'merged'
         ]), name='check_product_review_status'),
         Index('idx_brand_id_norm_prod_name', 'brand_id', 'normalized_name'),
+    )
+
+
+class ProductTag(Base):
+    __tablename__ = "product_tags"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    canonical_product_id = Column(
+        GUID, ForeignKey("canonical_products.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    name = Column(String(50), nullable=False)
+    normalized_name = Column(String(50), nullable=False, index=True)
+    created_by_id = Column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "uq_product_tag_product_name",
+            "canonical_product_id", "normalized_name", unique=True,
+        ),
     )
 
 class ProductVariant(Base):

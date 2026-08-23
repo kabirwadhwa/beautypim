@@ -155,13 +155,13 @@ def test_fragrance_pdf_prioritizes_pyramid_and_compacts_missing_inci():
     assert "Morning:" not in text and "Evening:" not in text
     assert "Fresh and clean fragrance" not in text
     assert "Oil format" not in text
-    assert "RATINGS, REVIEWS & CLAIMS" in text
+    assert "RATINGS & REVIEWS" in text
     assert "4.6/5" in text and "218 reviews" in text
     assert "versatile fresh woody profile" in text
 
 
 @pytest.mark.parametrize(("module_name", "module_value", "expected_heading"), [
-    ("skincare", {"skin_types": {"recommended_for": ["Dry"]}, "texture": "Cream", "finish": "Dewy"}, "RATINGS, REVIEWS & CLAIMS"),
+    ("skincare", {"skin_types": {"recommended_for": ["Dry"]}, "texture": "Cream", "finish": "Dewy"}, "RATINGS & REVIEWS"),
     ("haircare", {"hair_types": {"recommended_for": ["Dry"]}, "texture_format": "Cream"}, "RATINGS & REVIEWS"),
     ("makeup", {"shade_colour": "Rose", "coverage": "Medium", "finish": "Satin"}, "RATINGS & REVIEWS"),
 ])
@@ -179,6 +179,40 @@ def test_non_fragrance_pdfs_keep_category_layout_and_reviews(module_name, module
     text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
     assert expected_heading in text
     assert "4.4/5" in text and "72 reviews" in text
+
+
+def test_pdf_includes_universal_attributes_tags_claims_warnings_and_description():
+    pdf = build_product_pdf({
+        "product_name": "Complete Serum", "brand_name": "Beauty Lab",
+        "product_category": "Skincare", "subcategory": "Serums",
+        "description": "A source-supported daily serum for barrier care.",
+        "tags": ["Investor Ready", "Priority"],
+        "variants": [{"variant_name": "Standard", "size": "30", "unit": "ml", "gtin": "1234567890123"}],
+        "formulations": [{"raw_inci_text": "Aqua, Glycerin, Ceramide NP"}],
+        "review_aggregate": {"average_rating": 4.7, "review_count": 140, "review_summary": "Customers value its light texture."},
+        "field_values": [
+            {"field_name": "product_type", "value": "Face Serum", "is_current": True},
+            {"field_name": "application_area", "value": "Face", "is_current": True},
+            {"field_name": "product_positioning", "value": "Everyday barrier-support serum", "is_current": True},
+            {"field_name": "benefits", "value": ["Supports lasting hydration"], "is_current": True},
+            {"field_name": "targeted_concerns", "value": {"values": ["Dehydration"]}, "is_current": True},
+            {"field_name": "target_audience", "value": {"value": ["Profile one", "Profile two", "Profile three"]}, "is_current": True},
+            {"field_name": "directions", "value": "Apply after cleansing.", "is_current": True},
+            {"field_name": "sensory_description", "value": "Lightweight gel-serum texture", "is_current": True},
+            {"field_name": "claims", "value": [{"name": "Dermatologically tested", "status": "verified"}], "is_current": True},
+            {"field_name": "warnings_considerations", "value": [{"type": "sensitivity", "observation": "Patch test before use."}], "is_current": True},
+            {"field_name": "skincare", "value": {"skin_types": {"recommended_for": ["Dry", "Sensitive"]}, "texture": "Gel serum", "finish": "Natural"}, "is_current": True},
+        ],
+    })
+    from pypdf import PdfReader
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
+    for expected in (
+        "PRODUCT OVERVIEW", "A source-supported daily serum", "Serums", "Face Serum", "Face",
+        "Investor Ready", "Priority", "Everyday barrier-support serum", "Dehydration",
+        "Dermatologically tested", "Patch test before use", "4.7/5", "140 reviews",
+        "Aqua, Glycerin, Ceramide NP",
+    ):
+        assert expected in text
 
 
 def test_dossier_catalogue_fields_are_editable(client, db):

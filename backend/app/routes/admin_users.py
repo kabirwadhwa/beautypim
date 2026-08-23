@@ -14,7 +14,7 @@ from app.auth import (
 )
 from app.schemas import (
     UserOut, UserInvitationCreate, UserInvitationOut,
-    AdminUserUpdateRole, AdminUserCreate, UserInvitationValidateResponse
+    AdminUserUpdateRole, AdminUserUpdateName, AdminUserCreate, UserInvitationValidateResponse
 )
 from app.services.email import get_email_service
 
@@ -38,6 +38,7 @@ def create_user_directly(
     try:
         user = User(
             id=uuid.uuid4(), email=norm_email,
+            display_name=(data.display_name or "").strip() or None,
             hashed_password=get_password_hash(data.password),
             role=data.role, is_active=True,
             invited_by_id=current_admin.id,
@@ -75,7 +76,7 @@ def list_users(
     limit: int = Query(20, ge=1, le=100),
     role: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None), # active, disabled
-    search: Optional[str] = Query(None), # email search
+    search: Optional[str] = Query(None), # display-name or account lookup
     db: Session = Depends(get_db)
 ):
     query = db.query(User)
@@ -90,31 +91,34 @@ def list_users(
             query = query.filter(User.is_active == False)
             
     if search:
-        query = query.filter(User.email.contains(search.strip().lower()))
+        term = search.strip()
+        query = query.filter(
+            (User.display_name.ilike(f"%{term}%")) |
+            (User.email.contains(term.lower()))
+        )
         
     total = query.count()
     offset = (page - 1) * limit
     users = query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
     
-    # Map to custom pagination response
-    # Include inviter email if invited
+    # Expose display names only on the team roster; account emails stay internal.
     users_out = []
     for u in users:
-        invited_by_email = None
+        invited_by_name = None
         if u.invited_by_id:
             inviter = db.query(User).filter(User.id == u.invited_by_id).first()
             if inviter:
-                invited_by_email = inviter.email
+                invited_by_name = inviter.display_name or f"Member {str(inviter.id)[:8]}"
         users_out.append({
             "id": u.id,
-            "email": u.email,
+            "display_name": u.display_name or f"Member {str(u.id)[:8]}",
             "role": u.role,
             "is_active": u.is_active,
             "last_login_at": u.last_login_at,
             "accepted_invitation_at": u.accepted_invitation_at,
             "disabled_at": u.disabled_at,
             "created_at": u.created_at,
-            "invited_by": invited_by_email
+            "invited_by": invited_by_name
         })
         
     return {
@@ -123,6 +127,31 @@ def list_users(
         "limit": limit,
         "users": users_out
     }
+
+
+@router.patch("/users/{user_id}/name")
+def change_user_display_name(
+    user_id: uuid.UUID,
+    data: AdminUserUpdateName,
+    current_admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    display_name = " ".join(data.display_name.split())
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Member name cannot be empty.")
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    before = user.display_name
+    user.display_name = display_name
+    log_audit_event(
+        db=db, entity_type="User", entity_id=user.id,
+        display_label=display_name, action="user_name_changed",
+        before={"display_name": before}, after={"display_name": display_name},
+        changed={"display_name": [before, display_name]}, user_id=current_admin.id,
+    )
+    db.commit()
+    return {"id": str(user.id), "display_name": display_name}
 
 @router.post("/invitations", response_model=UserInvitationOut, status_code=status.HTTP_201_CREATED)
 def create_invitation(
@@ -256,11 +285,11 @@ def list_invitations(
     # Map to custom response with inviter name
     invites_out = []
     for inv in invitations:
-        inviter_email = None
+        inviter_name = None
         if inv.invited_by_id:
             inviter = db.query(User).filter(User.id == inv.invited_by_id).first()
             if inviter:
-                inviter_email = inviter.email
+                inviter_name = inviter.display_name or f"Member {str(inviter.id)[:8]}"
         invites_out.append({
             "id": inv.id,
             "email": inv.email,
@@ -272,7 +301,7 @@ def list_invitations(
             "email_delivery_status": inv.email_delivery_status,
             "email_delivery_error": inv.email_delivery_error,
             "created_at": inv.created_at,
-            "invited_by": inviter_email
+            "invited_by": inviter_name
         })
         
     return {
