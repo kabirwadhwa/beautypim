@@ -1982,18 +1982,6 @@ def approve_product(
     if not prod:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    from app.services.product_improvement import product_improvement_summary
-    from app.services.identity_review import current_understanding, does_this_product_require_identity_review
-    understanding = current_understanding(db, prod.id)
-    identity_decision = does_this_product_require_identity_review(
-        db, prod, product_improvement_summary(db, prod),
-    ) if understanding else {"requires_review": False}
-    if identity_decision["requires_review"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot approve product while foundational identity requires confirmation.",
-        )
-
     # Enforce Check: Blocking validation issue must prevent approval
     blocking_issue = db.query(ValidationIssue).filter(
         ValidationIssue.canonical_product_id == product_id,
@@ -2005,6 +1993,21 @@ def approve_product(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot approve product. Active blocking validation issue exists: '{blocking_issue.message}'"
+        )
+
+    # Product Understanding can identify an unresolved foundational identity
+    # before its validation issue has been synchronized. Preserve the existing
+    # generic blocking-issue behavior above, then apply this additional gate.
+    from app.services.product_improvement import product_improvement_summary
+    from app.services.identity_review import current_understanding, does_this_product_require_identity_review
+    understanding = current_understanding(db, prod.id)
+    identity_decision = does_this_product_require_identity_review(
+        db, prod, product_improvement_summary(db, prod),
+    ) if understanding else {"requires_review": False}
+    if identity_decision["requires_review"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot approve product while foundational identity requires confirmation.",
         )
 
     before_status = prod.review_status

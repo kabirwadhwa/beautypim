@@ -36,7 +36,13 @@ def _retry_after(headers: dict | None, message: str = "", default: float = 1.0) 
     try:
         return max(0.1, float(value))
     except (TypeError, ValueError):
-        match = re.search(r"try again in\s+([0-9.]+)\s*(ms|s|seconds?)", message, re.I)
+        # Test doubles and some HTTP clients expose a non-string ``text``
+        # attribute. Error classification must never fail while handling the
+        # provider failure it is supposed to report.
+        match = re.search(
+            r"try again in\s+([0-9.]+)\s*(ms|s|seconds?)",
+            message if isinstance(message, str) else str(message or ""), re.I,
+        )
         if match:
             delay = float(match.group(1))
             return max(0.1, delay / 1000 if match.group(2).lower() == "ms" else delay)

@@ -194,6 +194,25 @@ def test_background_research_persists_provider_id_and_completes(tmp_path):
             id=uuid.uuid4(), canonical_product_id=product.id,
             gtin="3614271716026", size="100", unit="ml",
         ),
+        FieldValue(
+            id=uuid.uuid4(), canonical_product_id=product.id,
+            field_name="product_understanding", source_type="deterministic_rule",
+            source_reference="test:exact-identity", confidence_score=.99,
+            review_status="confirmed", is_current=True,
+            value={
+                "identity_status": "resolved", "category_module": "fragrance",
+                "foundational_fingerprint": "ysl-exact",
+                "identity": {
+                    "consumer_brand": {"value": "YSL"},
+                    "product_family": {"value": "Y"},
+                    "gtin": {"value": "3614271716026"},
+                },
+                "taxonomy": {"category": {"value": "Fragrance"},
+                             "product_type": {"value": "Eau de Toilette"}},
+                "research_plan": {"identity_first": False, "objectives": []},
+                "conflicts": [],
+            },
+        ),
     ])
     db.flush()
     db.add(listing)
