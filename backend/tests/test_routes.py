@@ -430,15 +430,18 @@ def test_bulk_improve_queues_durable_jobs_without_running_ai_in_request(client: 
     assert progress.json()["all_terminal"] is False
 
     jobs = db.query(CrawlJob).filter(CrawlJob.id.in_([uuid.UUID(value) for value in job_ids])).all()
-    jobs[0].status = "completed"
-    jobs[0].configuration = {**(jobs[0].configuration or {}), "result": {
+    jobs_by_id = {str(job.id): job for job in jobs}
+    completed_job = jobs_by_id[job_ids[0]]
+    failed_job = jobs_by_id[job_ids[1]]
+    completed_job.status = "completed"
+    completed_job.configuration = {**(completed_job.configuration or {}), "result": {
         "business_outcome": "improved", "business_status": "READY",
         "before_completeness": 40, "after_completeness": 82,
         "fields_added": ["description", "benefits"], "sources_ingested": 2,
     }}
-    jobs[1].status = "failed"
-    jobs[1].error_summary = "Research provider unavailable"
-    jobs[1].configuration = {**(jobs[1].configuration or {}), "result": {
+    failed_job.status = "failed"
+    failed_job.error_summary = "Research provider unavailable"
+    failed_job.configuration = {**(failed_job.configuration or {}), "result": {
         "business_outcome": "rate_limited_retriable",
         "business_status": "TECHNICAL_RETRY_REQUIRED",
         "before_completeness": 35, "after_completeness": 35,
