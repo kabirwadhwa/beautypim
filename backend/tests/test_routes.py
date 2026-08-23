@@ -4,7 +4,7 @@ import json
 import uuid
 from unittest.mock import patch
 from app.config import settings
-from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing, ProductTag
+from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing, ProductTag, CrawlJob
 
 def test_database_dialect_matches_environment(db):
     dialect_name = db.bind.dialect.name
@@ -418,6 +418,31 @@ def test_bulk_improve_queues_durable_jobs_without_running_ai_in_request(client: 
     assert response.json()["queued_count"] == 2
     assert response.json()["failed_count"] == 0
     assert all(item["web_search_planned"] for item in response.json()["items"])
+    job_ids = [item["research_job_id"] for item in response.json()["items"]]
+    progress = client.post(
+        "/api/products/bulk/actions/improve/status", headers=headers,
+        json={"research_job_ids": job_ids},
+    )
+    assert progress.status_code == 200, progress.text
+    assert progress.json()["requested_count"] == 2
+    assert progress.json()["pending_count"] == 2
+    assert progress.json()["progress_percent"] == 0
+    assert progress.json()["all_terminal"] is False
+
+    jobs = db.query(CrawlJob).filter(CrawlJob.id.in_([uuid.UUID(value) for value in job_ids])).all()
+    jobs[0].status = "completed"
+    jobs[1].status = "failed"
+    jobs[1].error_summary = "Research provider unavailable"
+    db.commit()
+    finished = client.post(
+        "/api/products/bulk/actions/improve/status", headers=headers,
+        json={"research_job_ids": job_ids},
+    )
+    assert finished.status_code == 200
+    assert finished.json()["progress_percent"] == 100
+    assert finished.json()["successful_count"] == 1
+    assert finished.json()["failed_count"] == 1
+    assert finished.json()["all_terminal"] is True
     process.assert_not_called()
 
 

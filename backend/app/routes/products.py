@@ -39,6 +39,10 @@ class BulkImproveRequest(BaseModel):
     mode: str = "missing_only"
 
 
+class BulkImproveStatusRequest(BaseModel):
+    research_job_ids: List[uuid.UUID]
+
+
 class ProductImproveRequest(BaseModel):
     mode: str = "missing_only"
     fields: List[str] = Field(default_factory=list)
@@ -1759,6 +1763,62 @@ def bulk_improve_products(
     }
 
 
+@router.post("/bulk/actions/improve/status")
+def bulk_improve_status(
+    req: BulkImproveStatusRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_viewer_or_above),
+):
+    """Return one authoritative progress snapshot for a set of improvement jobs."""
+    job_ids = list(dict.fromkeys(req.research_job_ids))
+    if not job_ids:
+        raise HTTPException(422, "Provide at least one research job.")
+    if len(job_ids) > 100:
+        raise HTTPException(422, "Bulk status supports up to 100 research jobs per request.")
+
+    jobs = db.query(CrawlJob).filter(
+        CrawlJob.id.in_(job_ids),
+        CrawlJob.domain == "product-research.internal",
+    ).all()
+    by_id = {job.id: job for job in jobs}
+    terminal = {"completed", "partially_completed", "failed", "blocked", "cancelled"}
+    successful = {"completed", "partially_completed"}
+    items = []
+    for job_id in job_ids:
+        job = by_id.get(job_id)
+        if not job:
+            items.append({
+                "research_job_id": str(job_id), "product_id": None,
+                "status": "failed", "terminal": True, "successful": False,
+                "error": "Research job not found.",
+            })
+            continue
+        configuration = job.configuration or {}
+        items.append({
+            "research_job_id": str(job.id),
+            "product_id": configuration.get("research_product_id"),
+            "status": job.status,
+            "terminal": job.status in terminal,
+            "successful": job.status in successful,
+            "error": job.error_summary,
+            "result": configuration.get("result"),
+        })
+
+    completed_count = sum(1 for item in items if item["terminal"])
+    successful_count = sum(1 for item in items if item["successful"])
+    failed_count = sum(1 for item in items if item["terminal"] and not item["successful"])
+    return {
+        "requested_count": len(job_ids),
+        "completed_count": completed_count,
+        "pending_count": len(job_ids) - completed_count,
+        "successful_count": successful_count,
+        "failed_count": failed_count,
+        "progress_percent": round((completed_count / len(job_ids)) * 100),
+        "all_terminal": completed_count == len(job_ids),
+        "items": items,
+    }
+
+
 @router.post("/bulk/actions", status_code=status.HTTP_200_OK)
 def bulk_product_action(
     req: BulkActionRequest,
@@ -1781,6 +1841,7 @@ def bulk_product_action(
 
     success_count = 0
     errors = []
+    items = []
 
     for pid in product_ids:
         try:
@@ -1789,7 +1850,13 @@ def bulk_product_action(
             elif action == "reject":
                 reject_product(pid, db, current_user)
             elif action == "re_enrich":
-                re_enrich_product(pid, db, current_user)
+                detail = re_enrich_product(pid, db, current_user)
+                improvement = detail.improvement_result or {}
+                items.append({
+                    "product_id": str(pid),
+                    "status": "queued" if improvement.get("research_pending") else "completed",
+                    "research_job_id": improvement.get("research_job_id"),
+                })
             elif action == "set_classification":
                 product = db.query(CanonicalProduct).filter(CanonicalProduct.id == pid, CanonicalProduct.is_deleted == False).first()
                 if not product:
@@ -1815,13 +1882,16 @@ def bulk_product_action(
         except HTTPException as e:
             db.rollback()
             errors.append({"product_id": str(pid), "error": e.detail})
+            items.append({"product_id": str(pid), "status": "failed", "error": e.detail})
         except Exception as e:
             db.rollback()
             errors.append({"product_id": str(pid), "error": str(e)})
+            items.append({"product_id": str(pid), "status": "failed", "error": str(e)})
 
     return {
         "action": action,
         "success_count": success_count,
         "failed_count": len(product_ids) - success_count,
-        "errors": errors
+        "errors": errors,
+        "items": items,
     }

@@ -44,6 +44,57 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     expect(requestedPages).toEqual([1, 2]);
   });
 
+  test('Bulk Improve displays durable progress through 100 percent', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('token', 'bulk-progress-token'));
+    await page.route('**/api/auth/me', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ email: 'admin@test.com', role: 'admin' }),
+    }));
+    const products = [1, 2].map(index => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      internal_code: `ICN-${index}`, product_name: `Bulk Product ${index}`,
+      brand_name: 'Bulk Brand', product_category: 'Skincare', subcategory: 'Face',
+      product_type: 'Moisturizer', category_path: 'Skincare > Face', gtin: null,
+      variant_count: 1, review_status: 'imported', validation_issue_count: 0,
+      highest_issue_severity: null, tags: [],
+    }));
+    await page.route('**/api/products?**', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify(new URL(route.request().url()).searchParams.get('page') === '1' ? products : []),
+    }));
+    await page.route('**/api/products/bulk/actions/improve', route => route.fulfill({
+      status: 202, contentType: 'application/json',
+      body: JSON.stringify({
+        queued_count: 2, skipped_count: 0, failed_count: 0,
+        items: products.map((product, index) => ({
+          product_id: product.id, status: 'queued',
+          research_job_id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        })),
+      }),
+    }));
+    let statusChecks = 0;
+    await page.route('**/api/products/bulk/actions/improve/status', route => {
+      statusChecks += 1;
+      const finished = statusChecks > 1;
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({
+          completed_count: finished ? 2 : 1, pending_count: finished ? 0 : 1,
+          successful_count: finished ? 2 : 1, failed_count: 0,
+          progress_percent: finished ? 100 : 50, all_terminal: finished,
+        }),
+      });
+    });
+
+    await page.goto('/products');
+    await page.getByRole('checkbox').first().check();
+    await page.getByRole('button', { name: /Improve selected \(2\)/ }).click();
+    await expect(page.getByLabel('Bulk progress 50%')).toBeVisible();
+    await expect(page.getByLabel('Bulk progress 100%')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('2 / 2 finished')).toBeVisible();
+    await expect(page.getByText('2 products improved.')).toBeVisible();
+  });
+
   test('User Login, CSV Ingestion, Mapping, Review, Approval, and Catalog Export Flow', async ({ page }) => {
     // 1. Login
     await page.goto('/login');
