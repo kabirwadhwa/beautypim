@@ -103,7 +103,8 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     await expect(page.getByLabel('Bulk progress 100%')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('2 / 2 finished')).toBeVisible();
     await expect(page.getByText('2 products improved.')).toBeVisible();
-    await expect(page.getByText('Bulk Product 1')).toBeVisible();
+    const completedProgress = page.getByRole('status').filter({ hasText: '2 / 2 finished' });
+    await expect(completedProgress.getByText('Bulk Product 1')).toBeVisible();
     await expect(page.getByText('42% → 84%').first()).toBeVisible();
   });
 

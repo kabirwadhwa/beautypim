@@ -4,6 +4,9 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
 
   test('bulk identity review queue supports rapid confirm navigation', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('token', 'test-token'));
+    await page.route('**/api/auth/me', route => route.fulfill({ json: {
+      email: 'admin@test.com', role: 'admin'
+    }}));
     await page.route('**/api/products?**', route => route.fulfill({ json: [] }));
     await page.route('**/api/products/identity-review-queue?**', route => route.fulfill({ json: {
       total: 2, page: 1, limit: 100, items: [
