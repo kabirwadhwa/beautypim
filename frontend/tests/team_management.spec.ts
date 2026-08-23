@@ -58,12 +58,14 @@ test.describe('Team & Access Management E2E Workflows', () => {
 
     // B. Create e2e_editor@test.com as an active editor
     await page.click('button:has-text("Add User Directly")');
+    await page.fill('input[placeholder="e.g. Priya Sharma"]', 'E2E Editor');
     await page.fill('input[placeholder="colleague@brand.com"]', 'e2e_editor@test.com');
     await page.selectOption('label:has-text("System Role") + select', 'editor');
     await page.fill('input[placeholder="At least 12 characters"]', 'newsecurepassword123');
     await page.click('button:has-text("Create Active User")');
 
-    const activeRow = page.locator('table').first().locator('tr:has-text("e2e_editor@test.com")');
+    // Member email addresses are intentionally private in the roster.
+    const activeRow = page.locator('table').first().locator('tr:has-text("E2E Editor")');
     await expect(activeRow).toBeVisible();
     await expect(activeRow.locator('text=Active')).toBeVisible();
 
@@ -87,8 +89,8 @@ test.describe('Team & Access Management E2E Workflows', () => {
     await expect(page).toHaveURL(/.*dashboard/);
     await page.goto('/settings/team');
 
-    // B. Select e2e_editor@test.com row specifically from the Organization Members table
-    const userRow = page.locator('table').first().locator('tr:has-text("e2e_editor@test.com")');
+    // B. Select the member by their public display name; emails are not rendered.
+    const userRow = page.locator('table').first().locator('tr:has-text("E2E Editor")');
     await expect(userRow).toBeVisible();
 
     // C. Disable user
