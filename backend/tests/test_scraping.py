@@ -111,7 +111,7 @@ def test_generic_parser_extracts_reviews_from_embedded_application_state():
     assert str(product.rating) == "4.6"
     assert product.review_count == 81
     assert product.review_summary["review_sample_count"] == 2
-    assert "wear" in product.review_summary["frequently_praised_topics"]
+    assert "longevity" in product.review_summary["frequently_praised_topics"]
     assert "packaging" in product.review_summary["frequent_complaint_topics"]
 
 

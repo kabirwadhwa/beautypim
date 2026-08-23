@@ -267,12 +267,12 @@ def retrieve_corpus_evidence(db: Session, *, gtin: str = "", source_product_id: 
         if target_module != "unknown" and candidate_module != "unknown" and target_module != candidate_module:
             continue
         brand_match = bool(norm_brand and item.normalized_brand == norm_brand)
-        name_overlap = len(_identity_terms(norm_name) & _identity_terms(item.normalized_product_name))
+        name_overlap = len(_identity_terms(norm_name) & _identity_terms(item.normalized_name))
         score = overlap + (3 if brand_match else 0) + (name_overlap * 2)
         if score < 3 or (not brand_match and name_overlap == 0):
             continue
         scored.append((score, item))
-    scored.sort(key=lambda row: (row[0], row[1].normalized_product_name), reverse=True)
+    scored.sort(key=lambda row: (row[0], row[1].normalized_name), reverse=True)
     ranked = [item for _, item in scored[:max_comparables]]
     return {"match_level": "comparable" if ranked else "unmatched", "exact_matches": [], "family_matches": [],
             "comparables": [_serialize_candidate(db, product, None, "comparable") for product in ranked],

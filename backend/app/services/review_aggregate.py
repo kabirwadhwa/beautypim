@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from app.models import Brand, CanonicalProduct, ImportJob, ProductVariant, ScrapedProductObservation, SourceListing
+from app.models import Brand, CanonicalProduct, Category, ImportJob, ProductVariant, ScrapedProductObservation, SourceListing
 
 
 def _integer(value: Any) -> int:
@@ -120,11 +120,12 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
     ).order_by(ProductVariant.created_at.desc()).first()
     if product and variant:
         brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product.brand_id else None
+        category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
         from app.knowledge_corpus.retrieval import retrieve_corpus_evidence, resolve_exact_field_evidence
         corpus = resolve_exact_field_evidence(retrieve_corpus_evidence(
             db, gtin=variant.gtin or "", brand=brand.name if brand else "",
             product_name=product.product_name, size=f"{variant.size or ''} {variant.unit or ''}".strip(),
-            category=product.category.path if product.category else "",
+            category=category.path if category else "",
         ))
         values = corpus.get("values") or {}
         rating, count, summary = values.get("rating"), values.get("review_count"), values.get("review_summary")

@@ -88,11 +88,12 @@ def queue_exact_formulation_research(db: Session, item: ImportJobItem, job: Impo
     ).first()
     if not product or not variant or not variant.gtin:
         return None
+    category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
     from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
     corpus = retrieve_corpus_evidence(
         db, gtin=variant.gtin or "", brand=product.brand.name if product.brand else "",
         product_name=product.product_name, size=f"{variant.size or ''} {variant.unit or ''}".strip(),
-        category=product.category.path if product.category else "",
+        category=category.path if category else "",
     )
     if corpus.get("match_level") != "exact_product":
         return None
