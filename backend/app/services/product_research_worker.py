@@ -370,8 +370,11 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         remaining_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
         from app.services.review_aggregate import select_review_aggregate
         current_reviews = select_review_aggregate(db, product.id) or {}
+        requested_review_objectives = {
+            "reviews", "review_summary", "rating", "review_count"
+        } & set(research_objectives)
         needs_review_text = bool(
-            {"reviews", "review_summary", "rating", "review_count"} & set(remaining_objectives)
+            requested_review_objectives
             and int(current_reviews.get("review_sample_count") or 0) < int(settings.WEB_RESEARCH_REVIEW_SAMPLE_TARGET)
         )
         needs_second_pass = bool(
