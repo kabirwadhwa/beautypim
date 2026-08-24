@@ -163,6 +163,12 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
             headline.append(f"{_clean(count)} reviews")
         if observation.get("review_quality") == "insufficient":
             headline.append("insufficient review evidence")
+        source_count = observation.get("review_source_count")
+        sample_count = observation.get("review_sample_count")
+        if source_count:
+            headline.append(f"{_clean(source_count)} sources")
+        if sample_count:
+            headline.append(f"{_clean(sample_count)} review samples")
         if headline:
             lines.append("  |  ".join(headline))
         if isinstance(summary, dict):
@@ -171,9 +177,18 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
                        or summary.get("sentiment"))
         if _clean(summary):
             lines.append(_clean(summary))
-        source = _clean(observation.get("source") or observation.get("source_name") or observation.get("source_domain"))
-        if source:
-            lines.append(f"Source: {source}")
+        summary_data = observation.get("review_summary") or {}
+        if isinstance(summary_data, dict):
+            for label, key in (("Positive", "positive_themes"), ("Negative", "negative_themes"), ("Mixed", "mixed_themes")):
+                values = summary_data.get(key) or []
+                if values:
+                    lines.append(f"{label}: " + "; ".join(_clean(value) for value in values[:4]))
+            if summary_data.get("evidence_limitation"):
+                lines.append(_clean(summary_data["evidence_limitation"]))
+        sources = observation.get("sources") or []
+        source_names = [_clean(item.get("domain") or item.get("name")) for item in sources if isinstance(item, dict)]
+        if source_names:
+            lines.append("Sources: " + ", ".join(source_names[:6]))
         return lines
     return []
 

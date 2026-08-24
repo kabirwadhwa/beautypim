@@ -209,6 +209,25 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
     }
     if domains:
         tool["filters"] = {"allowed_domains": domains[:100]}
+    objective_terms = {
+        "description": ["official product description"], "directions": ["how to use", "directions"],
+        "inci": ["ingredients", "INCI"], "ingredients": ["ingredients", "INCI"],
+        "reviews": ["customer reviews", "ratings reviews"], "review_summary": ["customer reviews"],
+        "rating": ["ratings reviews"], "review_count": ["customer reviews"],
+        "claims": ["official claims"], "image": ["official product image"],
+    }
+    objective_queries = []
+    base_queries = [str(row.get("query") or "").strip() for row in (identity_queries or []) if row.get("query")]
+    for objective in research_objectives or []:
+        for term in objective_terms.get(objective, [objective.replace("_", " ")]):
+            for base in (base_queries[:2] or [identity]):
+                objective_queries.append({"objective": objective, "query": f"{base} {term}".strip()})
+                if len(objective_queries) >= 20:
+                    break
+            if len(objective_queries) >= 20:
+                break
+        if len(objective_queries) >= 20:
+            break
     request = {
         "model": model,
         "background": True,
@@ -220,7 +239,7 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
                 "type": "object", "additionalProperties": False,
                 "properties": {
                     "market_observations": {
-                        "type": "array", "maxItems": 8,
+                        "type": "array", "maxItems": 16,
                         "items": {
                             "type": "object", "additionalProperties": False,
                             "properties": {
@@ -246,9 +265,11 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             f"Find the official brand product page and reputable retailer product pages for: {identity}. "
             f"Use these bounded identity queries in order until exact identity is established: "
             f"{json.dumps(identity_queries or [{'strategy': 'canonical', 'query': identity}])}. "
+            f"Then use these evidence-objective-specific queries rather than asking one page to provide everything: "
+            f"{json.dumps(objective_queries)}. "
             f"The unresolved high-value fields are: {', '.join(research_objectives or []) or 'official product evidence'}. "
             "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
-            "Include results from multiple distinct domains when available: the official page for identity and imagery, "
+            "Include up to eight useful distinct domains when available: the official page for identity and imagery, "
             "plus public retailer product pages that visibly expose aggregate rating or review-count evidence. "
             "Return a market_observations JSON array containing only exact-product evidence you directly found. "
             "For each source include its page URL, the GTIN, brand, exact displayed product name and variant that the "

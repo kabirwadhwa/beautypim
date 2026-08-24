@@ -142,11 +142,34 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
         return float(match.group()) if match else 0
     aggregate = max(aggregates, key=review_total, default={})
     reviews = max(review_sets, key=len, default=[])
+    # Some public retailer widgets render semantic review cards without
+    # serializing them into JSON-LD. Capture only public copy and rating; never
+    # retain author/profile/customer identifiers.
+    dom_reviews = []
+    for card in soup.select('[itemprop="review"], [data-testid*="review-card"], article[class*="review"]')[:100]:
+        body_node = card.select_one('[itemprop="reviewBody"], [data-testid*="review-content"], .review-content, .review-body')
+        body = " ".join((body_node.get_text(" ", strip=True) if body_node else "").split())
+        if len(body) < 20:
+            continue
+        rating_node = card.select_one('[itemprop="ratingValue"], [data-rating], [aria-label*="out of 5"]')
+        raw_rating = None
+        if rating_node:
+            raw_rating = rating_node.get("content") or rating_node.get("data-rating") or rating_node.get("aria-label") or rating_node.get_text(" ", strip=True)
+        match = re.search(r"([0-5](?:\.\d+)?)", str(raw_rating or ""))
+        dom_reviews.append({"reviewBody": body, "reviewRating": {"ratingValue": match.group(1)} if match else {}})
+    if len(dom_reviews) > len(reviews):
+        reviews = dom_reviews
     return aggregate, reviews
 
 
-def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
-    """Aggregate review signals without copying customer review text."""
+def _clean_review_text(value) -> str:
+    """Return useful public review copy without retaining reviewer identity/PII."""
+    text = BeautifulSoup(str(value or ""), "html.parser").get_text(" ", strip=True)
+    return " ".join(text.split())[:4000]
+
+
+def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | None = None) -> dict:
+    """Retain a bounded, de-identified exact-page sample plus aggregate signals."""
     reviews = node.get("review") or []
     if isinstance(reviews, dict):
         reviews = [reviews]
@@ -169,15 +192,33 @@ def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
     positive = {key: 0 for key in topics}
     negative = {key: 0 for key in topics}
     distribution: dict[str, int] = {}
+    samples = []
+    seen_samples = set()
     for review in reviews[:250]:
         if not isinstance(review, dict):
             continue
-        body = str(review.get("reviewBody") or review.get("description") or "").lower()
+        body_text = _clean_review_text(
+            review.get("reviewBody") or review.get("description") or review.get("text") or review.get("content")
+        )
+        body = body_text.lower()
         rating_obj = review.get("reviewRating") or {}
         rating = _decimal(rating_obj.get("ratingValue") if isinstance(rating_obj, dict) else rating_obj)
         if rating is not None:
             bucket = str(max(1, min(5, int(round(float(rating))))))
             distribution[bucket] = distribution.get(bucket, 0) + 1
+        sample_key = re.sub(r"\W+", "", body)[:1000]
+        if len(body_text) >= 20 and sample_key and sample_key not in seen_samples and len(samples) < 25:
+            seen_samples.add(sample_key)
+            samples.append({
+                "text": body_text,
+                "title": _clean_review_text(review.get("headline") or review.get("title"))[:300] or None,
+                "rating": float(rating) if rating is not None else None,
+                "date": str(review.get("datePublished") or review.get("date") or "")[:40] or None,
+                "source_url": source_url,
+                "locale": locale,
+                "verified_purchase": review.get("verifiedPurchase") if isinstance(review.get("verifiedPurchase"), bool) else None,
+                # Deliberately no author, email, profile URL or other reviewer PII.
+            })
         for topic, keywords in topics.items():
             if not any(keyword in body for keyword in keywords):
                 continue
@@ -189,10 +230,18 @@ def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
     complaints = [key for key, count in sorted(negative.items(), key=lambda item: item[1], reverse=True) if count][:5]
     if not reviews and not aggregate:
         return {}
+    aggregate_rating = _decimal(aggregate.get("ratingValue"))
+    best_rating = _decimal(aggregate.get("bestRating"))
+    normalized_rating = (
+        float(aggregate_rating) * 5 / float(best_rating)
+        if aggregate_rating is not None and best_rating is not None and float(best_rating) > 0
+        else float(aggregate_rating) if aggregate_rating is not None else None
+    )
     return {
-        "average_rating": float(_decimal(aggregate.get("ratingValue"))) if _decimal(aggregate.get("ratingValue")) is not None else None,
+        "average_rating": round(normalized_rating, 3) if normalized_rating is not None else None,
         "review_count": int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else len(reviews) or None,
-        "review_sample_count": len(reviews),
+        "review_sample_count": len(samples),
+        "review_samples": samples,
         "rating_distribution": distribution,
         "frequently_praised_topics": praised,
         "frequent_complaint_topics": complaints,
@@ -200,7 +249,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str) -> dict:
         "sillage_mentions": {"positive": positive["sillage"], "negative": negative["sillage"]},
         "packaging_mentions": {"positive": positive["packaging"], "negative": negative["packaging"]},
         "source_urls": [source_url],
-        "summary_method": "deterministic topic aggregation over visible review samples; no customer review text retained",
+        "summary_method": "deterministic topic aggregation; bounded de-identified review text retained when publicly visible",
     }
 
 
@@ -302,7 +351,7 @@ class GenericJsonLdAdapter(ProductAdapter):
             ],
             rating=_decimal(aggregate.get("ratingValue")),
             review_count=int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else None,
-            review_summary=_review_summary(node, aggregate, url),
+            review_summary=_review_summary(node, aggregate, url, locale),
             parser_version=PARSER_VERSION,
         )
         for key in product.model_fields:

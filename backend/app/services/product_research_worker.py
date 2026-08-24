@@ -364,6 +364,81 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         synchronize_blocking_issue(db, product, next_plan.get("identity_review") or {})
         result["identity_phase_completed"] = configuration.get("research_phase") == "identity_resolution"
         result["next_phase"] = next_plan.get("research_phase")
+        # A bounded second discovery pass is allowed only after persisted
+        # evidence has been reconciled and gaps recalculated.  This prevents a
+        # shallow/blocked first source set from falsely ending Improve Product.
+        remaining_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
+        from app.services.review_aggregate import select_review_aggregate
+        current_reviews = select_review_aggregate(db, product.id) or {}
+        needs_review_text = bool(
+            {"reviews", "review_summary", "rating", "review_count"} & set(remaining_objectives)
+            and int(current_reviews.get("review_sample_count") or 0) < int(settings.WEB_RESEARCH_REVIEW_SAMPLE_TARGET)
+        )
+        needs_second_pass = bool(
+            remaining_objectives
+            and not identity_only
+            and (int(result.get("sources_ingested") or 0) == 0 or needs_review_text)
+            and not configuration.get("second_pass_started")
+        )
+        if needs_second_pass:
+            _assign_configuration(job, second_pass_started=True)
+            db.commit()
+            alternate_queries = list(reversed(identity_queries[1:])) + identity_queries[:1]
+            second = start_product_source_discovery(
+                brand=product.brand.name if product.brand else "", product_name=product.product_name,
+                product_format=_product_expected_format(db, product), gtin=variant.gtin if variant else "",
+                approved_domains=[], research_objectives=remaining_objectives,
+                identity_queries=alternate_queries,
+            )
+            while second.get("status") in {"queued", "in_progress"}:
+                if stop_event and stop_event.is_set():
+                    return
+                time.sleep(2)
+                try:
+                    second = poll_product_source_discovery(second)
+                except SearchRateLimited as exc:
+                    if rate_limit_retries >= int(settings.OPENAI_WEB_RESEARCH_MAX_RETRIES):
+                        result.setdefault("errors", []).append("Bounded second discovery pass was rate limited after safe retries.")
+                        second = {**second, "status": "failed", "candidates": [], "market_observations": []}
+                        break
+                    rate_limit_retries += 1
+                    delay = max(exc.retry_after, settings.OPENAI_WEB_RESEARCH_BACKOFF_SECONDS * (2 ** (rate_limit_retries - 1)))
+                    retry_delays.append(round(delay, 3))
+                    time.sleep(delay)
+                    if exc.restart_required:
+                        second = start_product_source_discovery(
+                            brand=product.brand.name if product.brand else "", product_name=product.product_name,
+                            product_format=_product_expected_format(db, product), gtin=variant.gtin if variant else "",
+                            approved_domains=[], research_objectives=remaining_objectives,
+                            identity_queries=alternate_queries,
+                        )
+            second_market = _persist_discovery_market_evidence(
+                db, product, second, expected_gtin=variant.gtin if variant else "",
+            )
+            db.commit()
+            second_result = _automatic_product_research(
+                db, product, user, candidates=second.get("candidates") or [],
+                research_objectives=remaining_objectives,
+                research_variant_id=variant.id if variant else None,
+            )
+            result["second_pass"] = second_result
+            result["second_pass_used"] = True
+            result["sources_ingested"] = int(result.get("sources_ingested") or 0) + int(second_result.get("sources_ingested") or 0)
+            result["candidates"] = int(result.get("candidates") or 0) + int(second_result.get("candidates") or 0)
+            result["errors"] = list(result.get("errors") or []) + list(second_result.get("errors") or [])
+            result["image_found"] = bool(result.get("image_found") or second_result.get("image_found") or second_market.get("image_found"))
+            result["review_evidence_found"] = bool(result.get("review_evidence_found") or second_result.get("review_evidence_found") or second_market.get("review_evidence_found"))
+            result["review_evidence_found_this_run"] = bool(result.get("review_evidence_found_this_run") or second_result.get("review_evidence_found_this_run") or second_market.get("review_evidence_found"))
+            if import_job:
+                process_item_enrichment(
+                    db, item, import_job.column_mapping or {},
+                    mode=configuration.get("requested_mode") or "missing_only",
+                    selected_fields=configuration.get("selected_fields") or [],
+                )
+            next_plan = product_improvement_summary(db, product)
+            remaining_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
+        else:
+            result["second_pass_used"] = False
         if next_plan.get("research_phase") == "attribute_completion":
             attribute_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
             if attribute_objectives and configuration.get("research_phase") == "identity_resolution":
@@ -416,10 +491,13 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 result["review_summary_generated"] = False
             result["identity_unresolved"] = True
         result["identity_queries_tried"] = discovery.get("identity_queries_tried") or identity_queries
+        result["fields_still_missing"] = remaining_objectives
         result["web_requests_started"] = int(discovery.get("provider_attempts") or 1) + rate_limit_retries
         result["web_requests_retried"] = rate_limit_retries + len(discovery.get("retry_delays") or [])
         result["retry_delays"] = retry_delays
         result["provider"] = discovery.get("provider")
+        result["active_allowed_domains"] = discovery.get("domains") or []
+        result["queries_attempted"] = len(result.get("identity_queries_tried") or []) + max(0, len(research_objectives) * 2)
         result["provider_usage"] = discovery.get("usage") or {}
         result["blocked_domains"] = sorted({
             re.sub(r"^www\.", "", match.group(1).lower())

@@ -729,7 +729,12 @@ def _automatic_product_research(
                 break
     selected = []
     seen_domains = set()
-    source_limit = 6 if "inci" in set(research_objectives or []) else 3
+    objective_set = set(research_objectives or [])
+    review_objective = bool({"reviews", "review_summary", "rating", "review_count"} & objective_set)
+    source_limit = (
+        int(settings.WEB_RESEARCH_REVIEW_DOMAIN_LIMIT)
+        if review_objective else int(settings.WEB_RESEARCH_GENERAL_DOMAIN_LIMIT)
+    )
     for candidate in candidates:
         url = str(candidate.get("url") or "").strip()
         domain = (urlparse(url).hostname or "").lower()
@@ -793,11 +798,15 @@ def _automatic_product_research(
         return bool(row and (row.gtin or row.size or row.variant_name))
 
     review_signature_before = review_evidence_signature()
+    from app.services.review_aggregate import select_review_aggregate
     for url, domain in selected:
         configuration = {
             "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
-            "maximum_crawl_depth": 0, "maximum_pages": 1, "maximum_product_pages": 1,
-            "maximum_runtime_seconds": 45, "maximum_discovered_urls": 1,
+            "maximum_crawl_depth": 1 if review_objective else 0,
+            "maximum_pages": int(settings.WEB_RESEARCH_REVIEW_PAGES_PER_SOURCE) if review_objective else 1,
+            "maximum_product_pages": int(settings.WEB_RESEARCH_REVIEW_PAGES_PER_SOURCE) if review_objective else 1,
+            "maximum_runtime_seconds": 90 if review_objective else 45,
+            "maximum_discovered_urls": 20 if review_objective else 1,
             "use_sitemap": False, "use_category_discovery": False,
             "use_browser_rendering": bool(
                 {"reviews", "review_summary", "rating", "review_count"}
@@ -806,7 +815,7 @@ def _automatic_product_research(
             "allow_subdomains": False, "request_delay_seconds": 0.25,
             "per_domain_concurrency": 1, "retry_limit": 1,
             "request_timeout_seconds": 20, "maximum_response_bytes": 8000000,
-            "maximum_redirects": 5, "browser_page_limit": 1,
+            "maximum_redirects": 5, "browser_page_limit": 3 if review_objective else 1,
             "country": None, "locale": None, "rescrape_interval_hours": None,
             "recrawl_strategy": "crawl_once", "allowed_url_patterns": [],
             "denied_url_patterns": [], "include_editorial": False,
@@ -837,8 +846,13 @@ def _automatic_product_research(
                 # Official pages commonly provide imagery but no customer-review
                 # aggregate. Continue across distinct sources until both evidence
                 # needs are met, while retaining every source independently.
+                review_intelligence = select_review_aggregate(db, product.id) or {}
+                review_goal_met = (
+                    not review_objective
+                    or int(review_intelligence.get("review_sample_count") or 0) >= int(settings.WEB_RESEARCH_REVIEW_SAMPLE_TARGET)
+                )
                 if (
-                    product.image_url and has_review_evidence()
+                    product.image_url and review_goal_met
                     and (has_official_evidence() or has_formulation_evidence())
                     and has_variant_identity()
                 ):
@@ -860,6 +874,11 @@ def _automatic_product_research(
         "official_evidence_found": has_official_evidence(),
         "formulation_evidence_found": has_formulation_evidence(),
         "variant_identity_found": has_variant_identity(),
+        "queries_attempted": len((research_objectives or [])),
+        "candidate_domains_found": len(seen_domains),
+        "pages_attempted": len(selected),
+        "sources_blocked": len(errors),
+        "review_samples_collected": int((select_review_aggregate(db, product.id) or {}).get("review_sample_count") or 0),
         "errors": errors,
     }
 

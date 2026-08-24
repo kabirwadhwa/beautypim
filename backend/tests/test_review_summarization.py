@@ -22,7 +22,7 @@ def test_review_quality_thresholds_are_central_and_truthful():
     assert "1.0/5" not in " ".join(lines)
 
 
-def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch):
+def test_review_synthesis_reads_and_persists_actual_deidentified_samples(db, monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     brand = Brand(id=uuid.uuid4(), name="Review Lab", normalized_name=uuid.uuid4().hex)
     product = CanonicalProduct(
@@ -45,10 +45,14 @@ def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch)
         id=uuid.uuid4(), crawl_job_id=crawl.id, raw_page_id=page.id,
         canonical_product_id=product.id, source_name="Retail Data", source_domain="shop.example",
         source_url=url.url, canonical_url=url.url, identity_hash=uuid.uuid4().hex,
-        structured_hash=uuid.uuid4().hex, match_status="conflict", adapter_name="test",
+        structured_hash=uuid.uuid4().hex, match_status="matched", adapter_name="test",
         adapter_version="1", parser_version="1",
         normalized_payload={"rating": 4.7, "review_count": 128, "review_summary": {
-            "average_rating": 4.7, "review_count": 128, "review_sample_count": 24,
+            "average_rating": 4.7, "review_count": 128, "review_sample_count": 2,
+            "review_samples": [
+                {"text": "The silky texture absorbs quickly and the bottle feels sturdy.", "rating": 5},
+                {"text": "The serum works well but the price feels high for the quantity.", "rating": 3},
+            ],
             "frequently_praised_topics": ["texture", "packaging"],
             "frequent_complaint_topics": ["value"],
         }},
@@ -68,14 +72,49 @@ def test_review_synthesis_persists_four_evidence_grounded_lines(db, monkeypatch)
     db.commit()
     db.refresh(observation)
 
-    assert len(summary["ai_summary_lines"]) == 4
-    assert "texture" in " ".join(summary["ai_summary_lines"]).lower()
-    assert "value" in " ".join(summary["ai_summary_lines"]).lower()
+    assert summary["review_sample_count"] == 2
+    assert "2 de-identified review samples" in summary["ai_summary_text"]
     assert observation.normalized_payload["review_summary"]["summary_model"] == "deterministic-evidence-summary"
     selected = select_review_aggregate(db, product.id)
     assert selected["average_rating"] == 4.7
     assert selected["review_count"] == 128
     assert selected["evidence_reference"].endswith(str(observation.id))
+
+    second = ScrapedProductObservation(
+        id=uuid.uuid4(), crawl_job_id=crawl.id, raw_page_id=page.id,
+        canonical_product_id=product.id, source_name="Second Retailer", source_domain="other.example",
+        source_url="https://other.example/moon", canonical_url="https://other.example/moon",
+        identity_hash=uuid.uuid4().hex, structured_hash=uuid.uuid4().hex,
+        match_status="matched", adapter_name="test", adapter_version="1", parser_version="1",
+        normalized_payload={"rating": 5.0, "review_count": 8, "review_summary": {
+            "average_rating": 5.0, "review_count": 8,
+            "review_samples": [
+                {"text": "The silky texture absorbs quickly and the bottle feels sturdy.", "rating": 5},
+                {"text": "A lightweight formula that layers well under makeup every morning.", "rating": 5},
+            ],
+        }},
+    )
+    db.add(second); db.commit()
+    combined = select_review_aggregate(db, product.id)
+    assert combined["average_rating"] == round((4.7 * 128 + 5.0 * 8) / 136, 3)
+    assert combined["represented_review_count"] == 136
+    assert combined["review_source_count"] == 2
+    assert combined["review_sample_count"] == 3  # duplicate sample removed across sources
+
+    wrong_variant = ScrapedProductObservation(
+        id=uuid.uuid4(), crawl_job_id=crawl.id, raw_page_id=page.id,
+        canonical_product_id=product.id, source_name="Wrong Variant", source_domain="wrong.example",
+        source_url="https://wrong.example/sibling", canonical_url="https://wrong.example/sibling",
+        identity_hash=uuid.uuid4().hex, structured_hash=uuid.uuid4().hex,
+        match_status="conflict", adapter_name="test", adapter_version="1", parser_version="1",
+        normalized_payload={"rating": 1.0, "review_count": 9999, "review_summary": {
+            "review_samples": [{"text": "This is a different shade and must never enter the exact product summary.", "rating": 1}]
+        }},
+    )
+    db.add(wrong_variant); db.commit()
+    safe = select_review_aggregate(db, product.id)
+    assert safe["represented_review_count"] == 136
+    assert all(sample["source_domain"] != "wrong.example" for sample in safe["review_summary"]["review_samples"])
 
 
 def test_selector_always_exposes_truthful_summary_for_aggregate_only_evidence(db):
@@ -114,8 +153,9 @@ def test_selector_always_exposes_truthful_summary_for_aggregate_only_evidence(db
     selected = select_review_aggregate(db, product.id)
     assert selected["average_rating"] == 4.5
     assert selected["review_count"] == 44
-    assert len(selected["review_summary"]["ai_summary_lines"]) == 4
-    assert "does not invent customer opinions" in selected["review_summary"]["ai_summary_text"]
+    assert selected["review_sample_count"] == 0
+    assert selected["evidence_strength"] == "aggregate_only"
+    assert "review-text evidence was insufficient" in selected["review_summary"]["evidence_limitation"]
 
 
 def test_selector_uses_cited_web_search_field_evidence_when_retailer_blocks_crawl(db):
@@ -146,7 +186,8 @@ def test_selector_uses_cited_web_search_field_evidence_when_retailer_blocks_craw
     assert selected["review_count"] == 920
     assert selected["source_domain"] == "retailer.example"
     assert selected["match_scope"] == "exact_product"
-    assert len(selected["review_summary"]["ai_summary_lines"]) == 4
+    assert selected["review_sample_count"] == 0
+    assert selected["review_summary"]["evidence_limitation"]
 
 
 def test_review_synthesis_accepts_top_level_aggregate_rating(db, monkeypatch):
@@ -194,9 +235,9 @@ def test_review_synthesis_accepts_top_level_aggregate_rating(db, monkeypatch):
 
     assert summary["average_rating"] == 4.5
     assert summary["review_count"] == 37
-    assert len(summary["ai_summary_lines"]) == 4
-    assert "4.5/5" in summary["ai_summary_lines"][0]
-    assert observation.normalized_payload["review_summary"]["summary_model"] == "deterministic-evidence-summary"
+    assert summary["ai_summary_text"] is None
+    assert "review-text evidence was insufficient" in summary["evidence_limitation"]
+    assert observation.normalized_payload["review_summary"]["summary_model"] == "aggregate-only-no-synthesis"
 
 
 def test_source_listing_review_summary_is_persisted_and_reused(db, monkeypatch):
@@ -214,5 +255,5 @@ def test_source_listing_review_summary_is_persisted_and_reused(db, monkeypatch):
                                         FieldValue.field_name == "review_summary", FieldValue.is_current == True).one()
     selected = select_review_aggregate(db, product.id)
     assert summary == saved.value
-    assert selected["review_summary"]["summary"] == saved.value["summary"]
+    assert selected["review_summary"]["summary"] is None
     assert selected["average_rating"] == 4.8

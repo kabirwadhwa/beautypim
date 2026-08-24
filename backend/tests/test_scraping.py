@@ -111,6 +111,9 @@ def test_generic_parser_extracts_reviews_from_embedded_application_state():
     assert str(product.rating) == "4.6"
     assert product.review_count == 81
     assert product.review_summary["review_sample_count"] == 2
+    assert len(product.review_summary["review_samples"]) == 2
+    assert product.review_summary["review_samples"][0]["text"].startswith("Beautiful shade")
+    assert "author" not in product.review_summary["review_samples"][0]
     assert "longevity" in product.review_summary["frequently_praised_topics"]
     assert "packaging" in product.review_summary["frequent_complaint_topics"]
 

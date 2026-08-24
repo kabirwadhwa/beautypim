@@ -61,6 +61,13 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
             "review_quality": review.get("review_quality"),
             "review_summary": (review.get("review_summary") or {}).get("ai_summary_text"),
             "review_source": review.get("source"),
+            "review_source_count": review.get("review_source_count"),
+            "review_sample_count": review.get("review_sample_count"),
+            "review_evidence_strength": review.get("evidence_strength"),
+            "review_positive_themes": "; ".join((review.get("review_summary") or {}).get("positive_themes") or []),
+            "review_negative_themes": "; ".join((review.get("review_summary") or {}).get("negative_themes") or []),
+            "review_mixed_themes": "; ".join((review.get("review_summary") or {}).get("mixed_themes") or []),
+            "review_evidence_limitation": (review.get("review_summary") or {}).get("evidence_limitation"),
         })
 
         # Apply strict priority selection algorithm:

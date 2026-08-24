@@ -94,7 +94,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
     ).first()
     rows = db.query(ScrapedProductObservation).filter(
         ScrapedProductObservation.canonical_product_id == product_id,
-        ScrapedProductObservation.match_status.in_(["matched", "conflict"]),
+        ScrapedProductObservation.match_status == "matched",
     ).order_by(ScrapedProductObservation.scraped_at.desc()).limit(100).all()
     candidates = []
     for row in rows:
@@ -116,8 +116,6 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             _integer(count),
             row.scraped_at,
         )
-        if saved_summary and isinstance(saved_summary.value, dict):
-            summary = {**summary, **saved_summary.value}
         summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         candidates.append((score, row, payload, summary, rating, count, scope))
     # Licensed search may expose a cited exact-product aggregate even when the
@@ -136,7 +134,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         count = count_field.value if count_field else None
         source_field = count_field or rating_field
         source_url = source_field.source_reference if source_field else None
-        summary = saved_summary.value if saved_summary and isinstance(saved_summary.value, dict) else {}
+        summary = {}
         summary = _summary_or_aggregate_fallback(summary, rating, count)
         result = {
             "average_rating": float(rating) if rating not in (None, "") else None,
@@ -164,8 +162,6 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         if rating in (None, "") and count in (None, "") and not summary:
             continue
         summary = summary if isinstance(summary, dict) else ({"summary": summary} if summary else {})
-        if saved_summary and isinstance(saved_summary.value, dict):
-            summary = {**summary, **saved_summary.value}
         summary = _summary_or_aggregate_fallback(summary, rating, count) or {}
         result = {
             "average_rating": float(rating) if rating not in (None, "") else None,
@@ -205,17 +201,128 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             candidates.append(((2, 2, _quality_rank(rating, count), 1 if summary else 0, 0, _integer(count), product.updated_at), None, result, {}, rating, count, "exact_variant"))
     if not candidates:
         return None
-    _, row, payload, summary, rating, count, scope = max(candidates, key=lambda item: item[0])
-    if row is None:
-        return _with_quality(payload)
+
+    # Build one canonical, exact-identity Review Intelligence object.  Every
+    # downstream surface consumes this result rather than independently
+    # choosing one convenient retailer row.
+    entries: list[dict[str, Any]] = []
+    for _, row, payload, summary, rating, count, scope in candidates:
+        if row is None:
+            source = payload.get("source")
+            domain = payload.get("source_domain")
+            observed = payload.get("observation_date")
+            reference = payload.get("evidence_reference")
+        else:
+            source = row.source_name
+            domain = row.source_domain or (urlparse(row.source_url).hostname if row.source_url else None)
+            observed = row.scraped_at
+            reference = f"scraped_product_observation:{row.id}"
+        domain = str(domain or "").lower().removeprefix("www.") or None
+        entries.append({
+            "rating": float(rating) if rating not in (None, "") else None,
+            "count": _integer(count) if count not in (None, "") else 0,
+            "summary": summary or {}, "source": source, "domain": domain,
+            "observed_at": observed, "reference": reference, "scope": scope,
+            "observation_id": row.id if row else None,
+        })
+
+    # Suppress syndicated duplicates without destroying independent evidence.
+    unique_aggregates: dict[tuple, dict] = {}
+    for entry in entries:
+        key = (entry["domain"] or entry["source"] or entry["reference"], entry["rating"], entry["count"])
+        previous = unique_aggregates.get(key)
+        if not previous or str(entry.get("observed_at") or "") > str(previous.get("observed_at") or ""):
+            unique_aggregates[key] = entry
+    aggregate_rows = list(unique_aggregates.values())
+    weighted = [(entry["rating"], max(entry["count"], 1)) for entry in aggregate_rows if entry["rating"] is not None]
+    average = (sum(rating * weight for rating, weight in weighted) / sum(weight for _, weight in weighted)) if weighted else None
+    represented = sum(entry["count"] for entry in aggregate_rows)
+
+    samples: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    per_source: dict[str, int] = {}
+    for entry in sorted(entries, key=lambda value: (value["count"], str(value.get("observed_at") or "")), reverse=True):
+        source_key = entry["domain"] or entry["source"] or "unknown"
+        for sample in entry["summary"].get("review_samples") or []:
+            if not isinstance(sample, dict):
+                continue
+            text = " ".join(str(sample.get("text") or "").split())[:4000]
+            normalized = "".join(char for char in text.lower() if char.isalnum())
+            if len(text) < 20 or not normalized or normalized in seen_text or per_source.get(source_key, 0) >= 25:
+                continue
+            seen_text.add(normalized)
+            per_source[source_key] = per_source.get(source_key, 0) + 1
+            samples.append({
+                "text": text, "title": sample.get("title"), "rating": sample.get("rating"),
+                "date": sample.get("date"), "locale": sample.get("locale"),
+                "verified_purchase": sample.get("verified_purchase"),
+                "source_domain": entry["domain"],
+                "source_url": sample.get("source_url"),
+                "observation_date": entry.get("observed_at"), "match_scope": entry.get("scope"),
+            })
+            if len(samples) >= 100:
+                break
+        if len(samples) >= 100:
+            break
+
+    sources = []
+    seen_sources = set()
+    for entry in aggregate_rows:
+        source_key = entry["domain"] or entry["source"] or entry["reference"]
+        if source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        sources.append({
+            "name": entry["source"], "domain": entry["domain"], "observation_date": entry["observed_at"],
+            "review_count": entry["count"] or None, "average_rating": entry["rating"],
+            "evidence_reference": entry["reference"], "match_scope": entry["scope"],
+        })
+    source_count = len(sources)
+    if len(samples) >= 20 and source_count >= 2:
+        strength = "strong"
+    elif len(samples) >= 5:
+        strength = "moderate"
+    elif samples:
+        strength = "limited"
+    elif average is not None or represented:
+        strength = "aggregate_only"
+    else:
+        strength = "none"
+
+    best = max(entries, key=lambda entry: (_quality_rank(entry["rating"], entry["count"]), entry["count"], str(entry.get("observed_at") or "")))
+    summary = dict(best.get("summary") or {})
+    if saved_summary and isinstance(saved_summary.value, dict):
+        summary.update(saved_summary.value)
+    summary.update({
+        "average_rating": round(average, 3) if average is not None else None,
+        "review_count": represented or None,
+        "represented_review_count": represented or None,
+        "review_source_count": source_count,
+        "source_count": source_count,
+        "review_sample_count": len(samples),
+        "review_samples": samples,
+        "evidence_strength": strength,
+        "sources": sources,
+        "source_breakdown": sources,
+    })
+    if not samples:
+        summary = _summary_or_aggregate_fallback(summary, average, represented) or summary
+        summary["evidence_limitation"] = (
+            "Aggregate rating and count evidence is available, but review-text evidence was insufficient for a detailed summary."
+            if average is not None or represented else "No reliable review intelligence available yet."
+        )
     return _with_quality({
-        "average_rating": float(rating) if rating not in (None, "") else None,
-        "review_count": _integer(count) if count not in (None, "") else None,
-        "review_summary": summary or None,
-        "source": row.source_name,
-        "source_domain": row.source_domain or (urlparse(row.source_url).hostname if row.source_url else None),
-        "observation_date": row.scraped_at,
-        "match_scope": scope,
-        "evidence_reference": f"scraped_product_observation:{row.id}",
-        "observation_id": row.id,
+        "average_rating": round(average, 3) if average is not None else None,
+        "review_count": represented or None,
+        "represented_review_count": represented or None,
+        "review_source_count": source_count,
+        "source_count": source_count,
+        "review_sample_count": len(samples),
+        "evidence_strength": strength,
+        "sources": sources,
+        "source_breakdown": sources,
+        "review_summary": summary,
+        "source": best["source"], "source_domain": best["domain"],
+        "observation_date": best["observed_at"], "match_scope": best["scope"],
+        "evidence_reference": best["reference"], "observation_id": best["observation_id"],
     })

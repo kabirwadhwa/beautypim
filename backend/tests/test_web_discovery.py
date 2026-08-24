@@ -184,13 +184,20 @@ def test_durable_discovery_persists_and_polls_the_same_response(post, get, monke
         "id": "resp_durable", "status": "completed", "output": [],
     }
 
-    state = start_product_source_discovery(brand="YSL", product_name="Y", product_format="Eau de Toilette")
+    state = start_product_source_discovery(
+        brand="YSL", product_name="Y", product_format="Eau de Toilette",
+        research_objectives=["inci", "reviews"],
+        identity_queries=[{"strategy": "canonical", "query": "YSL Y Eau de Toilette"}],
+    )
     assert state["response_id"] == "resp_durable"
     assert state["status"] == "queued"
 
     completed = poll_product_source_discovery(state)
     assert completed["status"] == "completed"
     assert post.call_count == 1
+    prompt = post.call_args.kwargs["json"]["input"]
+    assert "YSL Y Eau de Toilette ingredients" in prompt
+    assert "YSL Y Eau de Toilette customer reviews" in prompt
     get.assert_called_once()
 
 

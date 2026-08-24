@@ -226,6 +226,7 @@ export default function ProductDetailPage() {
   const [identityDraft, setIdentityDraft] = useState<Record<string, string>>({});
   const [identityReviewMessage, setIdentityReviewMessage] = useState<string | null>(null);
   const [activeResearchJobId, setActiveResearchJobId] = useState<string | null>(null);
+  const [researchDiagnostics, setResearchDiagnostics] = useState<Record<string, any> | null>(null);
   const [tagDraft, setTagDraft] = useState('');
   const [tagSaving, setTagSaving] = useState(false);
 
@@ -241,6 +242,13 @@ export default function ProductDetailPage() {
       setCategoryDraft(data.product_category || '');
       setSubcategoryDraft(data.subcategory || '');
       setImageLoadFailed(false);
+      try {
+        const statusResp = await fetch(`${API_URL}/products/${productId}/research-status`, { headers });
+        if (statusResp.ok) {
+          const status = await statusResp.json();
+          setResearchDiagnostics(status.result || null);
+        }
+      } catch { setResearchDiagnostics(null); }
       try {
         const researchResp = await fetch(`${API_URL}/products/${productId}/research-results`, { headers });
         if (researchResp.ok) setResearchResults(await researchResp.json());
@@ -270,6 +278,7 @@ export default function ProductDetailPage() {
         });
         if (!response.ok) throw new Error('Research status is temporarily unavailable.');
         const status = await response.json();
+        setResearchDiagnostics(status.result || null);
         if (cancelled) return;
         if (status.research_pending) {
           setNotice('Catalogue enrichment is complete. Image and review research is continuing in the background.');
@@ -825,10 +834,16 @@ export default function ProductDetailPage() {
     ? null
     : (reviewObservation?.data?.rating ?? reviewSummary.average_rating);
   const reviewCount = reviewObservation?.data?.review_count ?? reviewSummary.review_count;
-  const reviewSummaryLines = Array.isArray(reviewSummary.ai_summary_lines)
-    ? reviewSummary.ai_summary_lines.filter((line: any) => String(line || '').trim()).slice(0, 5)
-    : String(reviewSummary.ai_summary_text || reviewSummary.summary || '')
-      .split(/\n+/).map((line: string) => line.trim()).filter(Boolean).slice(0, 5);
+  const reviewSummaryText = String(reviewSummary.ai_summary_text || reviewSummary.summary || '').trim();
+  const reviewSamples = Number(product?.review_aggregate?.review_sample_count ?? reviewSummary.review_sample_count ?? 0);
+  const reviewSources = Array.isArray(product?.review_aggregate?.sources) ? product.review_aggregate.sources : [];
+  const reviewSourceCount = Number(product?.review_aggregate?.review_source_count ?? reviewSummary.review_source_count ?? reviewSources.length);
+  const reviewStrength = product?.review_aggregate?.evidence_strength || reviewSummary.evidence_strength || 'none';
+  const themeGroups = [
+    ['Positive themes', reviewSummary.positive_themes || [], '#6ee7b7'],
+    ['Negative themes', reviewSummary.negative_themes || [], '#fca5a5'],
+    ['Mixed / polarizing', reviewSummary.mixed_themes || [], '#fde68a'],
+  ] as const;
 
   return (
     <Shell>
@@ -1170,40 +1185,72 @@ export default function ProductDetailPage() {
       <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
           <Star size={18} color="#fbbf24" />
-          <span>Customer Reviews</span>
+          <span>Review Intelligence</span>
         </div>
         {reviewObservation ? (
           <div style={{ marginTop: 14, padding: 18, borderRadius: 10, border: '1px solid #334155', background: '#10192c' }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px 16px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px 20px' }}>
               <div style={{ color: '#f8fafc', fontSize: 28, fontWeight: 800 }}>
                 {reviewRating != null ? `${Number(reviewRating).toFixed(1)} / 5` : 'Rating unavailable'}
               </div>
               {reviewCount != null && (
-                <div style={{ color: '#94a3b8', fontSize: 14 }}>{Number(reviewCount).toLocaleString()} customer reviews</div>
+                <div style={{ color: '#94a3b8', fontSize: 14 }}>{Number(reviewCount).toLocaleString()} represented reviews</div>
               )}
+              <div style={{ color: '#94a3b8', fontSize: 13 }}>{reviewSourceCount} source{reviewSourceCount === 1 ? '' : 's'} · {reviewSamples} actual review sample{reviewSamples === 1 ? '' : 's'}</div>
+              <span style={{ color: reviewStrength === 'strong' ? '#6ee7b7' : reviewStrength === 'none' ? '#fca5a5' : '#fde68a', fontSize: 12, textTransform: 'uppercase', fontWeight: 800 }}>{String(reviewStrength).replaceAll('_', ' ')}</span>
             </div>
-            <div style={{ color: '#c4b5fd', fontSize: 14, fontWeight: 750, marginTop: 16, marginBottom: 9 }}>AI Review Summary</div>
-            {reviewSummaryLines.length > 0 ? (
-              <div style={{ display: 'grid', gap: 8 }}>
-                {reviewSummaryLines.map((line: string, index: number) => (
-                  <div key={`${index}-${line}`} style={{ display: 'flex', gap: 9, color: '#e2e8f0', fontSize: 14, lineHeight: 1.5 }}>
-                    <span style={{ color: '#818cf8', fontWeight: 800 }}>•</span>
-                    <span>{line}</span>
-                  </div>
-                ))}
+            {reviewSamples > 0 && reviewSummaryText ? (
+              <>
+                <div style={{ color: '#c4b5fd', fontSize: 14, fontWeight: 750, marginTop: 16, marginBottom: 9 }}>AI Review Summary</div>
+                <p style={{ color: '#e2e8f0', fontSize: 14, lineHeight: 1.65, margin: 0 }}>{reviewSummaryText}</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 10, marginTop: 14 }}>
+                  {themeGroups.map(([label, themes, color]) => (
+                    <div key={label} style={{ padding: 12, borderRadius: 8, border: '1px solid #334155' }}>
+                      <strong style={{ color, fontSize: 12 }}>{label}</strong>
+                      {themes.length ? <ul style={{ margin: '7px 0 0 17px', color: '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>{themes.map((theme: string) => <li key={theme}>{theme}</li>)}</ul>
+                        : <div style={{ color: '#64748b', fontSize: 12, marginTop: 7 }}>No reliable recurring theme established.</div>}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : reviewRating != null || reviewCount != null ? (
+              <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5, marginTop: 14 }}>
+                Aggregate rating and count evidence is available, but review-text evidence was insufficient for a detailed summary.
               </div>
             ) : (
               <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5 }}>
-                A reliable review summary is not available from the current review evidence yet.
+                No reliable review intelligence available yet.
               </div>
             )}
+            {reviewSummary.evidence_limitation && <div style={{ color: '#fbbf24', fontSize: 12, marginTop: 12 }}>{reviewSummary.evidence_limitation}</div>}
+            {reviewSources.length > 0 && <details style={{ marginTop: 14, color: '#94a3b8', fontSize: 12 }}>
+              <summary style={{ cursor: 'pointer', color: '#93c5fd' }}>Review evidence sources ({reviewSources.length})</summary>
+              <div style={{ display: 'grid', gap: 5, marginTop: 8 }}>{reviewSources.map((source: any, index: number) => <div key={`${source.domain || source.name}-${index}`}>{source.domain || source.name || 'Recorded source'}{source.review_count ? ` · ${Number(source.review_count).toLocaleString()} reviews` : ''}</div>)}</div>
+            </details>}
           </div>
         ) : (
           <div style={{ marginTop: 12, padding: 14, borderRadius: 8, border: '1px dashed #334155', color: '#94a3b8', fontSize: 13 }}>
-            No customer rating or review evidence has been recorded for this exact product yet.
+            No reliable review intelligence available yet.
           </div>
         )}
       </div>
+
+      {researchDiagnostics && <details className={styles.panelCard} style={{ marginBottom: 20 }}>
+        <summary className={styles.panelTitle} style={{ cursor: 'pointer' }}><Search size={18} color="#60a5fa"/><span>Research details</span></summary>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 14 }}>
+          {[
+            ['Queries attempted', (researchDiagnostics.identity_queries_tried || []).length || researchDiagnostics.queries_attempted || 0],
+            ['Candidate domains', researchDiagnostics.candidate_domains_found ?? researchDiagnostics.candidates ?? 0],
+            ['Sources ingested', researchDiagnostics.sources_ingested ?? 0],
+            ['Blocked sources', (researchDiagnostics.blocked_domains || []).length || researchDiagnostics.sources_blocked || 0],
+            ['Review samples', researchDiagnostics.review_samples_collected ?? reviewSamples],
+            ['Fields added', (researchDiagnostics.fields_added || []).length],
+            ['Fields still missing', (researchDiagnostics.fields_still_missing || []).length],
+            ['Domain policy', (researchDiagnostics.active_allowed_domains || []).length ? `${researchDiagnostics.active_allowed_domains.length} allowed` : 'Unrestricted public web'],
+          ].map(([label, value]) => <div key={String(label)} style={{ padding: 10, border: '1px solid #283756', borderRadius: 7 }}><div style={{ color: '#64748b', fontSize: 11 }}>{label}</div><strong style={{ fontSize: 16 }}>{String(value)}</strong></div>)}
+        </div>
+        {!!(researchDiagnostics.blocked_domains || []).length && <div style={{ color: '#fbbf24', fontSize: 12, marginTop: 10 }}>Blocked: {researchDiagnostics.blocked_domains.join(', ')}</div>}
+      </details>}
 
       <div className={styles.detailGrid}>
         <div>
