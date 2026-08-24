@@ -11,6 +11,17 @@ from urllib.parse import urlparse
 from app.models import Brand, CanonicalProduct, Category, ImportJob, ProductVariant, ScrapedProductObservation, SourceListing
 
 
+def _json_safe(value: Any) -> Any:
+    """Return values safe for JSON/JSONB persistence and API serialization."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
 def _integer(value: Any) -> int:
     try:
         return int(float(str(value or 0).replace(",", "")))
@@ -258,7 +269,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
                 "verified_purchase": sample.get("verified_purchase"),
                 "source_domain": entry["domain"],
                 "source_url": sample.get("source_url"),
-                "observation_date": entry.get("observed_at"), "match_scope": entry.get("scope"),
+                "observation_date": _json_safe(entry.get("observed_at")), "match_scope": entry.get("scope"),
             })
             if len(samples) >= 100:
                 break
@@ -273,7 +284,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
             continue
         seen_sources.add(source_key)
         sources.append({
-            "name": entry["source"], "domain": entry["domain"], "observation_date": entry["observed_at"],
+            "name": entry["source"], "domain": entry["domain"], "observation_date": _json_safe(entry["observed_at"]),
             "review_count": entry["count"] or None, "average_rating": entry["rating"],
             "evidence_reference": entry["reference"], "match_scope": entry["scope"],
         })
@@ -321,8 +332,8 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         "evidence_strength": strength,
         "sources": sources,
         "source_breakdown": sources,
-        "review_summary": summary,
+        "review_summary": _json_safe(summary),
         "source": best["source"], "source_domain": best["domain"],
-        "observation_date": best["observed_at"], "match_scope": best["scope"],
+        "observation_date": _json_safe(best["observed_at"]), "match_scope": best["scope"],
         "evidence_reference": best["reference"], "observation_id": best["observation_id"],
     })

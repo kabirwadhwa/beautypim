@@ -8,7 +8,7 @@ from typing import Any
 import requests
 
 from app.config import settings
-from app.models import Brand, CanonicalProduct, FieldValue, ScrapedProductObservation
+from app.models import Brand, CanonicalProduct, Category, FieldValue, ScrapedProductObservation
 
 
 def _words(value: str) -> int:
@@ -111,7 +111,8 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
     if samples:
         product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
         brand = db.query(Brand).filter(Brand.id == product.brand_id).first() if product and product.brand_id else None
-        category = product.category.path if product and product.category else ""
+        category_row = db.query(Category).filter(Category.id == product.category_id).first() if product and product.category_id else None
+        category = category_row.path if category_row else ""
         paragraph, positive, negative, mixed, model = _ai_intelligence(
             base, product.product_name if product else "", brand.name if brand else "", category,
         )
