@@ -109,12 +109,51 @@ def _embedded_ingredient_text(soup: BeautifulSoup):
     return max(candidates, default=None)
 
 
+_REVIEW_BODY_KEYS = (
+    "reviewBody", "review_body", "reviewText", "review_text", "contentText",
+    "content_text", "body", "text", "comment", "comments", "content", "description",
+    "message",
+)
+
+
+def _review_text_value(value) -> str:
+    if isinstance(value, str):
+        return _clean_review_text(value)
+    if isinstance(value, dict):
+        for key in ("text", "body", "content", "value", "rendered", "html"):
+            text = _review_text_value(value.get(key))
+            if text:
+                return text
+    if isinstance(value, list):
+        return _clean_review_text(" ".join(str(item) for item in value if isinstance(item, str)))
+    return ""
+
+
+def _normalize_review_record(review: dict) -> dict:
+    """Normalize common public review-widget shapes without retaining author PII."""
+    body = ""
+    for key in _REVIEW_BODY_KEYS:
+        body = _review_text_value(review.get(key))
+        if body:
+            break
+    rating = review.get("reviewRating") or review.get("rating") or review.get("score") or review.get("stars")
+    if isinstance(rating, dict):
+        rating = rating.get("ratingValue") or rating.get("value") or rating.get("score") or rating.get("rating")
+    return {
+        "reviewBody": body,
+        "reviewRating": {"ratingValue": rating} if rating not in (None, "") else {},
+        "headline": _review_text_value(review.get("headline") or review.get("title") or review.get("subject")),
+        "datePublished": review.get("datePublished") or review.get("createdAt") or review.get("created_at") or review.get("date"),
+        "verifiedPurchase": review.get("verifiedPurchase") if isinstance(review.get("verifiedPurchase"), bool) else None,
+    }
+
+
 def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
     """Find public review aggregates/samples in embedded application state."""
     aggregates: list[dict] = []
     review_sets: list[list] = []
 
-    def walk(value):
+    def walk(value, parent_key=""):
         if isinstance(value, dict):
             lower = {str(key).lower(): child for key, child in value.items()}
             aggregate = lower.get("aggregaterating") or lower.get("aggregate_rating")
@@ -122,14 +161,27 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
                 aggregates.append(aggregate)
             reviews = lower.get("reviews") or lower.get("review")
             if isinstance(reviews, list) and any(isinstance(row, dict) for row in reviews):
-                review_sets.append(reviews)
-            for child in value.values():
+                review_sets.append([_normalize_review_record(row) for row in reviews if isinstance(row, dict)])
+            elif isinstance(reviews, dict):
+                review_sets.append([_normalize_review_record(reviews)])
+            body_keys = {key.lower() for key in _REVIEW_BODY_KEYS}
+            has_review_body = bool(body_keys & set(lower))
+            has_review_signal = bool({
+                "reviewrating", "review_rating", "rating", "score", "stars",
+                "verifiedpurchase", "verified_purchase", "datepublished",
+            } & set(lower))
+            # Public review endpoints frequently call their arrays `results`,
+            # `items` or `data`. Detect record semantics instead of relying on
+            # one widget vendor's container name.
+            if has_review_body and ("review" in parent_key or has_review_signal):
+                review_sets.append([_normalize_review_record(value)])
+            for key, child in value.items():
                 if isinstance(child, (dict, list)):
-                    walk(child)
+                    walk(child, str(key).lower())
         elif isinstance(value, list):
             for child in value:
                 if isinstance(child, (dict, list)):
-                    walk(child)
+                    walk(child, parent_key)
 
     for script in soup.select('script[type="application/ld+json"], script[type="application/json"], script#__NEXT_DATA__'):
         try:
@@ -146,8 +198,14 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
     # serializing them into JSON-LD. Capture only public copy and rating; never
     # retain author/profile/customer identifiers.
     dom_reviews = []
-    for card in soup.select('[itemprop="review"], [data-testid*="review-card"], article[class*="review"]')[:100]:
-        body_node = card.select_one('[itemprop="reviewBody"], [data-testid*="review-content"], .review-content, .review-body')
+    for card in soup.select(
+        '[itemprop="review"], [data-testid*="review-card"], [data-testid*="review-item"], '
+        'article[class*="review"], li[class*="review"], div[class*="review-card"], div[class*="ReviewCard"]'
+    )[:100]:
+        body_node = card.select_one(
+            '[itemprop="reviewBody"], [data-testid*="review-content"], [data-testid*="review-text"], '
+            '.review-content, .review-body, .review-text, [class*="ReviewText"], [class*="reviewBody"]'
+        )
         body = " ".join((body_node.get_text(" ", strip=True) if body_node else "").split())
         if len(body) < 20:
             continue
@@ -173,6 +231,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
     reviews = node.get("review") or []
     if isinstance(reviews, dict):
         reviews = [reviews]
+    reviews = [_normalize_review_record(review) for review in reviews if isinstance(review, dict)]
     topics = {
         "performance": ("effective", "results", "works well", "made a difference", "didn't work", "not effective"),
         "hydration": ("hydrating", "hydration", "moisturizing", "moisturising", "dryness", "dry skin"),
@@ -194,6 +253,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
     distribution: dict[str, int] = {}
     samples = []
     seen_samples = set()
+    rejection_counts: dict[str, int] = {}
     for review in reviews[:250]:
         if not isinstance(review, dict):
             continue
@@ -207,7 +267,18 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
             bucket = str(max(1, min(5, int(round(float(rating))))))
             distribution[bucket] = distribution.get(bucket, 0) + 1
         sample_key = re.sub(r"\W+", "", body)[:1000]
-        if len(body_text) >= 20 and sample_key and sample_key not in seen_samples and len(samples) < 25:
+        rejection_reason = None
+        if not body_text or not sample_key:
+            rejection_reason = "missing_review_text"
+        elif len(body_text) < 20:
+            rejection_reason = "review_text_too_short"
+        elif sample_key in seen_samples:
+            rejection_reason = "duplicate_review_text"
+        elif len(samples) >= 25:
+            rejection_reason = "review_sample_limit_reached"
+        if rejection_reason:
+            rejection_counts[rejection_reason] = rejection_counts.get(rejection_reason, 0) + 1
+        else:
             seen_samples.add(sample_key)
             samples.append({
                 "text": body_text,
@@ -242,6 +313,9 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
         "review_count": int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else len(reviews) or None,
         "review_sample_count": len(samples),
         "review_samples": samples,
+        "review_sample_rejections": [
+            {"reason": reason, "count": count} for reason, count in sorted(rejection_counts.items())
+        ],
         "rating_distribution": distribution,
         "frequently_praised_topics": praised,
         "frequent_complaint_topics": complaints,

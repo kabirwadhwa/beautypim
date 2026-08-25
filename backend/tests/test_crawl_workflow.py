@@ -98,6 +98,22 @@ def test_persistence_is_idempotent_and_preserves_approved_conflict(db):
         state="fetching", depth=0,
     )
     db.add_all([job, url]); db.flush()
+    # A previous exact retailer aggregate must not turn a later retailer's
+    # independently valid aggregate/review texts into an identity conflict.
+    db.add_all([
+        FieldValue(
+            id=uuid.uuid4(), canonical_product_id=canonical.id,
+            field_name="rating", value=4.9, source_type="source_data",
+            source_reference="https://other-retailer.example/signature",
+            confidence_score=1, review_status="inferred", is_current=True,
+        ),
+        FieldValue(
+            id=uuid.uuid4(), canonical_product_id=canonical.id,
+            field_name="review_count", value=100, source_type="source_data",
+            source_reference="https://other-retailer.example/signature",
+            confidence_score=1, review_status="inferred", is_current=True,
+        ),
+    ])
     raw = RawPageObservation(
         id=uuid.uuid4(), crawl_job_id=job.id, crawl_url_id=url.id,
         source_url=url.url, final_url=url.url, http_status=200,
@@ -279,7 +295,18 @@ def test_unresolved_fragrance_research_keeps_image_and_reviews_but_blocks_exact_
     saved_fields = {row.field_name for row in db.query(FieldValue).filter(
         FieldValue.canonical_product_id == canonical.id,
     ).all()}
-    assert {"rating", "review_count", "review_summary"} <= saved_fields
+    # Market/review values remain append-only observations rather than
+    # conflicting canonical product fields.
+    assert "review_summary" not in saved_fields
+    observation = db.query(ScrapedProductObservation).filter(
+        ScrapedProductObservation.canonical_product_id == canonical.id,
+    ).one()
+    assert observation.match_status == "matched"
+    assert observation.normalized_payload["rating"] == 4.6
+    assert observation.normalized_payload["review_count"] == 321
+    assert db.query(CrawlConflict).filter(
+        CrawlConflict.scraped_product_id == observation.id,
+    ).count() == 0
     assert "claims" not in saved_fields
     variant = db.query(ProductVariant).filter(ProductVariant.canonical_product_id == canonical.id).one()
     assert variant.gtin is None and variant.variant_name is None and variant.size is None

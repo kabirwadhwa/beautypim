@@ -14,6 +14,7 @@ from app.services.product_research_worker import (
     recover_product_research_jobs, run_product_research_job, start_product_research_worker,
 )
 from app.config import settings
+from app.routes.products import _automatic_product_research
 
 
 def test_web_research_uses_provider_specific_concurrency(monkeypatch):
@@ -140,6 +141,48 @@ def test_resolved_identity_can_retain_exact_market_evidence_without_visible_gtin
         FieldValue.canonical_product_id == product.id, FieldValue.field_name == "rating",
     ).one()
     assert rating.evidence[0]["match_scope"] == "exact_resolved_identity"
+
+
+def test_review_research_continues_after_blocked_source(db):
+    brand = Brand(id=uuid.uuid4(), name="Tool Brand", normalized_name=f"tool-{uuid.uuid4()}")
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand=brand, product_name="Eyelash Curler Pad",
+        normalized_name="eyelash curler pad", review_status="imported",
+    )
+    user = User(
+        id=uuid.uuid4(), email=f"research-{uuid.uuid4()}@test.com",
+        hashed_password="unused", role="admin", is_active=True,
+    )
+    db.add_all([brand, user]); db.flush(); db.add(product); db.commit()
+    attempted = []
+
+    def fake_crawl(session, job_id):
+        job = session.query(CrawlJob).filter(CrawlJob.id == job_id).one()
+        attempted.append(job.domain)
+        if job.domain == "blocked.example":
+            job.status = "blocked"
+            job.error_summary = "Remote site refused browser crawling with HTTP 403"
+            job.products_persisted = 0
+        else:
+            job.status = "completed"
+            job.products_persisted = 1
+        session.commit()
+
+    candidates = [
+        {"url": "https://blocked.example/eyelash-curler-pad", "domain": "blocked.example",
+         "title": "Tool Brand Eyelash Curler Pad"},
+        {"url": "https://accessible.example/eyelash-curler-pad", "domain": "accessible.example",
+         "title": "Tool Brand Eyelash Curler Pad"},
+    ]
+    with patch("app.scraping.runner.run_crawl_job", side_effect=fake_crawl):
+        result = _automatic_product_research(
+            db, product, user, candidates=candidates,
+            research_objectives=["reviews", "review_summary"],
+        )
+
+    assert attempted == ["blocked.example", "accessible.example"]
+    assert result["sources_ingested"] == 1
+    assert result["sources_blocked"] == 1
 
 
 def test_background_research_persists_provider_id_and_completes(tmp_path):

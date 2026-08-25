@@ -118,6 +118,24 @@ def test_generic_parser_extracts_reviews_from_embedded_application_state():
     assert "packaging" in product.review_summary["frequent_complaint_topics"]
 
 
+def test_generic_parser_persists_all_eight_public_widget_review_texts():
+    reviews = ",".join(
+        '{"body":{"text":"Customer review number %d gives specific and useful product feedback."},'
+        '"score":%d}' % (index, 4 + (index % 2))
+        for index in range(1, 9)
+    )
+    html = f"""
+    <html><head><meta property="og:title" content="Exact Product" />
+    <script type="application/json">{{"reviewWidget":{{"reviews":[{reviews}]}}}}</script>
+    </head><body><h1>Exact Product</h1></body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/exact-product")
+
+    assert product.review_summary["review_sample_count"] == 8
+    assert len(product.review_summary["review_samples"]) == 8
+    assert product.review_summary["review_sample_rejections"] == []
+
+
 def test_generic_parser_prefers_rich_pdp_copy_and_extracts_bulleted_inci():
     html = """
     <html><head>

@@ -747,6 +747,8 @@ def _automatic_product_research(
 
     completed = 0
     errors = []
+    review_texts_extracted = 0
+    review_sample_rejections: dict[str, int] = {}
 
     def has_review_evidence() -> bool:
         observations = db.query(ScrapedProductObservation.normalized_payload).filter(
@@ -840,6 +842,25 @@ def _automatic_product_research(
         try:
             run_crawl_job(db, job.id)
             db.refresh(job)
+            # Count only actual sanitized text records persisted by this crawl.
+            # Declared widget/sample counts are intentionally ignored.
+            run_observations = db.query(ScrapedProductObservation).filter(
+                ScrapedProductObservation.crawl_job_id == job.id,
+            ).all()
+            for run_observation in run_observations:
+                run_summary = (run_observation.normalized_payload or {}).get("review_summary") or {}
+                run_samples = run_summary.get("review_samples")
+                if isinstance(run_samples, list):
+                    review_texts_extracted += len([
+                        sample for sample in run_samples
+                        if isinstance(sample, dict) and str(sample.get("text") or "").strip()
+                    ])
+                for rejection in run_summary.get("review_sample_rejections") or []:
+                    if not isinstance(rejection, dict):
+                        continue
+                    reason = str(rejection.get("reason") or "unspecified")
+                    count = int(rejection.get("count") or 1)
+                    review_sample_rejections[reason] = review_sample_rejections.get(reason, 0) + count
             if job.products_persisted:
                 completed += 1
                 db.refresh(product)
@@ -864,6 +885,7 @@ def _automatic_product_research(
             errors.append(f"{domain}: {exc}")
     db.commit()
     review_signature_after = review_evidence_signature()
+    canonical_review = select_review_aggregate(db, product.id) or {}
     return {
         "candidates": len(candidates), "sources_ingested": completed,
         "accepted_candidates": [url for url, _ in selected],
@@ -878,7 +900,10 @@ def _automatic_product_research(
         "candidate_domains_found": len(seen_domains),
         "pages_attempted": len(selected),
         "sources_blocked": len(errors),
-        "review_samples_collected": int((select_review_aggregate(db, product.id) or {}).get("review_sample_count") or 0),
+        "review_texts_extracted": review_texts_extracted,
+        "review_samples_collected": int(canonical_review.get("review_sample_count") or 0),
+        "review_texts_persisted": int(canonical_review.get("review_sample_count") or 0),
+        "review_sample_rejections": review_sample_rejections,
         "errors": errors,
     }
 

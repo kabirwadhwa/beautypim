@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from urllib.parse import urljoin
@@ -72,6 +73,32 @@ async def fetch_browser(url: str, config: CrawlConfiguration) -> FetchResult:
         browser = await playwright.chromium.launch(headless=True)
         context = await browser.new_context(user_agent=config.user_agent, java_script_enabled=True)
         page = await context.new_page()
+        public_review_payloads: list[dict] = []
+
+        async def capture_public_review_response(response):
+            """Retain same-domain public JSON review payloads already used by the page."""
+            try:
+                response_url = response.url
+                validate_public_url(
+                    response_url, expected_domain=config.domain,
+                    allow_subdomains=config.allow_subdomains,
+                )
+                content_type = (await response.all_headers()).get("content-type", "").lower()
+                if "json" not in content_type and not re.search(r"review|rating|ugc", response_url, re.I):
+                    return
+                body = await response.body()
+                if not body or len(body) > 1_000_000:
+                    return
+                decoded = body.decode("utf-8", "replace")
+                if not re.search(r"review|rating|comment|stars", decoded, re.I):
+                    return
+                payload = json.loads(decoded)
+                public_review_payloads.append({"source_url": response_url, "payload": payload})
+            except Exception:
+                # A failed optional widget response must never fail the product page.
+                return
+
+        page.on("response", capture_public_review_response)
 
         async def guard(route):
             request_url = route.request.url
@@ -101,12 +128,26 @@ async def fetch_browser(url: str, config: CrawlConfiguration) -> FetchResult:
         if response.status in {401, 403, 407, 429}:
             await browser.close()
             raise FetchBlocked(f"Remote site refused browser crawling with HTTP {response.status}")
-        # Expand public catalogue listings conservatively. This does not submit
-        # forms, authenticate, or interact with basket/account controls.
+        # Open a public review tab/accordion when the product page hides review
+        # copy behind a normal client-side control. This does not submit forms,
+        # authenticate, or bypass retailer protections.
+        review_controls = page.locator("button, [role=tab]").filter(
+            has_text=re.compile(r"^(customer\s+)?reviews?|ratings?\s*&\s*reviews?|avis clients?$", re.I)
+        )
+        if await review_controls.count():
+            control = review_controls.first
+            if await control.is_visible() and await control.is_enabled():
+                try:
+                    await control.click(timeout=3000)
+                    await page.wait_for_timeout(750)
+                except Exception:
+                    pass
+        # Expand public catalogue/review listings conservatively.
         for _ in range(10):
             candidates = page.locator("button").filter(
                 has_text=re.compile(
-                    r"(load more|show more|voir plus|afficher plus|plus de produits)",
+                    r"(load more|show more|more reviews|read more reviews|see all reviews|"
+                    r"voir plus|afficher plus|plus d['’]avis|plus de produits)",
                     re.IGNORECASE,
                 )
             )
@@ -118,8 +159,16 @@ async def fetch_browser(url: str, config: CrawlConfiguration) -> FetchResult:
             await button.click(timeout=3000)
             await page.wait_for_timeout(750)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(500)
-        content = (await page.content()).encode()
+        await page.wait_for_timeout(1000)
+        content_text = await page.content()
+        if public_review_payloads:
+            embedded = "".join(
+                '<script type="application/json" data-beautypim-review-endpoint>'
+                + json.dumps(item, ensure_ascii=False).replace("</", "<\\/") + "</script>"
+                for item in public_review_payloads[:20]
+            )
+            content_text = content_text.replace("</body>", embedded + "</body>")
+        content = content_text.encode()
         if len(content) > config.maximum_response_bytes:
             await browser.close()
             raise ResponseTooLarge("Rendered page exceeded configured size limit")

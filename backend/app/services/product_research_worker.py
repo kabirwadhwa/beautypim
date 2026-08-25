@@ -373,19 +373,24 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         current_reviews = select_review_aggregate(db, product.id) or {}
         requested_review_objectives = {
             "reviews", "review_summary", "rating", "review_count"
-        } & set(research_objectives)
+        } & set(remaining_objectives)
         needs_review_text = bool(
             requested_review_objectives
             and int(current_reviews.get("review_sample_count") or 0) < int(settings.WEB_RESEARCH_REVIEW_SAMPLE_TARGET)
         )
         needs_second_pass = bool(
             remaining_objectives
-            and not identity_only
-            and (int(result.get("sources_ingested") or 0) == 0 or needs_review_text)
+            and (
+                (not identity_only and int(result.get("sources_ingested") or 0) == 0)
+                or needs_review_text
+            )
             and not configuration.get("second_pass_started")
         )
         if needs_second_pass:
-            _assign_configuration(job, second_pass_started=True)
+            _assign_configuration(
+                job, second_pass_started=True,
+                review_text_fallback_started=needs_review_text,
+            )
             db.commit()
             alternate_queries = list(reversed(identity_queries[1:])) + identity_queries[:1]
             second = start_product_source_discovery(
@@ -427,12 +432,19 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             )
             result["second_pass"] = second_result
             result["second_pass_used"] = True
+            result["review_text_fallback_used"] = needs_review_text
             result["sources_ingested"] = int(result.get("sources_ingested") or 0) + int(second_result.get("sources_ingested") or 0)
             result["candidates"] = int(result.get("candidates") or 0) + int(second_result.get("candidates") or 0)
             result["errors"] = list(result.get("errors") or []) + list(second_result.get("errors") or [])
             result["image_found"] = bool(result.get("image_found") or second_result.get("image_found") or second_market.get("image_found"))
             result["review_evidence_found"] = bool(result.get("review_evidence_found") or second_result.get("review_evidence_found") or second_market.get("review_evidence_found"))
             result["review_evidence_found_this_run"] = bool(result.get("review_evidence_found_this_run") or second_result.get("review_evidence_found_this_run") or second_market.get("review_evidence_found"))
+            result["review_texts_extracted"] = int(result.get("review_texts_extracted") or 0) + int(second_result.get("review_texts_extracted") or 0)
+            result["review_texts_persisted"] = int(second_result.get("review_texts_persisted") or result.get("review_texts_persisted") or 0)
+            merged_rejections = dict(result.get("review_sample_rejections") or {})
+            for reason, count in (second_result.get("review_sample_rejections") or {}).items():
+                merged_rejections[reason] = int(merged_rejections.get(reason) or 0) + int(count or 0)
+            result["review_sample_rejections"] = merged_rejections
             if import_job:
                 process_item_enrichment(
                     db, item, import_job.column_mapping or {},
@@ -443,6 +455,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             remaining_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
         else:
             result["second_pass_used"] = False
+            result["review_text_fallback_used"] = False
         if next_plan.get("research_phase") == "attribute_completion":
             attribute_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
             if attribute_objectives and configuration.get("research_phase") in {"identity_resolution", "taxonomy_resolution"}:
@@ -463,6 +476,12 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                     result.get("review_evidence_found_this_run")
                     or attribute_result.get("review_evidence_found_this_run")
                 )
+                result["review_texts_extracted"] = int(result.get("review_texts_extracted") or 0) + int(attribute_result.get("review_texts_extracted") or 0)
+                result["review_texts_persisted"] = int(attribute_result.get("review_texts_persisted") or result.get("review_texts_persisted") or 0)
+                merged_rejections = dict(result.get("review_sample_rejections") or {})
+                for reason, count in (attribute_result.get("review_sample_rejections") or {}).items():
+                    merged_rejections[reason] = int(merged_rejections.get(reason) or 0) + int(count or 0)
+                result["review_sample_rejections"] = merged_rejections
                 if import_job:
                     process_item_enrichment(
                         db, item, import_job.column_mapping or {},

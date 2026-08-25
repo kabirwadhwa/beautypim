@@ -322,8 +322,16 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
     best = max(entries, key=lambda entry: (_quality_rank(entry["rating"], entry["count"]), entry["count"], str(entry.get("observed_at") or "")))
     from app.services.review_evidence import enforce_review_summary_invariants
     summary = enforce_review_summary_invariants(best.get("summary") or {})
-    if saved_summary and isinstance(saved_summary.value, dict):
-        summary.update(saved_summary.value)
+    if (saved_summary and saved_summary.source_type == "ai_inference"
+            and isinstance(saved_summary.value, dict)):
+        # Reuse only synthesized intelligence. Never let an older source-data
+        # summary replace the newly combined exact-source review samples.
+        for key in (
+            "ai_summary_text", "summary", "positive_themes", "negative_themes",
+            "mixed_themes", "summary_model", "evidence_limitation",
+        ):
+            if key in saved_summary.value:
+                summary[key] = saved_summary.value[key]
     summary.update({
         "average_rating": round(average, 3) if average is not None else None,
         "review_count": represented or None,

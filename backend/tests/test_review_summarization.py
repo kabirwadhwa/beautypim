@@ -8,6 +8,7 @@ from app.models import (
 from app.services.review_summarization import summarize_product_reviews, _insufficient_lines
 from app.services.review_aggregate import select_review_aggregate
 from app.services.review_aggregate import classify_review_quality, _quality_rank
+from app.services.review_evidence import sanitize_review_samples_with_rejections
 
 
 def test_review_quality_thresholds_are_central_and_truthful():
@@ -20,6 +21,22 @@ def test_review_quality_thresholds_are_central_and_truthful():
     lines = _insufficient_lines({"average_rating": 1.0, "review_count": 1})
     assert "does not present" in " ".join(lines)
     assert "1.0/5" not in " ".join(lines)
+
+
+def test_every_dropped_review_sample_has_a_deterministic_reason():
+    accepted, rejected = sanitize_review_samples_with_rejections([
+        {"text": "A sufficiently detailed exact-product review body for persistence."},
+        {"text": "A sufficiently detailed exact-product review body for persistence."},
+        {"text": "Too short"},
+        {"rating": 5},
+        "invalid",
+    ])
+
+    assert len(accepted) == 1
+    assert [row["reason"] for row in rejected] == [
+        "duplicate_review_text", "review_text_too_short",
+        "missing_review_text", "invalid_review_record",
+    ]
 
 
 def test_review_synthesis_reads_and_persists_actual_deidentified_samples(db, monkeypatch):

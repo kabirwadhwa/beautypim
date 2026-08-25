@@ -212,7 +212,8 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
     objective_terms = {
         "description": ["official product description"], "directions": ["how to use", "directions"],
         "inci": ["ingredients", "INCI"], "ingredients": ["ingredients", "INCI"],
-        "reviews": ["customer reviews", "ratings reviews"], "review_summary": ["customer reviews"],
+        "reviews": ["customer review text", "written customer reviews", "customer reviews"],
+        "review_summary": ["customer review text", "written customer reviews"],
         "rating": ["ratings reviews"], "review_count": ["customer reviews"],
         "claims": ["official claims"], "image": ["official product image"],
     }
@@ -270,7 +271,9 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             f"The unresolved high-value fields are: {', '.join(research_objectives or []) or 'official product evidence'}. "
             "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
             "Include up to eight useful distinct domains when available: the official page for identity and imagery, "
-            "plus public retailer product pages that visibly expose aggregate rating or review-count evidence. "
+            "plus public retailer product pages that expose written customer review bodies. When review intelligence "
+            "is requested, aggregate-only pages are useful but insufficient: return multiple independent exact-product "
+            "pages likely to contain visible reviews, schema.org Review objects, or public review widgets/endpoints. "
             "Return a market_observations JSON array containing only exact-product evidence you directly found. "
             "For each source include its page URL, the GTIN, brand, exact displayed product name and variant that the "
             "page itself supports, and, when visibly supported, a direct public product image URL, "

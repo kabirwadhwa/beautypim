@@ -293,12 +293,23 @@ def _persist_values_and_conflicts(db, job, observation, product, match_status):
         fields = ("image_urls", "rating", "review_count", "review_summary")
     if (job.configuration or {}).get("research_identity_only"):
         fields = ()
+    # Ratings, review counts and review texts are independent time/source
+    # observations.  A different exact retailer aggregate is not a product
+    # identity conflict and must not downgrade the whole observation (which
+    # would also discard its accepted review texts from canonical synthesis).
+    market_observation_fields = {
+        "availability", "image_urls", "rating", "review_count", "review_summary",
+    }
     for field in fields:
         value = getattr(product, field)
         if value in (None, "", []):
             continue
         if field == "rating":
             value = float(value)
+        if field in market_observation_fields:
+            # The normalized payload on ScrapedProductObservation is the
+            # append-only evidence store used by the canonical selector.
+            continue
         current = db.query(FieldValue).filter(
             FieldValue.canonical_product_id == product_id,
             FieldValue.field_name == field, FieldValue.is_current.is_(True),
