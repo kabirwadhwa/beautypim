@@ -12,12 +12,22 @@ from datetime import datetime
 from app.database import get_db
 from app.auth import get_current_user, require_viewer_or_above
 from app.models import CanonicalProduct, ProductVariant, FieldValue, Brand, Category, ValidationIssue
+from app.services.business_export import BUSINESS_EXPORT_COLUMNS, build_business_row
 from app.schemas import ExportRequest, ExportResponse
 from app.limiter import rate_limit
 from app.config import settings
 from app.services.webhooks import dispatch_webhook_safe
 
 router = APIRouter(prefix="/exports", tags=["Export Center"])
+
+
+def _tabular_rows(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Use valid JSON inside CSV/XLSX cells for structured business values."""
+    return [{
+        key: json.dumps(value, ensure_ascii=False, default=str)
+        if isinstance(value, (dict, list)) else value
+        for key, value in row.items()
+    } for row in data]
 
 def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict[str, Any]]:
     # 1. Fetch only approved or published products
@@ -26,85 +36,8 @@ def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict
         CanonicalProduct.is_deleted == False
     ).all()
 
-    export_rows = []
-    for prod in products:
-        # Load active variant
-        variant = db.query(ProductVariant).filter(
-            ProductVariant.canonical_product_id == prod.id,
-            ProductVariant.is_deleted == False
-        ).first()
-        
-        row = {
-            "product_id": str(prod.id),
-            "product_name": prod.product_name,
-            "brand": prod.brand.name,
-            "gtin": variant.gtin if variant else "",
-            "size": f"{variant.size or ''} {variant.unit or ''}".strip() if variant else ""
-        }
-
-        # Query all field values
-        fvs = db.query(FieldValue).filter(
-            FieldValue.canonical_product_id == prod.id,
-            FieldValue.is_current == True
-        ).all()
-
-        fields_dict: Dict[str, FieldValue] = {fv.field_name: fv for fv in fvs}
-        understanding = fields_dict.get("product_understanding")
-        understanding_value = understanding.value if understanding and isinstance(understanding.value, dict) else {}
-        authoritative_module = understanding_value.get("category_module")
-        row["category_module"] = authoritative_module or "UNKNOWN"
-        from app.services.review_aggregate import select_review_aggregate
-        review = select_review_aggregate(db, prod.id) or {}
-        row.update({
-            "average_rating": review.get("average_rating") if review.get("business_display_rating", True) else None,
-            "review_count": review.get("review_count"),
-            "review_quality": review.get("review_quality"),
-            "review_summary": (review.get("review_summary") or {}).get("ai_summary_text"),
-            "review_source": review.get("source"),
-            "review_source_count": review.get("review_source_count"),
-            "review_sample_count": review.get("review_sample_count"),
-            "review_evidence_strength": review.get("evidence_strength"),
-            "review_positive_themes": "; ".join((review.get("review_summary") or {}).get("positive_themes") or []),
-            "review_negative_themes": "; ".join((review.get("review_summary") or {}).get("negative_themes") or []),
-            "review_mixed_themes": "; ".join((review.get("review_summary") or {}).get("mixed_themes") or []),
-            "review_evidence_limitation": (review.get("review_summary") or {}).get("evidence_limitation"),
-        })
-
-        # Apply strict priority selection algorithm:
-        # 1. human_edit
-        # 2. source_data or deterministic_rule
-        # 3. ai_inference (if permitted)
-        # 4. unknown
-        enrichment_keys = [
-            "subcategory", "product_type", "application_area", "target_audience",
-            "product_positioning", "benefits", "targeted_concerns", "directions",
-            "sensory_description", "routine_time", "routine_step", "claims",
-            "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
-            "ingredients_intelligence"
-        ]
-
-        for key in enrichment_keys:
-            fv = fields_dict.get(key)
-            val = "UNKNOWN"
-            if key in {"skincare", "haircare", "makeup", "fragrance"} and authoritative_module and key != authoritative_module:
-                row[key] = "NOT_APPLICABLE"
-                continue
-            
-            if fv:
-                if fv.review_status == "conflicting":
-                    val = "CONFLICTING"
-                elif fv.review_status == "not_applicable":
-                    val = "NOT_APPLICABLE"
-                elif fv.source_type == "human_edit":
-                    val = fv.value
-                elif fv.source_type in ["source_data", "deterministic_rule"]:
-                    val = fv.value
-                elif fv.source_type == "ai_inference" and include_inferred:
-                    val = fv.value
-
-            row[key] = val
-
-        export_rows.append(row)
+    from app.routes.products import get_product_detail
+    export_rows = [build_business_row(db, get_product_detail(prod.id, db, None), include_inferred) for prod in products]
         
     return export_rows
 
@@ -207,10 +140,11 @@ def download_file(
 
     elif format == "csv":
         output = io.StringIO()
-        if data:
-            writer = csv.DictWriter(output, fieldnames=data[0].keys(), delimiter=";", quoting=csv.QUOTE_MINIMAL)
+        fieldnames = BUSINESS_EXPORT_COLUMNS if mode == "business" else (tuple(data[0]) if data else ())
+        if fieldnames:
+            writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter=";", quoting=csv.QUOTE_MINIMAL)
             writer.writeheader()
-            writer.writerows(data)
+            writer.writerows(_tabular_rows(data))
         
         return StreamingResponse(
             io.BytesIO(output.getvalue().encode("utf-8")),
@@ -219,7 +153,10 @@ def download_file(
         )
 
     elif format == "xlsx":
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(
+            _tabular_rows(data),
+            columns=BUSINESS_EXPORT_COLUMNS if mode == "business" else None,
+        )
         excel_io = io.BytesIO()
         with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Export")
