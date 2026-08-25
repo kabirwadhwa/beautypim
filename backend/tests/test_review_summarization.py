@@ -173,6 +173,10 @@ def test_selector_always_exposes_truthful_summary_for_aggregate_only_evidence(db
     assert selected["review_sample_count"] == 0
     assert selected["evidence_strength"] == "aggregate_only"
     assert "review-text evidence was insufficient" in selected["review_summary"]["evidence_limitation"]
+    assert selected["review_summary"].get("summary") is None
+    assert selected["review_summary"].get("ai_summary_text") is None
+    assert selected["review_summary"].get("positive_themes") == []
+    assert selected["review_summary"].get("negative_themes") == []
 
 
 def test_selector_uses_cited_web_search_field_evidence_when_retailer_blocks_crawl(db):

@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
-from app.models import CanonicalProduct, FieldValue, ProductVariant, ScrapedProductObservation
+from app.models import CanonicalProduct, Category, FieldValue, ProductVariant, ScrapedProductObservation
 
 
 PLACEHOLDERS = {
@@ -245,6 +245,29 @@ def resolve_product_understanding(
     category_value = human_wins("category", category_value)
     subcategory_value = human_wins("subcategory", subcategory_value)
     type_value = human_wins("product_type", type_value)
+
+    # An existing canonical record is the authoritative identity presented by
+    # every business surface.  Research titles (including translated/localized
+    # names) are evidence and aliases, never implicit rename instructions.
+    # New imports still resolve normally because ``product`` is absent during
+    # their pre-canonical understanding pass.
+    if product:
+        canonical_brand = product.brand.name if product.brand else None
+        if not is_placeholder(canonical_brand):
+            brand_value = canonical_brand
+        if not is_placeholder(product.product_name):
+            product_value = product.product_name
+        if variant and not is_placeholder(variant.gtin):
+            gtin = variant.gtin
+        if variant and not is_placeholder(variant.variant_name):
+            variant_value = variant.variant_name
+        canonical_category = db.query(Category).filter(Category.id == product.category_id).first() if db and product.category_id else None
+        if canonical_category:
+            category_parts = [part.strip() for part in str(canonical_category.path or canonical_category.name or "").split(">") if part.strip()]
+            if category_parts:
+                category_value = category_parts[0]
+                if len(category_parts) > 1:
+                    subcategory_value = category_parts[-1]
 
     role_warnings = []
     if supplier and LEGAL_ENTITY.search(supplier):

@@ -212,6 +212,33 @@ def test_confirmed_source_value_is_not_replaced_by_ai(db: Session):
     ).one()
     assert candidate.is_current is False
 
+
+def test_not_found_research_never_erases_existing_value(db: Session):
+    brand = Brand(id=uuid.uuid4(), name="Preserved Brand", normalized_name=uuid.uuid4().hex)
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Preserved Cream",
+        normalized_name="preservedcream",
+    )
+    existing = FieldValue(
+        id=uuid.uuid4(), canonical_product_id=product.id, field_name="description",
+        value="A verified existing description.", source_type="source_data",
+        review_status="confirmed", is_current=True,
+    )
+    db.add_all([brand, product, existing]); db.flush()
+
+    returned = create_field_value_version(
+        db, product.id, None, "description", "NOT_FOUND", "ai_inference",
+        "research:no-result", 0, "unknown",
+    )
+    db.flush()
+
+    assert returned.id == existing.id
+    assert existing.is_current is True
+    assert db.query(FieldValue).filter(
+        FieldValue.canonical_product_id == product.id,
+        FieldValue.field_name == "description",
+    ).count() == 1
+
 def test_blocking_issue_prevents_approval(db: Session):
     brand = Brand(id=uuid.uuid4(), name="La Roche-Posay", normalized_name="larocheposay")
     db.add(brand)

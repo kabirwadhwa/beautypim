@@ -283,6 +283,26 @@ def test_generic_parser_extracts_inci_from_embedded_application_json():
     assert product.fields["ingredient_text_raw"].path.endswith("fullIngredients")
 
 
+def test_generic_parser_extracts_objective_business_copy_from_hydration_state():
+    html = """
+    <script type="application/ld+json">
+      {"@type":"Product","name":"Barrier Cream","brand":{"name":"Maison Test"}}
+    </script>
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"pageProps":{"product":{
+        "longDescription":"A restorative face cream designed to support a comfortable, supple skin feel.",
+        "keyBenefits":["Supports the moisture barrier","Leaves skin feeling soft"],
+        "howToUse":"Apply a small amount to clean face and neck morning or evening."
+      }}}}
+    </script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://example.com/barrier-cream")
+    assert product.description.startswith("A restorative face cream")
+    assert product.benefits == ["Supports the moisture barrier", "Leaves skin feeling soft"]
+    assert product.usage_instructions.startswith("Apply a small amount")
+    assert product.fields["description"].method == "embedded_application_json"
+
+
 def test_retail_site_adapter_and_inci_order():
     product = RetailSiteAdapter().parse(
         (FIXTURES / "retail-product.html").read_text(),

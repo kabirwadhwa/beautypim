@@ -7,7 +7,7 @@ from app.services.product_pdf import build_product_pdf
 from pypdf import PdfReader
 from io import BytesIO
 import uuid
-from app.models import Brand, CanonicalProduct, FieldValue
+from app.models import Brand, CanonicalProduct, Category, FieldValue, ProductVariant
 
 
 def _exact_armani():
@@ -232,3 +232,33 @@ def test_human_category_override_survives_exact_conflicting_evidence(db, monkeyp
     assert result["taxonomy"]["category"]["value"] == "Makeup"
     assert result["category_module"] == "makeup"
     assert any(item.get("resolution") == "human_value_preserved" for item in result["conflicts"])
+
+
+def test_existing_canonical_identity_survives_localized_exact_source(db, monkeypatch):
+    brand = Brand(id=uuid.uuid4(), name="La Prairie", normalized_name="la prairie")
+    category = Category(id=uuid.uuid4(), name="Skincare", path="Skincare", level=0)
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, category_id=category.id,
+        product_name="Pure Gold Radiance Cream", normalized_name="pure gold radiance cream",
+    )
+    variant = ProductVariant(
+        id=uuid.uuid4(), canonical_product_id=product.id, gtin="7611773160681", size="50 ml",
+    )
+    db.add_all([brand, category, product, variant]); db.flush()
+    monkeypatch.setattr("app.services.product_understanding.retrieve_corpus_evidence", lambda *a, **k: {
+        "match_level": "exact_product", "exact_matches": [{
+            "brand": "ラ・プレリー", "product_name": "ピュアG ラディアンス クリーム",
+            "gtin": "7611773160681", "category": "Skin Care", "product_type": "Face Cream",
+            "fields": {}, "conflicts": [],
+        }], "family_matches": [], "comparables": [],
+    })
+
+    result = resolve_product_understanding(
+        db, raw_data={"brand": "ラ・プレリー", "product_name": "ピュアG ラディアンス クリーム",
+                      "gtin": "7611773160681"}, product=product, variant=variant,
+    )
+
+    assert result["identity"]["consumer_brand"]["value"] == "La Prairie"
+    assert result["identity"]["product_family"]["value"] == "Pure Gold Radiance Cream"
+    assert result["identity"]["gtin"]["value"] == "7611773160681"
+    assert result["taxonomy"]["category"]["value"] == "Skincare"

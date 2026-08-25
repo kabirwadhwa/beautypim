@@ -492,6 +492,28 @@ def create_field_value_version(
 ):
     """Save a candidate without allowing AI to replace accepted direct evidence."""
     db_status = map_ai_status_to_db(status)
+    def meaningful(candidate: Any) -> bool:
+        if candidate in (None, "", [], {}):
+            return False
+        return str(candidate).strip().lower() not in {
+            "unknown", "not found", "not_found", "not provided", "not_provided",
+            "none", "null", "unverified",
+        }
+
+    current_query = db.query(FieldValue).filter(
+        FieldValue.field_name == field_name,
+        FieldValue.is_current == True,
+    )
+    if canonical_product_id:
+        current_query = current_query.filter(FieldValue.canonical_product_id == canonical_product_id)
+    elif product_variant_id:
+        current_query = current_query.filter(FieldValue.product_variant_id == product_variant_id)
+    current_value = current_query.first()
+    # A failed/empty research result is evidence about the run, not a command
+    # to erase a valid product value.  Improve Product is additive/corrective.
+    if current_value and meaningful(current_value.value) and not meaningful(value):
+        return current_value
+
     protected_current = None
     # A new explicit human edit supersedes an older human edit. Automatic
     # sources remain unable to replace protected human evidence.
@@ -514,6 +536,14 @@ def create_field_value_version(
             FieldValue.review_status == "confirmed",
             FieldValue.is_current == True
         ).first()
+
+    # Confirmed product facts are immutable through ordinary automated
+    # enrichment.  A disagreeing automatic value is retained as a reviewable
+    # candidate; explicit human reconciliation remains the only overwrite path.
+    if (not protected_current and current_value and source_type != "human_edit"
+            and field_name not in {"product_understanding", "schema_org"}
+            and current_value.review_status == "confirmed" and meaningful(current_value.value)):
+        protected_current = current_value
 
     # Keep accepted human/direct-source evidence active; retain AI as a reviewable
     # candidate when it disagrees.
@@ -698,8 +728,7 @@ def process_item_enrichment(
 
     variant = db.query(ProductVariant).filter(ProductVariant.id == item.product_variant_id).first()
     if variant:
-        current_gtin = normalize_gtin_value(variant.gtin)
-        if raw_ean and (not variant.gtin or current_gtin != variant.gtin):
+        if raw_ean and not variant.gtin:
             duplicate = db.query(ProductVariant).filter(
                 ProductVariant.gtin == str(raw_ean), ProductVariant.id != variant.id,
             ).first()
@@ -736,7 +765,10 @@ def process_item_enrichment(
         if not human_identity:
             before_identity = {"brand": product.brand.name if product.brand else None, "product_name": product.product_name}
             resolved_brand, resolved_name = understood.get("brand"), understood.get("product_name")
-            if resolved_brand and normalize_text(resolved_brand) != normalize_text(before_identity["brand"]):
+            # Ordinary enrichment may fill a placeholder identity, but must
+            # never replace a resolved canonical identity with a localized or
+            # retailer-specific title.  Such values remain source evidence.
+            if resolved_brand and is_placeholder(before_identity["brand"]):
                 normalized_brand_name = normalize_text(resolved_brand)
                 brand_record = db.query(Brand).filter(Brand.normalized_name == normalized_brand_name).first()
                 if not brand_record:
@@ -744,10 +776,10 @@ def process_item_enrichment(
                     db.add(brand_record)
                     db.flush()
                 product.brand_id = brand_record.id
-            if resolved_name and normalize_text(resolved_name) != normalize_text(product.product_name):
+            if resolved_name and is_placeholder(product.product_name):
                 product.product_name = resolved_name
                 product.normalized_name = normalize_text(resolved_name)
-            after_identity = {"brand": resolved_brand, "product_name": resolved_name}
+            after_identity = {"brand": product.brand.name if product.brand else before_identity["brand"], "product_name": product.product_name}
             if before_identity != after_identity:
                 db.add(AuditLog(
                     id=uuid.uuid4(), entity_type="canonical_product", entity_id=product.id,
@@ -1037,7 +1069,7 @@ def process_item_enrichment(
                 db.add(assigned)
                 db.flush()
         product = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
-        if product:
+        if product and product.category_id is None:
             product.category_id = assigned.id
 
     # Write core enriched fields

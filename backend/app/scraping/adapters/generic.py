@@ -110,6 +110,55 @@ def _embedded_ingredient_text(soup: BeautifulSoup):
     return max(candidates, default=None)
 
 
+_COMMERCIAL_KEYS = {
+    "description": {"description", "longdescription", "long_description", "productdescription", "product_description"},
+    "benefits": {"benefits", "benefit", "features", "keybenefits", "key_benefits", "sellingpoints", "selling_points"},
+    "usage_instructions": {"directions", "howtouse", "how_to_use", "usage", "usageinstructions", "usage_instructions", "application"},
+    "warnings": {"warnings", "warning", "cautions", "caution", "precautions"},
+}
+
+
+def _embedded_commercial_fields(soup: BeautifulSoup) -> dict[str, tuple[str, str]]:
+    """Extract public product copy from inert application/hydration state."""
+    candidates: dict[str, list[tuple[int, str, str]]] = {key: [] for key in _COMMERCIAL_KEYS}
+
+    def clean(value):
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            value = " | ".join(item for item in value if item.strip())
+        if not isinstance(value, str):
+            return ""
+        return BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+
+    def walk(value, path="embedded_json"):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized_key = re.sub(r"[^a-z_]", "", str(key).lower())
+                child_path = f"{path}.{key}"
+                for field_name, keys in _COMMERCIAL_KEYS.items():
+                    if normalized_key in keys:
+                        text = clean(child)
+                        if 15 <= len(text) <= 8000:
+                            candidates[field_name].append((len(text), child_path, text))
+                if isinstance(child, (dict, list)):
+                    walk(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                if isinstance(child, (dict, list)):
+                    walk(child, f"{path}[{index}]")
+
+    for script in soup.select('script[type="application/ld+json"], script[type="application/json"], script#__NEXT_DATA__'):
+        try:
+            walk(json.loads(script.string or script.get_text() or "{}"))
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            continue
+    return {
+        field_name: (path, value)
+        for field_name, values in candidates.items()
+        for _, path, value in [max(values, default=(0, "", ""))]
+        if value
+    }
+
+
 _REVIEW_BODY_KEYS = (
     "reviewBody", "review_body", "reviewText", "review_text", "contentText",
     "content_text", "body", "text", "comment", "comments", "content", "description",
@@ -462,6 +511,7 @@ class GenericJsonLdAdapter(ProductAdapter):
             offers = offers[0] if offers else {}
         aggregate = node.get("aggregateRating") or {}
         embedded_aggregate, embedded_reviews = _embedded_review_evidence(soup)
+        embedded_commercial = _embedded_commercial_fields(soup)
         if not aggregate and embedded_aggregate:
             aggregate = embedded_aggregate
         if not node.get("review") and embedded_reviews:
@@ -531,8 +581,29 @@ class GenericJsonLdAdapter(ProductAdapter):
             review_summary=_review_summary(node, aggregate, url, locale),
             parser_version=PARSER_VERSION,
         )
+        for field_name in ("description", "usage_instructions"):
+            if not getattr(product, field_name) and field_name in embedded_commercial:
+                path, value = embedded_commercial[field_name]
+                setattr(product, field_name, value)
+                product.fields[field_name] = ExtractedField(
+                    value=value, raw_value=value, path=path, method="embedded_application_json",
+                )
+        if not product.benefits and "benefits" in embedded_commercial:
+            path, value = embedded_commercial["benefits"]
+            product.benefits = [item.strip() for item in re.split(r"[|;•]", value) if item.strip()]
+            product.fields["benefits"] = ExtractedField(
+                value=product.benefits, raw_value=value, path=path, method="embedded_application_json",
+            )
+        if not product.warnings and "warnings" in embedded_commercial:
+            path, value = embedded_commercial["warnings"]
+            product.warnings = [value]
+            product.fields["warnings"] = ExtractedField(
+                value=product.warnings, raw_value=value, path=path, method="embedded_application_json",
+            )
         for key in product.model_fields:
             if key in {"fields", "parser_version"}:
+                continue
+            if key in product.fields:
                 continue
             value = getattr(product, key)
             if value not in (None, "", []):
@@ -576,6 +647,10 @@ class GenericJsonLdAdapter(ProductAdapter):
                 "[itemprop=usageInfo]", "#directions", ".directions",
                 "[class*=how-to-use]", "[class*=advice]",
             ),
+            "benefits": (
+                "[itemprop=featureList]", "#benefits", ".benefits",
+                "[data-testid*=benefit]", "[class*=key-benefit]", "[class*=product-benefit]",
+            ),
             "warnings": ("[itemprop=warning]", ".warnings", "[class*=warning]"),
         }
         for field_name, selectors in semantic_selectors.items():
@@ -605,7 +680,7 @@ class GenericJsonLdAdapter(ProductAdapter):
                 value = element.get_text(" ", strip=True)
                 if not value:
                     continue
-                normalized = [value] if field_name == "warnings" else value
+                normalized = [value] if field_name in {"warnings", "benefits"} else value
                 setattr(product, field_name, normalized)
                 product.fields[field_name] = ExtractedField(
                     value=normalized, raw_value=value, path=selector,

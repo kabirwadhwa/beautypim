@@ -64,42 +64,19 @@ def _quality_rank(rating: Any, count: Any) -> int:
 
 
 def _summary_or_aggregate_fallback(summary: dict[str, Any] | None, rating: Any, count: Any) -> dict[str, Any] | None:
-    """Always provide a truthful review summary when aggregate evidence exists.
-
-    Topic-level praise/complaint text requires review samples. Aggregate-only
-    evidence gets a concise disclosure, never four repetitive filler lines.
-    """
+    """Normalize aggregate metadata without synthesizing absent review text."""
+    from app.services.review_evidence import enforce_review_summary_invariants
     result = dict(summary or {})
-    if any(result.get(key) for key in ("ai_summary_lines", "ai_summary_text", "summary", "text")):
-        return result
     numeric_rating = None
     try:
         numeric_rating = float(rating) if rating not in (None, "") else None
     except (TypeError, ValueError):
         pass
     review_count = _integer(count)
-    if numeric_rating is None and not review_count:
-        return result or None
-    quality = classify_review_quality(numeric_rating, review_count)
-    if quality == "insufficient" and review_count:
-        opening = f"Review evidence is insufficient for a reliable aggregate: {review_count:,} observed review{'s' if review_count != 1 else ''}."
-    elif numeric_rating is not None and review_count:
-        sentiment = "strongly positive" if numeric_rating >= 4 else "mixed" if numeric_rating < 3.5 else "generally positive"
-        opening = f"Customer response is {sentiment}, averaging {numeric_rating:.1f}/5 across {review_count:,} reviews."
-    elif numeric_rating is not None:
-        opening = f"The available aggregate customer rating is {numeric_rating:.1f}/5."
-    else:
-        opening = f"The source reports {review_count:,} customer reviews without a usable average rating."
-    lines = [
-        opening,
-        ("This exact-product aggregate establishes overall customer sentiment without relying on another product's reviews."
-         if quality != "insufficient" else "The observed rating is retained internally but is not presented as a commercially meaningful score."),
-        "Review-level text was unavailable, so reliable praise and complaint themes could not be extracted.",
-        "The summary does not invent customer opinions beyond the rating and count evidence.",
-    ]
-    return {**result, "average_rating": numeric_rating, "review_count": review_count or None,
-            "ai_summary_lines": lines, "ai_summary_text": "\n".join(lines),
-            "summary": "\n".join(lines), "summary_model": "deterministic-aggregate-summary"}
+    if numeric_rating is None and not review_count and not result:
+        return None
+    result.update({"average_rating": numeric_rating, "review_count": review_count or None})
+    return enforce_review_summary_invariants(result)
 
 
 def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
