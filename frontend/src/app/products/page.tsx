@@ -600,7 +600,7 @@ export default function ProductsPage() {
             </div>
           )}
           {!bulkProgress.running && bulkProgress.items?.some(item =>
-            item.product_id && ['failed', 'no_material_improvement', 'needs_identity_resolution', 'rate_limited_retriable', 'blocked_sources', 'partially_improved'].includes(item.business_outcome || '')
+            item.product_id && ['failed', 'no_material_improvement', 'needs_identity_resolution', 'needs_taxonomy_resolution', 'rate_limited_retriable', 'blocked_sources', 'partially_improved'].includes(item.business_outcome || '')
           ) && (
             <button
               type="button"
@@ -608,7 +608,7 @@ export default function ProductsPage() {
               style={{ marginTop: 12 }}
               disabled={actionLoading}
               onClick={() => handleBulkImprove((bulkProgress.items || []).filter(item =>
-                item.product_id && ['failed', 'no_material_improvement', 'needs_identity_resolution', 'rate_limited_retriable', 'blocked_sources', 'partially_improved'].includes(item.business_outcome || '')
+                item.product_id && ['failed', 'no_material_improvement', 'needs_identity_resolution', 'needs_taxonomy_resolution', 'rate_limited_retriable', 'blocked_sources', 'partially_improved'].includes(item.business_outcome || '')
               ).map(item => item.product_id as string))}
             >
               Retry failed / incomplete

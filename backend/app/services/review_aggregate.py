@@ -44,9 +44,14 @@ def classify_review_quality(rating: Any, count: Any) -> str:
 
 def _with_quality(result: dict[str, Any]) -> dict[str, Any]:
     quality = classify_review_quality(result.get("average_rating"), result.get("review_count"))
+    samples = _integer(result.get("review_sample_count"))
+    source_count = _integer(result.get("review_source_count") or result.get("source_count"))
+    intelligence = "strong" if samples >= 20 and source_count >= 2 else "moderate" if samples >= 5 else "limited" if samples else "insufficient"
     return {
         **result,
         "review_quality": quality,
+        "aggregate_strength": quality,
+        "review_intelligence_strength": intelligence,
         "rating_available": result.get("average_rating") not in (None, ""),
         "business_display_rating": quality != "insufficient",
     }
@@ -144,6 +149,19 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         rating = rating_field.value if rating_field else None
         count = count_field.value if count_field else None
         source_field = count_field or rating_field
+        field_rows = [row for row in (rating_field, count_field) if row]
+        evidence_rows = [entry for row in field_rows for entry in (row.evidence or []) if isinstance(entry, dict)]
+        accepted_field_evidence = bool(evidence_rows) and all(
+            entry.get("match_scope") in {"exact_gtin", "exact_resolved_identity", "exact_product", "exact_variant"}
+            and entry.get("evidence_type") in {"licensed_web_search_market_observation", "licensed_search_market_observation"}
+            for entry in evidence_rows
+        )
+        if not accepted_field_evidence:
+            rating_field = count_field = None
+    if rating_field or count_field:
+        rating = rating_field.value if rating_field else None
+        count = count_field.value if count_field else None
+        source_field = count_field or rating_field
         source_url = source_field.source_reference if source_field else None
         summary = {}
         summary = _summary_or_aggregate_fallback(summary, rating, count)
@@ -162,6 +180,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
     # participate in the same ranking instead of being selected by a UI loop.
     listings = db.query(SourceListing).filter(
         SourceListing.canonical_product_id == product_id, SourceListing.is_deleted == False,
+        SourceListing.import_job_id.isnot(None), SourceListing.crawl_job_id.is_(None),
     ).order_by(SourceListing.created_at.desc()).limit(30).all()
     for listing in listings:
         job = db.query(ImportJob).filter(ImportJob.id == listing.import_job_id).first() if listing.import_job_id else None
@@ -301,7 +320,8 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         strength = "none"
 
     best = max(entries, key=lambda entry: (_quality_rank(entry["rating"], entry["count"]), entry["count"], str(entry.get("observed_at") or "")))
-    summary = dict(best.get("summary") or {})
+    from app.services.review_evidence import enforce_review_summary_invariants
+    summary = enforce_review_summary_invariants(best.get("summary") or {})
     if saved_summary and isinstance(saved_summary.value, dict):
         summary.update(saved_summary.value)
     summary.update({
@@ -317,7 +337,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         "source_breakdown": sources,
     })
     if not samples:
-        summary = _summary_or_aggregate_fallback(summary, average, represented) or summary
+        summary = enforce_review_summary_invariants(summary)
         summary["evidence_limitation"] = (
             "Aggregate rating and count evidence is available, but review-text evidence was insufficient for a detailed summary."
             if average is not None or represented else "No reliable review intelligence available yet."
@@ -330,6 +350,8 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
         "source_count": source_count,
         "review_sample_count": len(samples),
         "evidence_strength": strength,
+        "aggregate_strength": classify_review_quality(average, represented),
+        "review_intelligence_strength": "strong" if len(samples) >= 20 and source_count >= 2 else "moderate" if len(samples) >= 5 else "limited" if samples else "insufficient",
         "sources": sources,
         "source_breakdown": sources,
         "review_summary": _json_safe(summary),

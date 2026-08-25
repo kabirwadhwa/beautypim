@@ -198,6 +198,8 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "evidence_completeness": gap_plan["evidence_completeness"],
         "research_completeness": gap_plan["research_completeness"],
         "category_module": gap_plan["category_module"],
+        "taxonomy_status": gap_plan.get("taxonomy_status"),
+        "product_understanding": snapshot.get("product_understanding") or {},
         "field_states": gap_plan["field_states"],
         "missing_high_priority_fields": gap_plan["missing_high_priority_fields"],
         "missing_optional_fields": gap_plan["missing_optional_fields"],
@@ -205,6 +207,7 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "market_observation_gaps": market_observation_gaps,
         "research_phase": gap_plan["phase"],
         "identity_resolution_required": gap_plan["identity_resolution_required"],
+        "taxonomy_resolution_required": gap_plan.get("taxonomy_resolution_required", False),
         "blocked_objectives": gap_plan.get("blocked_objectives", []),
         "fields_recommended_for_research": [
             item["field"] for item in gap_plan["research_objectives"] + gap_plan.get("blocked_objectives", [])

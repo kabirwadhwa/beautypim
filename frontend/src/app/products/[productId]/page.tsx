@@ -127,6 +127,7 @@ interface ProductDetail {
   };
   product_understanding?: {
     identity_status?: string;
+    taxonomy_status?: string;
     match_type?: string;
     category_module?: string;
     confidence?: number;
@@ -291,6 +292,10 @@ export default function ProductDetailPage() {
         if (result.business_outcome === 'needs_identity_resolution') {
           await openImproveProduct();
           setIdentityReviewMessage('Automatic identity research could not safely resolve this product. Confirm the uncertain fields to continue.');
+          return;
+        }
+        if (result.business_outcome === 'needs_taxonomy_resolution') {
+          setNotice('Product identity is resolved, but taxonomy needs review before category-specific enrichment can continue.');
           return;
         }
         if (status.research_status === 'completed' || status.research_status === 'partially_completed') {
@@ -839,6 +844,8 @@ export default function ProductDetailPage() {
   const reviewSources = Array.isArray(product?.review_aggregate?.sources) ? product.review_aggregate.sources : [];
   const reviewSourceCount = Number(product?.review_aggregate?.review_source_count ?? reviewSummary.review_source_count ?? reviewSources.length);
   const reviewStrength = product?.review_aggregate?.evidence_strength || reviewSummary.evidence_strength || 'none';
+  const aggregateStrength = product?.review_aggregate?.aggregate_strength || product?.review_aggregate?.review_quality || 'insufficient';
+  const reviewIntelligenceStrength = product?.review_aggregate?.review_intelligence_strength || (reviewSamples > 0 ? reviewStrength : 'insufficient');
   const themeGroups = [
     ['Positive themes', reviewSummary.positive_themes || [], '#6ee7b7'],
     ['Negative themes', reviewSummary.negative_themes || [], '#fca5a5'],
@@ -940,7 +947,7 @@ export default function ProductDetailPage() {
             <div>
               <div style={{ color: '#a5b4fc', fontSize: 11, fontWeight: 800, letterSpacing: '.08em' }}>PRODUCT UNDERSTANDING</div>
               <div style={{ marginTop: 5, color: '#f8fafc', fontSize: 16, fontWeight: 750, textTransform: 'capitalize' }}>
-                {product.product_understanding.identity_status || 'unresolved'} identity · {product.product_understanding.category_module || 'unknown'}
+                Identity: {product.product_understanding.identity_status || 'unresolved'} · Taxonomy: {product.product_understanding.taxonomy_status || (product.product_understanding.category_module === 'unknown' ? 'needs review' : 'resolved')}
               </div>
               <div style={{ marginTop: 4, color: '#94a3b8', fontSize: 12 }}>
                 Match: {(product.product_understanding.match_type || 'unmatched').replaceAll('_', ' ')}
@@ -1197,7 +1204,11 @@ export default function ProductDetailPage() {
                 <div style={{ color: '#94a3b8', fontSize: 14 }}>{Number(reviewCount).toLocaleString()} represented reviews</div>
               )}
               <div style={{ color: '#94a3b8', fontSize: 13 }}>{reviewSourceCount} source{reviewSourceCount === 1 ? '' : 's'} · {reviewSamples} actual review sample{reviewSamples === 1 ? '' : 's'}</div>
-              <span style={{ color: reviewStrength === 'strong' ? '#6ee7b7' : reviewStrength === 'none' ? '#fca5a5' : '#fde68a', fontSize: 12, textTransform: 'uppercase', fontWeight: 800 }}>{String(reviewStrength).replaceAll('_', ' ')}</span>
+              <span style={{ color: aggregateStrength === 'strong' ? '#6ee7b7' : aggregateStrength === 'insufficient' ? '#fca5a5' : '#fde68a', fontSize: 12, textTransform: 'uppercase', fontWeight: 800 }}>Aggregate evidence: {String(aggregateStrength).replaceAll('_', ' ')}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10, color: '#cbd5e1', fontSize: 13 }}>
+              <span><strong>Review Intelligence:</strong> {String(reviewIntelligenceStrength).replaceAll('_', ' ')}</span>
+              <span>{reviewSamples} stored review sample{reviewSamples === 1 ? '' : 's'}</span>
             </div>
             {reviewSamples > 0 && reviewSummaryText ? (
               <>
@@ -1215,7 +1226,7 @@ export default function ProductDetailPage() {
               </>
             ) : reviewRating != null || reviewCount != null ? (
               <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5, marginTop: 14 }}>
-                Aggregate rating and count evidence is available, but review-text evidence was insufficient for a detailed summary.
+                <strong>Detailed Review Summary:</strong> Unavailable until review-level text is collected. Aggregate rating and review-count evidence is available, but review-text evidence was insufficient for a detailed summary.
               </div>
             ) : (
               <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5 }}>

@@ -107,6 +107,8 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
             "review_samples": (aggregate.get("review_summary") or {}).get("review_samples") or [],
             "evidence_strength": aggregate.get("evidence_strength"),
             "sources": aggregate.get("sources") or []}
+    from app.services.review_evidence import enforce_review_summary_invariants
+    base = enforce_review_summary_invariants(base)
     samples = base["review_samples"]
     if samples:
         product = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()

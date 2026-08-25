@@ -12,7 +12,7 @@ from typing import Any
 
 TERMINAL_OUTCOMES = {
     "improved", "partially_improved", "no_material_improvement",
-    "needs_identity_resolution", "blocked_sources", "rate_limited_retriable", "failed",
+    "needs_identity_resolution", "needs_taxonomy_resolution", "blocked_sources", "rate_limited_retriable", "failed",
 }
 
 
@@ -116,6 +116,7 @@ def snapshot_metrics(quality: dict[str, Any], *, field_values: dict[str, Any], i
         "identity_status": quality.get("identity_status"),
         "identity_completeness": quality.get("identity_completeness", 0),
         "category_module": quality.get("category_module", "unknown"),
+        "taxonomy_status": quality.get("taxonomy_status"),
         "fields": field_values,
         "missing_high_priority_fields": list(quality.get("missing_high_priority_fields") or []),
         "image_present": image_present,
@@ -144,10 +145,12 @@ def evaluate_research_outcome(before: dict[str, Any], after: dict[str, Any], *, 
     meaningful = bool(fields_added or image_added or review_added or formulation_added or identity_improved or completeness_delta >= 5)
     classifications = [classify_research_error(value) for value in errors]
     blocked_count = sum(value in {"source_blocked", "source_transient"} for value in classifications)
-    unresolved = bool(result.get("identity_unresolved") or after.get("category_module") == "unknown"
-                      or after.get("identity_status") in {"ambiguous", "incomplete", "unresolved", "conflicting"})
-    if unresolved:
+    identity_unresolved = bool(result.get("identity_unresolved") or after.get("identity_status") in {"ambiguous", "incomplete", "unresolved", "conflicting"})
+    taxonomy_unresolved = bool(after.get("taxonomy_status") == "needs_review" or after.get("category_module") == "unknown")
+    if identity_unresolved:
         outcome = "needs_identity_resolution"
+    elif taxonomy_unresolved:
+        outcome = "needs_taxonomy_resolution" if not meaningful else "partially_improved"
     elif meaningful and (int(after.get("completeness") or 0) >= 75 or not after.get("missing_high_priority_fields")):
         outcome = "improved"
     elif meaningful:
@@ -185,6 +188,7 @@ def public_business_status(outcome: str) -> str:
         "improved": "READY",
         "partially_improved": "IMPROVED_BUT_INCOMPLETE",
         "needs_identity_resolution": "REVIEW_REQUIRED",
+        "needs_taxonomy_resolution": "REVIEW_REQUIRED",
         "no_material_improvement": "NO_EVIDENCE_FOUND",
         "rate_limited_retriable": "TECHNICAL_RETRY_REQUIRED",
         "blocked_sources": "BLOCKED",

@@ -20,6 +20,7 @@ from app.scraping.ingredients import normalize_ingredient, split_inci
 from app.scraping.schemas import ScrapedProduct
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.product_identity import research_identity_compatible
+from app.services.review_evidence import enforce_review_summary_invariants
 
 
 def stable_hash(value) -> str:
@@ -83,6 +84,7 @@ def persist_product(
     db: Session, job: CrawlJob, raw_page: RawPageObservation,
     product: ScrapedProduct, adapter: ProductAdapter, *, create_unmatched_draft: bool = True,
 ) -> ScrapedProductObservation:
+    product.review_summary = enforce_review_summary_invariants(product.review_summary)
     payload = product.model_dump(mode="json", exclude={"fields"})
     safe_fields_only = bool((job.configuration or {}).get("research_safe_fields_only"))
     identity_only = bool((job.configuration or {}).get("research_identity_only"))

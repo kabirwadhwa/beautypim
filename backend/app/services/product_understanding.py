@@ -29,6 +29,11 @@ LEGAL_ENTITY = re.compile(
 )
 
 MODULE_TERMS = {
+    "beauty_accessory": (
+        "beauty tool", "beauty accessory", "cosmetic tool", "eyelash curler", "lash curler",
+        "curler pad", "replacement pad", "refill pad", "makeup brush", "cosmetic brush",
+        "sponge", "applicator", "tweezer", "tweezers", "sharpener",
+    ),
     "fragrance": ("fragrance", "perfume", "parfum", "eau de", "cologne", "duft", "geur"),
     "haircare": ("hair", "shampoo", "conditioner", "scalp", "styling", "cheveux", "haar", "haare"),
     "makeup": ("makeup", "make-up", "maquillage", "foundation", "concealer", "lipstick", "lip", "lips", "lèvres", "lippen", "mascara", "eyeshadow", "blush"),
@@ -107,6 +112,13 @@ def infer_area(*values: Any) -> str | None:
 def infer_product_type(module: str, *values: Any) -> str | None:
     text = " ".join(normalized_text(v).lower() for v in values if not is_placeholder(v))
     rules = (
+        ("Eyelash Curler Refill Pad", ("eyelash curler pad", "lash curler pad", "curler refill pad", "replacement curler pad", "refill pad")),
+        ("Eyelash Curler", ("eyelash curler", "lash curler")),
+        ("Makeup Brush", ("makeup brush", "cosmetic brush")),
+        ("Makeup Sponge", ("makeup sponge", "beauty sponge", "beauty blender")),
+        ("Applicator", ("applicator",)),
+        ("Tweezers", ("tweezer", "tweezers")),
+        ("Cosmetic Sharpener", ("cosmetic sharpener", "makeup sharpener", "pencil sharpener")),
         ("Liquid Lipstick", ("liquid lipstick", "lip maestro", "lip color", "lip colour")),
         ("Lipstick", ("lipstick", "rouge à lèvres")),
         ("Foundation", ("foundation", "fond de teint")),
@@ -127,7 +139,7 @@ def infer_product_type(module: str, *values: Any) -> str | None:
     for label, terms in rules:
         if any(term in padded for term in terms):
             return label
-    return {"fragrance": "Fragrance", "makeup": "Makeup", "haircare": "Hair Care", "skincare": "Skin Care"}.get(module)
+    return {"fragrance": "Fragrance", "makeup": "Makeup", "haircare": "Hair Care", "skincare": "Skin Care", "beauty_accessory": "Beauty Accessory"}.get(module)
 
 
 def resolve_product_understanding(
@@ -268,6 +280,14 @@ def resolve_product_understanding(
     if is_placeholder(type_value):
         type_value = infer_product_type(module, *signal_values)
     area = infer_area(*signal_values)
+    if module == "beauty_accessory":
+        accessory_text = " ".join(normalized_text(value).lower() for value in signal_values if not is_placeholder(value))
+        if any(term in accessory_text for term in ("eyelash", "lash curler", "eye applicator")):
+            area = "Eyes"
+            if is_placeholder(subcategory_value):
+                subcategory_value = "Eye Tools & Accessories"
+        elif is_placeholder(subcategory_value):
+            subcategory_value = "Cosmetic Tools & Accessories"
     if module == "makeup" and not area and any(term in normalized_text(product_value).lower() for term in ("lip", "rouge")):
         area = "Lips"
 
@@ -289,7 +309,8 @@ def resolve_product_understanding(
     confidence = 0.99 if exact_safe else 0.96 if human_identity_sufficient else 0.9 if source_identity_sufficient else 0.82 if identity_status == "partial" else 0.0
     source_status = "source_supported" if exact_safe or source_identity_sufficient else "human_confirmed" if human_identity_sufficient else "source_interpreted" if identity_status == "partial" else "unresolved"
     taxonomy_confidence = 0.98 if exact_safe and category_value else 0.82 if module != "unknown" else 0.0
-    taxonomy_status = "source_supported" if exact_safe else "inferred" if module != "unknown" else "unresolved"
+    taxonomy_resolved = bool(module != "unknown" and (category_value or type_value or infer_product_type(module, *signal_values)))
+    taxonomy_status = "source_supported" if exact_safe and taxonomy_resolved else "inferred" if taxonomy_resolved else "unresolved"
     research = []
     if identity_status != "resolved":
         research.extend(["consumer_brand", "product_family", "variant"])
@@ -297,7 +318,8 @@ def resolve_product_understanding(
         research.extend(["category", "subcategory", "product_type", "application_area"])
 
     return {
-        "contract_version": "1.0", "identity_status": identity_status,
+        "contract_version": "1.1", "identity_status": identity_status,
+        "taxonomy_status": "resolved" if taxonomy_resolved else "needs_review",
         "match_type": "exact_gtin" if exact_safe and gtin else corpus.get("match_level", "unmatched"),
         "identity": {
             "consumer_brand": _field(brand_value or None, confidence, source_status, evidence),
@@ -308,7 +330,7 @@ def resolve_product_understanding(
             "size": _field(size or None, 1.0 if size else 0.0, "source_supported" if size else "unresolved"),
         },
         "taxonomy": {
-            "category": _field(category_value or ({"fragrance": "Fragrance", "makeup": "Makeup", "haircare": "Hair Care", "skincare": "Skin Care"}.get(module)), taxonomy_confidence, taxonomy_status, evidence),
+            "category": _field(category_value or ({"fragrance": "Fragrance", "makeup": "Makeup", "haircare": "Hair Care", "skincare": "Skin Care", "beauty_accessory": "Beauty Tools & Accessories"}.get(module)), taxonomy_confidence, taxonomy_status, evidence),
             "subcategory": _field(subcategory_value or area, taxonomy_confidence if (subcategory_value or area) else 0.0, taxonomy_status if (subcategory_value or area) else "unresolved", evidence),
             "product_type": _field(type_value, taxonomy_confidence if type_value else 0.0, taxonomy_status if type_value else "unresolved", evidence),
             "application_area": _field(area, 0.88 if area else 0.0, "inferred" if area else "unresolved", evidence),
@@ -318,6 +340,8 @@ def resolve_product_understanding(
         "reconciliation_reason": (
             "Human-confirmed identity/taxonomy values were preserved; contradictory automatic evidence was routed to review."
             if human and evidence_conflicts else
+            "Exact product evidence resolved identity; taxonomy requires separate review."
+            if exact_safe and not taxonomy_resolved else
             "Exact product evidence resolved identity and taxonomy before enrichment."
             if exact_safe else
             "Human-confirmed foundational identity and taxonomy resolved the enrichment dependency gate."

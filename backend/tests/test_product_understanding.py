@@ -63,6 +63,35 @@ def test_common_body_and_bath_products_receive_safe_beauty_module():
     assert infer_module("Hand Care", "Hydrating Hand Cream") == "skincare"
 
 
+def test_exact_beauty_accessory_keeps_identity_and_resolves_accessory_taxonomy(monkeypatch):
+    monkeypatch.setattr("app.services.product_understanding.retrieve_corpus_evidence", lambda *a, **k: {
+        "match_level": "exact_product", "exact_matches": [{
+            "brand": "Shiseido", "product_name": "Eyelash Curler Pad",
+            "gtin": "729238500976", "fields": {}, "conflicts": [],
+        }], "family_matches": [], "comparables": [],
+    })
+    result = resolve_product_understanding(None, raw_data={
+        "Brand": "Shiseido", "Product name": "Eyelash Curler Pad", "EAN": "729238500976",
+    })
+    assert result["identity_status"] == "resolved"
+    assert result["taxonomy_status"] == "resolved"
+    assert result["category_module"] == "beauty_accessory"
+    assert result["taxonomy"]["category"]["value"] == "Beauty Tools & Accessories"
+    assert result["taxonomy"]["subcategory"]["value"] == "Eye Tools & Accessories"
+    assert result["taxonomy"]["product_type"]["value"] == "Eyelash Curler Refill Pad"
+    assert result["taxonomy"]["application_area"]["value"] == "Eyes"
+
+    quality = evaluate_completeness({
+        "brand": "Shiseido", "product_name": "Eyelash Curler Pad", "gtin": "729238500976",
+        "category": "Beauty Tools & Accessories", "subcategory": "Eye Tools & Accessories",
+        "product_type": "Eyelash Curler Refill Pad", "product_understanding": result,
+    })
+    assert quality["category_module"] == "beauty_accessory"
+    assert quality["taxonomy_status"] == "resolved"
+    assert "inci" not in quality["field_states"]
+    assert "shade_colour" not in quality["field_states"]
+
+
 def test_enterprise_row_resolves_brand_family_variant_and_makeup(monkeypatch):
     monkeypatch.setattr("app.services.product_understanding.retrieve_corpus_evidence", lambda *a, **k: _exact_armani())
     raw = {

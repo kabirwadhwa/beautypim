@@ -363,6 +363,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         from app.services.identity_review import synchronize_blocking_issue
         synchronize_blocking_issue(db, product, next_plan.get("identity_review") or {})
         result["identity_phase_completed"] = configuration.get("research_phase") == "identity_resolution"
+        result["taxonomy_phase_completed"] = configuration.get("research_phase") == "taxonomy_resolution"
         result["next_phase"] = next_plan.get("research_phase")
         # A bounded second discovery pass is allowed only after persisted
         # evidence has been reconciled and gaps recalculated.  This prevents a
@@ -444,7 +445,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             result["second_pass_used"] = False
         if next_plan.get("research_phase") == "attribute_completion":
             attribute_objectives = [entry["field"] for entry in next_plan.get("research_objectives") or []]
-            if attribute_objectives and configuration.get("research_phase") == "identity_resolution":
+            if attribute_objectives and configuration.get("research_phase") in {"identity_resolution", "taxonomy_resolution"}:
                 attribute_result = _automatic_product_research(
                     db, product, user, candidates=discovery.get("candidates") or [],
                     research_objectives=attribute_objectives,
@@ -473,7 +474,8 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             try:
                 from app.services.review_summarization import summarize_product_reviews
                 review_summary = summarize_product_reviews(db, product.id)
-                result["review_summary_generated"] = bool(review_summary)
+                result["review_summary_generated"] = bool(review_summary and int(review_summary.get("review_sample_count") or 0) > 0)
+                result["review_summary_mode"] = "text_synthesis" if result["review_summary_generated"] else "aggregate_only"
             except Exception as exc:
                 logger.warning("Review synthesis failed for %s: %s", product.id, exc)
                 result["review_summary_generated"] = False
@@ -485,14 +487,20 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 try:
                     from app.services.review_summarization import summarize_product_reviews
                     review_summary = summarize_product_reviews(db, product.id)
-                    result["review_summary_generated"] = bool(review_summary)
+                    result["review_summary_generated"] = bool(review_summary and int(review_summary.get("review_sample_count") or 0) > 0)
+                    result["review_summary_mode"] = "text_synthesis" if result["review_summary_generated"] else "aggregate_only"
                 except Exception as exc:
                     logger.warning("Review synthesis failed for %s: %s", product.id, exc)
                     result["review_summary_generated"] = False
                     result["review_summary_error"] = str(exc)
             else:
                 result["review_summary_generated"] = False
-            result["identity_unresolved"] = True
+            latest_understanding = next_plan.get("product_understanding") or {}
+            result["identity_unresolved"] = latest_understanding.get("identity_status") != "resolved"
+            result["taxonomy_unresolved"] = (
+                latest_understanding.get("taxonomy_status") == "needs_review"
+                or latest_understanding.get("category_module") == "unknown"
+            )
         result["identity_queries_tried"] = discovery.get("identity_queries_tried") or identity_queries
         result["fields_still_missing"] = remaining_objectives
         result["web_requests_started"] = int(discovery.get("provider_attempts") or 1) + rate_limit_retries

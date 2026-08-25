@@ -170,12 +170,18 @@ def test_selector_uses_cited_web_search_field_evidence_when_retailer_blocks_craw
         FieldValue(
             canonical_product_id=product.id, field_name="rating", value=4.6,
             source_type="source_data", source_reference=source_url,
-            review_status="inferred", is_current=True,
+            review_status="inferred", is_current=True, evidence=[{
+                "evidence_type": "licensed_web_search_market_observation",
+                "match_scope": "exact_gtin",
+            }],
         ),
         FieldValue(
             canonical_product_id=product.id, field_name="review_count", value=920,
             source_type="source_data", source_reference=source_url,
-            review_status="inferred", is_current=True,
+            review_status="inferred", is_current=True, evidence=[{
+                "evidence_type": "licensed_web_search_market_observation",
+                "match_scope": "exact_gtin",
+            }],
         ),
     ])
     db.commit()
@@ -188,6 +194,46 @@ def test_selector_uses_cited_web_search_field_evidence_when_retailer_blocks_craw
     assert selected["match_scope"] == "exact_product"
     assert selected["review_sample_count"] == 0
     assert selected["review_summary"]["evidence_limitation"]
+
+
+def test_declared_samples_without_text_never_create_intelligence_or_themes(db, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    brand = Brand(id=uuid.uuid4(), name="Tool Brand", normalized_name=uuid.uuid4().hex)
+    product = CanonicalProduct(id=uuid.uuid4(), brand_id=brand.id, product_name="Curler Refill Pad", normalized_name="curlerrefillpad")
+    crawl = CrawlJob(id=uuid.uuid4(), domain="shop.example", starting_urls=["https://shop.example/p/pad"], crawl_mode="single_url", status="completed", configuration={})
+    url = CrawlUrl(id=uuid.uuid4(), crawl_job_id=crawl.id, url="https://shop.example/p/pad", normalized_url="https://shop.example/p/pad", state="completed", depth=0)
+    page = RawPageObservation(id=uuid.uuid4(), crawl_job_id=crawl.id, crawl_url_id=url.id, source_url=url.url, final_url=url.url, http_status=200, content_hash=uuid.uuid4().hex, response_size=100, parser_version="test")
+    observation = ScrapedProductObservation(
+        id=uuid.uuid4(), crawl_job_id=crawl.id, raw_page_id=page.id, canonical_product_id=product.id,
+        source_name="Retailer", source_domain="shop.example", source_url=url.url, canonical_url=url.url,
+        identity_hash=uuid.uuid4().hex, structured_hash=uuid.uuid4().hex, match_status="matched",
+        adapter_name="test", adapter_version="1", parser_version="1",
+        normalized_payload={"rating": 4.7, "review_count": 248, "review_summary": {
+            "review_sample_count": 8, "review_samples": [],
+            "frequently_praised_topics": ["value"], "positive_themes": ["sensitivity"],
+            "ai_summary_text": "Unsupported summary",
+        }},
+    )
+    db.add_all([brand, crawl]); db.flush(); db.add(product); db.flush(); db.add(url); db.flush(); db.add(page); db.flush(); db.add(observation); db.commit()
+
+    summary = summarize_product_reviews(db, product.id)
+    selected = select_review_aggregate(db, product.id)
+    assert selected["review_sample_count"] == 0
+    assert selected["aggregate_strength"] == "strong"
+    assert selected["review_intelligence_strength"] == "insufficient"
+    assert summary["ai_summary_text"] is None
+    assert summary["positive_themes"] == summary["negative_themes"] == summary["mixed_themes"] == []
+
+
+def test_uncorroborated_field_values_do_not_leak_into_canonical_reviews(db):
+    brand = Brand(id=uuid.uuid4(), name="Conflict Brand", normalized_name=uuid.uuid4().hex)
+    product = CanonicalProduct(id=uuid.uuid4(), brand_id=brand.id, product_name="Conflict Product", normalized_name="conflictproduct")
+    db.add_all([brand, product]); db.flush()
+    db.add(FieldValue(canonical_product_id=product.id, field_name="rating", value=1.0,
+                      source_type="source_data", source_reference="https://wrong.example/p", review_status="conflicting", is_current=True,
+                      evidence=[{"evidence_type": "scraped_product_observation", "match_scope": "comparable"}]))
+    db.commit()
+    assert select_review_aggregate(db, product.id) is None
 
 
 def test_review_synthesis_accepts_top_level_aggregate_rating(db, monkeypatch):

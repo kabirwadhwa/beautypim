@@ -13,6 +13,12 @@ FACT_FIELDS = {"gtin", "size", "variant", "concentration", "inci", "top_notes", 
 
 CATEGORY_RULES = {
     "unknown": {},
+    "beauty_accessory": {
+        "purpose": "high", "compatibility": "high", "material": "optional",
+        "directions": "high", "care_instructions": "medium",
+        "replacement_refill_status": "medium", "durability": "optional",
+        "ergonomic_characteristics": "optional",
+    },
     "skincare": {
         "skin_types": "high", "texture": "medium", "finish": "medium", "inci": "high",
         "key_ingredients": "high", "targeted_concerns": "high",
@@ -68,6 +74,8 @@ def category_module(snapshot: dict[str, Any]) -> str:
     if authoritative in CATEGORY_RULES:
         return authoritative
     text = " ".join(str(snapshot.get(key) or "") for key in ("category", "subcategory", "product_type")).lower()
+    if any(term in text for term in MAKEUP_TOOL_TERMS + ("eyelash curler", "curler pad", "replacement pad", "refill pad", "tweezers", "sharpener")):
+        return "beauty_accessory"
     if any(term in text for term in ("fragrance", "perfume", "parfum", "eau de", "cologne")):
         return "fragrance"
     if any(term in text for term in ("hair", "shampoo", "conditioner", "scalp", "styling")):
@@ -163,13 +171,18 @@ def evaluate_completeness(snapshot: dict[str, Any], metadata: dict[str, dict[str
     overall = score(list(fields))
     understanding = snapshot.get("product_understanding") or {}
     identity_status = understanding.get("identity_status")
-    if module == "unknown" or identity_status in {"unresolved", "conflicting"}:
+    taxonomy_status = understanding.get("taxonomy_status")
+    if identity_status in {"unresolved", "conflicting"}:
         overall = min(overall, 55)
     elif identity_status == "partial":
         # Commercial prose must not conceal weak foundational identity.
         overall = min(overall, 75)
+    elif module == "unknown" or taxonomy_status == "needs_review":
+        # Taxonomy uncertainty must be visible without rewriting an exact,
+        # already-resolved product identity as unresolved.
+        overall = min(overall, 75)
     return {
-        "category_module": module, "overall_completeness": overall,
+        "category_module": module, "taxonomy_status": taxonomy_status or ("resolved" if module != "unknown" else "needs_review"), "overall_completeness": overall,
         "identity_completeness": score(identity_names), "content_completeness": score(content_names),
         "commercial_completeness": score(commercial_names), "category_completeness": score(category_names),
         "evidence_completeness": round(100 * len(evidence_supported) / len(evidence_names)) if evidence_names else 100,
@@ -192,23 +205,37 @@ def build_gap_plan(snapshot: dict[str, Any], metadata: dict[str, dict[str, Any]]
             f"Use product evidence to produce specific {name.replace('_', ' ')} intelligence.",
         })
     understanding = snapshot.get("product_understanding") or {}
-    identity_objectives = list((understanding.get("research_plan") or {}).get("objectives") or [])
-    if result["category_module"] == "unknown" and not identity_objectives:
-        identity_objectives = ["consumer_brand", "product_family", "variant", "category", "product_type"]
+    foundational_objectives = list((understanding.get("research_plan") or {}).get("objectives") or [])
+    identity_fields = {"consumer_brand", "product_family", "variant", "gtin"}
+    taxonomy_fields = {"category", "subcategory", "product_type", "application_area"}
+    identity_objectives = [name for name in foundational_objectives if name in identity_fields]
+    taxonomy_objectives = [name for name in foundational_objectives if name in taxonomy_fields]
+    if (result["category_module"] == "unknown" or not present(_value(snapshot, "brand", result["category_module"]))
+            or not present(_value(snapshot, "product_name", result["category_module"]))) and understanding.get("identity_status") != "resolved" and not identity_objectives:
+        identity_objectives = ["consumer_brand", "product_family", "variant"]
+    if result["category_module"] == "unknown" and not taxonomy_objectives:
+        taxonomy_objectives = ["category", "subcategory", "product_type", "application_area"]
     identity_plan = [{
         "field": name, "objective_type": "identity", "requires_direct_evidence": True,
         "instruction": f"Resolve {name.replace('_', ' ')} before category enrichment.",
     } for name in identity_objectives]
+    taxonomy_plan = [{
+        "field": name, "objective_type": "taxonomy", "requires_direct_evidence": True,
+        "instruction": f"Resolve {name.replace('_', ' ')} before category enrichment.",
+    } for name in taxonomy_objectives]
     identity_required = bool(identity_plan)
+    taxonomy_required = not identity_required and bool(taxonomy_plan)
+    active_plan = identity_plan if identity_required else taxonomy_plan if taxonomy_required else objectives
     return {
         **result,
-        "phase": "identity_resolution" if identity_required else "attribute_completion",
+        "phase": "identity_resolution" if identity_required else "taxonomy_resolution" if taxonomy_required else "attribute_completion",
         # This is deliberately not a flat plan: downstream work is operationally
         # blocked until Product Understanding is recalculated after phase one.
-        "research_objectives": identity_plan if identity_required else objectives,
-        "blocked_objectives": objectives if identity_required else [],
+        "research_objectives": active_plan,
+        "blocked_objectives": objectives if (identity_required or taxonomy_required) else [],
         "identity_resolution_required": identity_required,
-        "should_research": bool(identity_plan if identity_required else objectives),
+        "taxonomy_resolution_required": taxonomy_required,
+        "should_research": bool(active_plan),
     }
 
 

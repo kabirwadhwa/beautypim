@@ -56,6 +56,14 @@ def test_unresolved_identity_is_never_reported_improved():
     assert result["business_outcome"] == "needs_identity_resolution"
 
 
+def test_resolved_identity_with_unknown_taxonomy_is_not_mislabeled_identity_failure():
+    before = _snapshot(completeness=70, identity_status="resolved", category_module="unknown")
+    after = {**before, "taxonomy_status": "needs_review"}
+    result = evaluate_research_outcome(before, after, result={}, errors=[])
+    assert result["business_outcome"] == "needs_taxonomy_resolution"
+    assert result["after_identity_status"] == "resolved"
+
+
 def test_failure_classification_distinguishes_provider_and_source_failures():
     assert classify_research_error("HTTP 429 tokens per min") == "rate_limited"
     assert classify_research_error("Retailer HTTP 403") == "source_blocked"

@@ -1028,10 +1028,14 @@ def improve_product(
                 # product enrichment into a failed customer action.
                 pass
         elif research_summary is None:
+            review_dimension = ((before_quality.get("identity_review") or {}).get("review_dimension") or "identity")
             research_summary = {
-                "identity_required": True, "research_pending": False,
-                "business_outcome": "needs_identity_resolution",
-                "message": "Identity confirmation is required before product-specific enrichment can continue.",
+                "identity_required": review_dimension == "identity", "taxonomy_required": review_dimension == "taxonomy",
+                "research_pending": False,
+                "business_outcome": "needs_taxonomy_resolution" if review_dimension == "taxonomy" else "needs_identity_resolution",
+                "message": ("Taxonomy confirmation is required before category-specific enrichment can continue."
+                            if review_dimension == "taxonomy" else
+                            "Identity confirmation is required before product-specific enrichment can continue."),
             }
         record_audit(
             db, "CanonicalProduct", product.id, product.product_name, "update",
@@ -2261,7 +2265,7 @@ def bulk_improve_status(
         outcome: sum(1 for item in items if item.get("business_outcome") == outcome)
         for outcome in (
             "improved", "partially_improved", "no_material_improvement",
-            "needs_identity_resolution", "blocked_sources", "rate_limited_retriable", "failed",
+            "needs_identity_resolution", "needs_taxonomy_resolution", "blocked_sources", "rate_limited_retriable", "failed",
         )
     }
     return {

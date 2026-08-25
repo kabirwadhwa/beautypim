@@ -114,12 +114,18 @@ def does_this_product_require_identity_review(
     state = dict(state_row.value or {}) if state_row and isinstance(state_row.value, dict) else {}
     skipped_current = state.get("status") == "SKIPPED" and state.get("fingerprint") == fingerprint
     conflicts = [item for item in contract.get("conflicts") or [] if item.get("severity") == "high"]
-    unresolved = bool(
+    identity_unresolved = bool(
         summary.get("identity_resolution_required")
         or summary.get("identity_status") in {"ambiguous", "incomplete", "unresolved", "conflicting"}
         or contract.get("identity_status") in {"unresolved", "partial", "conflicting"}
+    )
+    taxonomy_unresolved = bool(
+        summary.get("taxonomy_resolution_required")
+        or summary.get("taxonomy_status") == "needs_review"
+        or contract.get("taxonomy_status") == "needs_review"
         or contract.get("category_module") == "unknown"
     )
+    unresolved = identity_unresolved or taxonomy_unresolved
     human_fields = _human_fields(db, product.id)
     if skipped_current:
         review_status = "SKIPPED"
@@ -146,6 +152,9 @@ def does_this_product_require_identity_review(
     }
     return {
         "requires_review": unresolved,
+        "identity_requires_review": identity_unresolved,
+        "taxonomy_requires_review": taxonomy_unresolved,
+        "review_dimension": "identity" if identity_unresolved else "taxonomy" if taxonomy_unresolved else None,
         "review_status": review_status,
         "reasons": _reasons(contract, summary),
         "understanding_fingerprint": fingerprint,
