@@ -142,7 +142,15 @@ def evaluate_research_outcome(before: dict[str, Any], after: dict[str, Any], *, 
         before.get("identity_status") != after.get("identity_status")
         and after.get("identity_status") == "complete"
     ) or int(after.get("identity_completeness") or 0) > int(before.get("identity_completeness") or 0)
-    meaningful = bool(fields_added or image_added or review_added or formulation_added or identity_improved or completeness_delta >= 5)
+    taxonomy_improved = bool(
+        (before.get("taxonomy_status") != "resolved" or before.get("category_module") == "unknown")
+        and after.get("taxonomy_status") == "resolved"
+        and after.get("category_module") not in {None, "", "unknown"}
+    )
+    meaningful = bool(
+        fields_added or image_added or review_added or formulation_added
+        or identity_improved or taxonomy_improved or completeness_delta >= 5
+    )
     classifications = [classify_research_error(value) for value in errors]
     blocked_count = sum(value in {"source_blocked", "source_transient"} for value in classifications)
     identity_unresolved = bool(result.get("identity_unresolved") or after.get("identity_status") in {"ambiguous", "incomplete", "unresolved", "conflicting"})
@@ -176,6 +184,7 @@ def evaluate_research_outcome(before: dict[str, Any], after: dict[str, Any], *, 
         "image_added": image_added,
         "review_evidence_added": review_added,
         "formulation_added": formulation_added,
+        "taxonomy_resolved": taxonomy_improved,
         "sources_discovered": int(result.get("candidates") or 0),
         "sources_ingested": int(result.get("sources_ingested") or 0),
         "sources_blocked": blocked_count,

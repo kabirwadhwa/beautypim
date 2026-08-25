@@ -64,6 +64,21 @@ def test_resolved_identity_with_unknown_taxonomy_is_not_mislabeled_identity_fail
     assert result["after_identity_status"] == "resolved"
 
 
+def test_resolved_accessory_taxonomy_is_a_material_partial_improvement():
+    before = _snapshot(
+        completeness=65, identity_status="resolved", category_module="unknown",
+        taxonomy_status="needs_review",
+    )
+    after = _snapshot(
+        completeness=72, identity_status="resolved", category_module="beauty_accessory",
+        taxonomy_status="resolved", missing_high_priority_fields=["purpose", "compatibility"],
+    )
+    result = evaluate_research_outcome(before, after, result={"sources_ingested": 2}, errors=[])
+    assert result["taxonomy_resolved"] is True
+    assert result["business_outcome"] == "partially_improved"
+    assert public_business_status(result["business_outcome"]) == "IMPROVED_BUT_INCOMPLETE"
+
+
 def test_failure_classification_distinguishes_provider_and_source_failures():
     assert classify_research_error("HTTP 429 tokens per min") == "rate_limited"
     assert classify_research_error("Retailer HTTP 403") == "source_blocked"

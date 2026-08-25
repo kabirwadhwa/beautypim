@@ -179,8 +179,10 @@ def evaluate_completeness(snapshot: dict[str, Any], metadata: dict[str, dict[str
         overall = min(overall, 75)
     elif module == "unknown" or taxonomy_status == "needs_review":
         # Taxonomy uncertainty must be visible without rewriting an exact,
-        # already-resolved product identity as unresolved.
-        overall = min(overall, 75)
+        # already-resolved product identity as unresolved.  Keep this below a
+        # resolved category's honest score so resolving taxonomy cannot appear
+        # to make the dossier worse merely by activating applicable fields.
+        overall = min(overall, 65)
     return {
         "category_module": module, "taxonomy_status": taxonomy_status or ("resolved" if module != "unknown" else "needs_review"), "overall_completeness": overall,
         "identity_completeness": score(identity_names), "content_completeness": score(content_names),

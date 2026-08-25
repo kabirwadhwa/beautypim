@@ -88,6 +88,28 @@ def test_makeup_tool_uses_accessory_module_without_formula_or_colour_cosmetic_at
     assert "finish" not in result["missing_high_priority_fields"]
 
 
+def test_resolving_accessory_taxonomy_does_not_reduce_foundational_score():
+    unresolved = evaluate_completeness({
+        **base_product("", ""),
+        "product_name": "Eyelash Curler Pad",
+        "product_understanding": {
+            "identity_status": "resolved", "taxonomy_status": "needs_review",
+            "category_module": "unknown",
+        },
+    })
+    resolved = evaluate_completeness({
+        **base_product("Beauty Tools & Accessories", "Eyelash Curler Refill Pad"),
+        "product_name": "Eyelash Curler Pad",
+        "subcategory": "Eye Tools & Accessories",
+        "product_understanding": {
+            "identity_status": "resolved", "taxonomy_status": "resolved",
+            "category_module": "beauty_accessory",
+        },
+    })
+    assert unresolved["overall_completeness"] <= 65
+    assert resolved["overall_completeness"] >= unresolved["overall_completeness"]
+
+
 def test_ysl_y_acceptance_gap_plan_is_fragrance_specific():
     ysl = {
         "brand": "YSL", "product_name": "YSL Y", "category": "Perfume",
