@@ -373,7 +373,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         current_reviews = select_review_aggregate(db, product.id) or {}
         requested_review_objectives = {
             "reviews", "review_summary", "rating", "review_count"
-        } & set(remaining_objectives)
+        } & set(remaining_objectives) & set(research_objectives)
         needs_review_text = bool(
             requested_review_objectives
             and int(current_reviews.get("review_sample_count") or 0) < int(settings.WEB_RESEARCH_REVIEW_SAMPLE_TARGET)

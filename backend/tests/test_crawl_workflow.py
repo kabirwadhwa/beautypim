@@ -302,7 +302,7 @@ def test_unresolved_fragrance_research_keeps_image_and_reviews_but_blocks_exact_
         ScrapedProductObservation.canonical_product_id == canonical.id,
     ).one()
     assert observation.match_status == "matched"
-    assert observation.normalized_payload["rating"] == 4.6
+    assert float(observation.normalized_payload["rating"]) == 4.6
     assert observation.normalized_payload["review_count"] == 321
     assert db.query(CrawlConflict).filter(
         CrawlConflict.scraped_product_id == observation.id,
