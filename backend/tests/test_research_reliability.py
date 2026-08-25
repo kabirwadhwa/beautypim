@@ -9,7 +9,8 @@ def _snapshot(**overrides):
         "completeness": 40, "identity_status": "complete", "identity_completeness": 100,
         "category_module": "fragrance", "fields": {},
         "missing_high_priority_fields": ["top_notes"], "image_present": False,
-        "review_evidence_present": False, "formulation_count": 0,
+        "review_evidence_present": False, "review_sample_count": 0,
+        "review_intelligence_strength": "insufficient", "formulation_count": 0,
     }
     value.update(overrides)
     return value
@@ -36,6 +37,28 @@ def test_normal_completion_without_change_is_not_success():
     result = evaluate_research_outcome(_snapshot(), _snapshot(), result={"sources_ingested": 0}, errors=[])
     assert result["business_outcome"] == "no_material_improvement"
     assert public_business_status(result["business_outcome"]) == "NO_EVIDENCE_FOUND"
+
+
+def test_new_persisted_review_text_is_a_material_improvement_even_when_aggregate_preexisted():
+    before = _snapshot(
+        completeness=72, category_module="beauty_accessory", taxonomy_status="resolved",
+        review_evidence_present=True, review_sample_count=0,
+    )
+    after = _snapshot(
+        completeness=72, category_module="beauty_accessory", taxonomy_status="resolved",
+        review_evidence_present=True, review_sample_count=8,
+        review_intelligence_strength="moderate",
+    )
+
+    result = evaluate_research_outcome(
+        before, after,
+        result={"sources_ingested": 3, "review_texts_persisted": 8},
+        errors=["retailer.example: HTTP 403"],
+    )
+
+    assert result["business_outcome"] == "partially_improved"
+    assert result["review_evidence_added"] is True
+    assert result["review_samples_added"] == 8
 
 
 def test_blocked_page_does_not_downgrade_materially_improved_product():

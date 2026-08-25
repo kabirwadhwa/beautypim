@@ -111,6 +111,7 @@ def classify_research_error(message: str) -> str:
 
 def snapshot_metrics(quality: dict[str, Any], *, field_values: dict[str, Any], image_present: bool,
                      review: dict[str, Any] | None, formulation_count: int) -> dict[str, Any]:
+    review = review or {}
     return {
         "completeness": quality.get("overall_completeness", 0),
         "identity_status": quality.get("identity_status"),
@@ -121,6 +122,8 @@ def snapshot_metrics(quality: dict[str, Any], *, field_values: dict[str, Any], i
         "missing_high_priority_fields": list(quality.get("missing_high_priority_fields") or []),
         "image_present": image_present,
         "review_evidence_present": bool(review),
+        "review_sample_count": int(review.get("review_sample_count") or 0),
+        "review_intelligence_strength": review.get("review_intelligence_strength") or "insufficient",
         "formulation_count": formulation_count,
     }
 
@@ -135,7 +138,12 @@ def evaluate_research_outcome(before: dict[str, Any], after: dict[str, Any], *, 
                             if name in before_fields and before_fields.get(name) not in (None, "", [], {})
                             and value != before_fields.get(name))
     image_added = bool(after.get("image_present") and not before.get("image_present"))
-    review_added = bool(after.get("review_evidence_present") and not before.get("review_evidence_present"))
+    review_sample_delta = int(after.get("review_sample_count") or 0) - int(before.get("review_sample_count") or 0)
+    review_added = bool(
+        (after.get("review_evidence_present") and not before.get("review_evidence_present"))
+        or review_sample_delta > 0
+        or int(result.get("review_texts_persisted") or 0) > 0
+    )
     formulation_added = int(after.get("formulation_count") or 0) > int(before.get("formulation_count") or 0)
     completeness_delta = int(after.get("completeness") or 0) - int(before.get("completeness") or 0)
     identity_improved = (
@@ -183,6 +191,7 @@ def evaluate_research_outcome(before: dict[str, Any], after: dict[str, Any], *, 
         "fields_still_missing": list(after.get("missing_high_priority_fields") or []),
         "image_added": image_added,
         "review_evidence_added": review_added,
+        "review_samples_added": max(0, review_sample_delta),
         "formulation_added": formulation_added,
         "taxonomy_resolved": taxonomy_improved,
         "sources_discovered": int(result.get("candidates") or 0),
