@@ -7,9 +7,34 @@ from app.config import settings
 from app.scraping.url_safety import UnsafeUrl
 from app.services.web_discovery import (
     SearchProviderUnavailable, SearchRateLimited, discover_product_sources,
-    _parse_openai_market_observations, poll_product_source_discovery,
+    _parse_openai_candidates, _parse_openai_market_observations, poll_product_source_discovery,
     start_product_source_discovery,
 )
+
+
+@patch("app.services.web_discovery.validate_public_url")
+def test_structured_candidate_pages_survive_when_market_evidence_is_empty(validate):
+    payload = {"output": [{
+        "type": "message", "content": [{
+            "type": "output_text", "text": json.dumps({
+                "candidate_pages": [{
+                    "url": "https://retailer.example/product/curler-pad",
+                    "title": "Eyelash Curler Pad",
+                    "page_type": "retailer_reviews",
+                    "identity_basis": "Exact brand, product type and replacement-pad identity",
+                }],
+                "market_observations": [],
+            }),
+        }],
+    }]}
+
+    values = _parse_openai_candidates(payload, [], "test")
+
+    assert len(values) == 1
+    assert values[0]["url"] == "https://retailer.example/product/curler-pad"
+    assert values[0]["page_type"] == "retailer_reviews"
+    assert "replacement-pad" in values[0]["snippet"]
+    validate.assert_called_once()
 
 
 def test_discovery_requires_licensed_provider_key(monkeypatch):

@@ -239,6 +239,22 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             "schema": {
                 "type": "object", "additionalProperties": False,
                 "properties": {
+                    "candidate_pages": {
+                        "type": "array", "maxItems": 16,
+                        "items": {
+                            "type": "object", "additionalProperties": False,
+                            "properties": {
+                                "url": {"type": "string"},
+                                "title": {"type": ["string", "null"]},
+                                "page_type": {
+                                    "type": "string",
+                                    "enum": ["official_product", "retailer_product", "retailer_reviews"],
+                                },
+                                "identity_basis": {"type": ["string", "null"]},
+                            },
+                            "required": ["url", "title", "page_type", "identity_basis"],
+                        },
+                    },
                     "market_observations": {
                         "type": "array", "maxItems": 16,
                         "items": {
@@ -259,7 +275,7 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
                         },
                     },
                 },
-                "required": ["market_observations"],
+                "required": ["candidate_pages", "market_observations"],
             },
         }},
         "input": (
@@ -274,7 +290,11 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             "plus public retailer product pages that expose written customer review bodies. When review intelligence "
             "is requested, aggregate-only pages are useful but insufficient: return multiple independent exact-product "
             "pages likely to contain visible reviews, schema.org Review objects, or public review widgets/endpoints. "
-            "Return a market_observations JSON array containing only exact-product evidence you directly found. "
+            "Return candidate_pages separately from market_observations. candidate_pages must include exact or "
+            "strongly identity-consistent public product/review pages worth fetching even when the search result "
+            "does not itself prove a rating, review count, or review text. This crawl handoff must not be empty "
+            "merely because structured market evidence is incomplete. Include the identity basis used to select "
+            "each page. Return market_observations containing only exact-product evidence you directly found. "
             "For each source include its page URL, the GTIN, brand, exact displayed product name and variant that the "
             "page itself supports, and, when visibly supported, a direct public product image URL, "
             "average rating, review count, and a short evidence excerpt. Use null for anything not established. "
@@ -444,6 +464,23 @@ def _parse_openai_candidates(payload: dict, domains: list[str], model: str) -> l
                             "title": annotation.get("title"), "url": url,
                             "snippet": None, "image_url": None,
                         })
+                if content.get("type") != "output_text" or not content.get("text"):
+                    continue
+                try:
+                    parsed = json.loads(content["text"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                for page in parsed.get("candidate_pages") or [] if isinstance(parsed, dict) else []:
+                    if not isinstance(page, dict):
+                        continue
+                    url = str(page.get("url") or "").strip()
+                    if not url:
+                        continue
+                    candidates.setdefault(url, {
+                        "title": page.get("title"), "url": url,
+                        "snippet": page.get("identity_basis"), "image_url": None,
+                        "page_type": page.get("page_type"),
+                    })
     return _validate_candidates(candidates.values(), domains, f"OpenAI Responses web_search ({model})")
 
 
