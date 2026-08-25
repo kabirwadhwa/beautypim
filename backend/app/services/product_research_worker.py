@@ -602,15 +602,15 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             fields_changed=result.get("fields_changed") or [],
             evidence_gate_rejections=result.get("fields_rejected") or result.get("evidence_gate_rejections") or [],
             remaining_important_gaps=result.get("fields_still_missing") or [],
-            completeness_before=before_metrics.get("overall_completeness"),
-            completeness_after=after_metrics.get("overall_completeness"),
+            completeness_before=before_metrics.get("completeness"),
+            completeness_after=after_metrics.get("completeness"),
             sources_ingested=result.get("sources_ingested"), blocked_domains=result.get("blocked_domains"),
             review_summary_generated=bool(result.get("review_summary_generated")),
         )
         product_research_log(
             "job_finished", **log_context, technical_status=job.status,
-            business_outcome=outcome, completeness_before=before_metrics.get("overall_completeness"),
-            completeness_after=after_metrics.get("overall_completeness"),
+            business_outcome=outcome, completeness_before=before_metrics.get("completeness"),
+            completeness_after=after_metrics.get("completeness"),
         )
     except Exception as exc:
         db.rollback()
