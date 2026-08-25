@@ -15,14 +15,19 @@ from app.scraping.ingredients import split_inci
 
 
 def _nodes(payload):
-    values = payload if isinstance(payload, list) else [payload]
-    for value in values:
-        if not isinstance(value, dict):
-            continue
-        yield value
-        for child in value.get("@graph", []):
-            if isinstance(child, dict):
-                yield child
+    """Yield nested JSON-LD nodes, including @graph and nested Product data."""
+    stack = list(reversed(payload if isinstance(payload, list) else [payload]))
+    visited = 0
+    while stack and visited < 10_000:
+        value = stack.pop()
+        visited += 1
+        if isinstance(value, dict):
+            yield value
+            stack.extend(reversed([
+                child for child in value.values() if isinstance(child, (dict, list))
+            ]))
+        elif isinstance(value, list):
+            stack.extend(reversed(value))
 
 
 def _product_node(soup: BeautifulSoup):
@@ -197,16 +202,22 @@ def _normalize_review_record(review: dict) -> dict:
         "headline": _review_text_value(review.get("headline") or review.get("title") or review.get("subject")),
         "datePublished": review.get("datePublished") or review.get("createdAt") or review.get("created_at") or review.get("date"),
         "verifiedPurchase": review.get("verifiedPurchase") if isinstance(review.get("verifiedPurchase"), bool) else None,
-        "itemReviewedName": item_reviewed_name or review.get("productName") or review.get("product_name"),
+        "itemReviewedName": (
+            item_reviewed_name or review.get("itemReviewedName")
+            or review.get("productName") or review.get("product_name")
+        ),
     }
 
 
-def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
+def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list, list[str]]:
     """Find public review aggregates/samples in embedded application state."""
     aggregates: list[dict] = []
     review_sets: list[list] = []
+    strategies: set[str] = set()
 
-    def walk(value, parent_key=""):
+    def walk(value, parent_key="", strategy="embedded_application_json", depth=0):
+        if depth > 40:
+            return
         if isinstance(value, dict):
             lower = {str(key).lower(): child for key, child in value.items()}
             aggregate = lower.get("aggregaterating") or lower.get("aggregate_rating")
@@ -215,8 +226,10 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
             reviews = lower.get("reviews") or lower.get("review")
             if isinstance(reviews, list) and any(isinstance(row, dict) for row in reviews):
                 review_sets.append([_normalize_review_record(row) for row in reviews if isinstance(row, dict)])
+                strategies.add(strategy)
             elif isinstance(reviews, dict):
                 review_sets.append([_normalize_review_record(reviews)])
+                strategies.add(strategy)
             body_keys = {key.lower() for key in _REVIEW_BODY_KEYS}
             has_review_body = bool(body_keys & set(lower))
             has_review_signal = bool({
@@ -228,13 +241,28 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
             # one widget vendor's container name.
             if has_review_body and ("review" in parent_key or has_review_signal):
                 review_sets.append([_normalize_review_record(value)])
+                strategies.add(strategy)
             for key, child in value.items():
                 if isinstance(child, (dict, list)):
-                    walk(child, str(key).lower())
+                    walk(child, str(key).lower(), strategy, depth + 1)
+                elif isinstance(child, str) and re.search(r"review|rating", child, re.I):
+                    walk(child, str(key).lower(), strategy, depth + 1)
         elif isinstance(value, list):
             for child in value:
-                if isinstance(child, (dict, list)):
-                    walk(child, parent_key)
+                if isinstance(child, (dict, list, str)):
+                    walk(child, parent_key, strategy, depth + 1)
+        elif isinstance(value, str) and re.search(r"review|rating", value, re.I):
+            # Next/React flight payloads frequently contain JSON as a decoded
+            # string inside `self.__next_f.push([..., "..."])`. Parse inert
+            # data only; never execute the page script.
+            starts = [match.start() for match in re.finditer(r"[\[{]", value)]
+            for start in starts[:30]:
+                try:
+                    decoded, _ = json.JSONDecoder().raw_decode(value[start:])
+                except (json.JSONDecodeError, TypeError, RecursionError):
+                    continue
+                if isinstance(decoded, (dict, list)):
+                    walk(decoded, parent_key, "react_hydration_json", depth + 1)
 
     decoder = json.JSONDecoder()
 
@@ -265,7 +293,12 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
     for script in soup.select("script"):
         for payload in script_payloads(script) or ():
             try:
-                walk(payload)
+                strategy = (
+                    "json_ld" if script.get("type") == "application/ld+json"
+                    else "public_review_endpoint_json" if script.has_attr("data-beautypim-review-endpoint")
+                    else "embedded_application_json"
+                )
+                walk(payload, strategy=strategy)
             except RecursionError:
                 continue
     def review_total(row):
@@ -317,6 +350,46 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
             ),
         })
     reviews.extend(dom_reviews)
+    if dom_reviews:
+        strategies.add("rendered_review_dom")
+    # Dedicated review pages sometimes omit a semantic card wrapper but keep
+    # stable review-body hooks. Restrict this fallback to explicit review pages
+    # or elements whose own attributes identify them as review text so product
+    # descriptions and merchandising copy cannot become customer reviews.
+    global_review_bodies = soup.select(
+        '[itemprop="reviewBody"], [data-testid*="review-body"], [data-testid*="review-text"], '
+        '[data-automation-id*="review-body"], [data-automation-id*="review-text"], '
+        '[class*="review-body"], [class*="reviewBody"], [class*="ReviewBody"], '
+        '[class*="review-text"], [class*="ReviewText"]'
+    )
+    for body_node in global_review_bodies[:200]:
+        body = " ".join(body_node.get_text(" ", strip=True).split())
+        if not body:
+            continue
+        card = body_node.find_parent(
+            lambda tag: tag.name in {"article", "li", "section", "div"}
+            and re.search(r"review", " ".join(tag.get("class", [])) + " " + " ".join(
+                f"{key}={value}" for key, value in tag.attrs.items() if key.startswith("data-")
+            ), re.I)
+        ) or body_node.parent
+        rating_node = card.select_one('[itemprop="ratingValue"], [data-rating], [aria-label*="out of 5"]') if card else None
+        title_node = card.select_one('[itemprop="headline"], [data-testid*="review-title"], [class*="ReviewTitle"]') if card else None
+        date_node = card.select_one('[itemprop="datePublished"], time[datetime], [data-testid*="review-date"]') if card else None
+        raw_rating = (
+            rating_node.get("content") or rating_node.get("data-rating")
+            or rating_node.get("aria-label") or rating_node.get_text(" ", strip=True)
+        ) if rating_node else ""
+        match = re.search(r"([0-5](?:\.\d+)?)", str(raw_rating))
+        reviews.append({
+            "reviewBody": body,
+            "reviewRating": {"ratingValue": match.group(1)} if match else {},
+            "headline": title_node.get_text(" ", strip=True) if title_node else None,
+            "datePublished": (
+                date_node.get("datetime") or date_node.get("content") or date_node.get_text(" ", strip=True)
+                if date_node else None
+            ),
+        })
+        strategies.add("rendered_review_body_hook")
     unique_reviews = []
     seen_records = set()
     for review in reviews:
@@ -325,7 +398,7 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
             continue
         seen_records.add(fingerprint)
         unique_reviews.append(review)
-    return aggregate, unique_reviews
+    return aggregate, unique_reviews, sorted(strategies)
 
 
 def _clean_review_text(value) -> str:
@@ -334,7 +407,10 @@ def _clean_review_text(value) -> str:
     return " ".join(text.split())[:4000]
 
 
-def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | None = None) -> dict:
+def _review_summary(
+    node: dict, aggregate: dict, source_url: str, locale: str | None = None,
+    extraction_strategies: list[str] | None = None,
+) -> dict:
     """Retain a bounded, de-identified exact-page sample plus aggregate signals."""
     reviews = node.get("review") or []
     if isinstance(reviews, dict):
@@ -422,6 +498,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
                 "rating": float(rating) if rating is not None else None,
                 "date": str(review.get("datePublished") or review.get("date") or "")[:40] or None,
                 "source_url": source_url,
+                "source_domain": urlsplit(source_url).hostname,
                 "locale": locale,
                 "verified_purchase": review.get("verifiedPurchase") if isinstance(review.get("verifiedPurchase"), bool) else None,
                 # Deliberately no author, email, profile URL or other reviewer PII.
@@ -462,6 +539,7 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
         "sillage_mentions": {"positive": positive["sillage"], "negative": negative["sillage"]},
         "packaging_mentions": {"positive": positive["packaging"], "negative": negative["packaging"]},
         "source_urls": [source_url],
+        "review_extraction_strategies": extraction_strategies or [],
         "summary_method": "deterministic topic aggregation; bounded de-identified review text retained when publicly visible",
     }
 
@@ -510,12 +588,18 @@ class GenericJsonLdAdapter(ProductAdapter):
         if isinstance(offers, list):
             offers = offers[0] if offers else {}
         aggregate = node.get("aggregateRating") or {}
-        embedded_aggregate, embedded_reviews = _embedded_review_evidence(soup)
+        embedded_aggregate, embedded_reviews, review_strategies = _embedded_review_evidence(soup)
         embedded_commercial = _embedded_commercial_fields(soup)
         if not aggregate and embedded_aggregate:
             aggregate = embedded_aggregate
-        if not node.get("review") and embedded_reviews:
-            node = {**node, "review": embedded_reviews[:250]}
+        # JSON-LD, hydration state, public widget responses and rendered DOM
+        # are complementary evidence representations. Merge all candidates;
+        # the deterministic review layer validates and deduplicates them.
+        node_reviews = node.get("review") or []
+        if isinstance(node_reviews, dict):
+            node_reviews = [node_reviews]
+        if embedded_reviews:
+            node = {**node, "review": [*node_reviews, *embedded_reviews][:500]}
         images = node.get("image") or []
         if isinstance(images, (str, dict)):
             images = [images]
@@ -540,6 +624,7 @@ class GenericJsonLdAdapter(ProductAdapter):
         benefit_value = properties.get("benefits") or properties.get("benefit")
         claims = [item.strip() for item in re.split(r"[;|]", _text(claim_value) or "") if item.strip()]
         benefits = [item.strip() for item in re.split(r"[;|]", _text(benefit_value) or "") if item.strip()]
+        review_summary = _review_summary(node, aggregate, url, locale, review_strategies)
         product = ScrapedProduct(
             source_name=urlsplit(url).hostname or "",
             source_domain=urlsplit(url).hostname or "",
@@ -578,7 +663,8 @@ class GenericJsonLdAdapter(ProductAdapter):
             ],
             rating=_decimal(aggregate.get("ratingValue")),
             review_count=int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else None,
-            review_summary=_review_summary(node, aggregate, url, locale),
+            review_samples=review_summary.get("review_samples") or [],
+            review_summary=review_summary,
             parser_version=PARSER_VERSION,
         )
         for field_name in ("description", "usage_instructions"):

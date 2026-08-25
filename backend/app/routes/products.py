@@ -866,10 +866,15 @@ def _automatic_product_research(
             run_extracted = 0
             run_accepted = 0
             run_rejected: dict[str, int] = {}
+            run_strategies: set[str] = set()
             for run_observation in run_observations:
-                run_summary = (run_observation.normalized_payload or {}).get("review_summary") or {}
+                run_payload = run_observation.normalized_payload or {}
+                run_summary = run_payload.get("review_summary") or {}
                 run_extracted += int(run_summary.get("raw_review_candidate_count") or 0)
-                run_samples = run_summary.get("review_samples")
+                run_strategies.update(str(value) for value in (run_summary.get("review_extraction_strategies") or []))
+                run_samples = run_payload.get("review_samples")
+                if not isinstance(run_samples, list):
+                    run_samples = run_summary.get("review_samples")
                 if isinstance(run_samples, list):
                     accepted_samples = len([
                         sample for sample in run_samples
@@ -894,6 +899,7 @@ def _automatic_product_research(
                 crawl_job_id=str(job.id), raw_candidates=run_extracted, extracted=run_extracted,
                 accepted=run_accepted, rejected=sum(run_rejected.values()),
                 rejection_reasons=run_rejected, persisted=run_accepted,
+                extraction_strategies=sorted(run_strategies),
             )
             product_research_log(
                 "crawl_result", **log_context, url=url, domain=domain,
@@ -940,6 +946,11 @@ def _automatic_product_research(
         rejected=sum(review_sample_rejections.values()),
         rejection_reasons=review_sample_rejections,
         persisted=int(canonical_review.get("review_sample_count") or 0),
+        sources_with_review_text=len({
+            str(sample.get("source_domain") or sample.get("source_url") or "")
+            for sample in ((canonical_review.get("review_summary") or {}).get("review_samples") or [])
+            if isinstance(sample, dict) and str(sample.get("text") or "").strip()
+        } - {""}),
     )
     return {
         "candidates": len(candidates), "sources_ingested": completed,
@@ -958,6 +969,12 @@ def _automatic_product_research(
         "review_texts_extracted": review_texts_extracted,
         "review_samples_collected": int(canonical_review.get("review_sample_count") or 0),
         "review_texts_persisted": int(canonical_review.get("review_sample_count") or 0),
+        "actual_review_text_count": int(canonical_review.get("review_sample_count") or 0),
+        "sources_with_review_text": len({
+            str(sample.get("source_domain") or sample.get("source_url") or "")
+            for sample in ((canonical_review.get("review_summary") or {}).get("review_samples") or [])
+            if isinstance(sample, dict) and str(sample.get("text") or "").strip()
+        } - {""}),
         "review_sample_rejections": review_sample_rejections,
         "errors": errors,
     }

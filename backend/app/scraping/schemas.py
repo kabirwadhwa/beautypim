@@ -78,6 +78,19 @@ class ExtractedField(BaseModel):
     method: str
 
 
+class ReviewSample(BaseModel):
+    """A de-identified written review retained as first-class source evidence."""
+
+    text: str
+    rating: Optional[Decimal] = None
+    title: Optional[str] = None
+    date: Optional[str] = None
+    source_url: Optional[str] = None
+    source_domain: Optional[str] = None
+    locale: Optional[str] = None
+    verified_purchase: Optional[bool] = None
+
+
 class ScrapedProduct(BaseModel):
     source_name: str
     source_domain: str
@@ -118,6 +131,7 @@ class ScrapedProduct(BaseModel):
     concerns: list[str] = Field(default_factory=list)
     rating: Optional[Decimal] = None
     review_count: Optional[int] = None
+    review_samples: list[ReviewSample] = Field(default_factory=list)
     review_summary: dict[str, Any] = Field(default_factory=dict)
     raw_payload_reference: Optional[str] = None
     parser_version: str

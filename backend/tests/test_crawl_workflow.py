@@ -16,6 +16,8 @@ from app.scraping.schemas import CrawlConfiguration, ScrapedProduct
 from app.scraping.worker import recover_stale_jobs, schedule_due_recrawls
 from app.scraping.fetcher import FetchResult
 from app.scraping.runner import run_crawl_job
+from app.services.review_aggregate import select_review_aggregate
+from app.services.review_summarization import summarize_product_reviews
 from pathlib import Path
 
 
@@ -196,6 +198,59 @@ def test_product_research_attaches_observation_and_image_to_requested_product(db
     assert variant.unit == "ml"
     assert db.query(Formulation).filter(Formulation.canonical_product_id == canonical.id).count() == 0
     assert db.query(CanonicalProduct).filter(CanonicalProduct.product_name.like("Goddess Eau%")).count() == 0
+
+
+def test_review_text_survives_parse_persistence_selector_and_summary(db, monkeypatch):
+    """Regression: written reviews must not disappear between crawl and synthesis."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    brand = Brand(id=uuid.uuid4(), name="La Prairie", normalized_name="la prairie")
+    canonical = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Pure Gold Radiance Cream",
+        normalized_name="pure gold radiance cream", review_status="imported",
+    )
+    db.add_all([brand, canonical]); db.flush()
+    source_url = "https://retailer.example/pure-gold/reviews"
+    config = CrawlConfiguration(
+        domain="retailer.example", crawl_mode="single_url", starting_urls=[source_url],
+    ).model_dump(mode="json")
+    config["research_product_id"] = str(canonical.id)
+    job = CrawlJob(
+        id=uuid.uuid4(), domain="retailer.example", starting_urls=[source_url],
+        crawl_mode="single_url", status="parsing", configuration=config,
+    )
+    crawl_url = CrawlUrl(
+        id=uuid.uuid4(), crawl_job_id=job.id, url=source_url,
+        normalized_url=source_url, state="fetching", depth=0,
+    )
+    db.add_all([job, crawl_url]); db.flush()
+    raw = RawPageObservation(
+        id=uuid.uuid4(), crawl_job_id=job.id, crawl_url_id=crawl_url.id,
+        source_url=source_url, final_url=source_url, http_status=200,
+        content_hash=uuid.uuid4().hex, response_size=100, parser_version="test",
+    )
+    db.add(raw); db.flush()
+    html = """
+    <script type="application/ld+json">{"@type":"Product","name":"Pure Gold Radiance Cream",
+      "brand":{"name":"La Prairie"},"aggregateRating":{"ratingValue":"5","reviewCount":"3"},
+      "review":[{"@type":"Review","reviewBody":"The cream feels rich yet comfortable and leaves a luminous finish.",
+                 "reviewRating":{"ratingValue":"5"}}]}</script>
+    """
+    adapter = GenericJsonLdAdapter()
+    scraped = adapter.parse(html, source_url)
+    observation = persist_product(db, job, raw, scraped, adapter)
+    db.commit()
+
+    assert len(observation.normalized_payload["review_samples"]) == 1
+    assert observation.normalized_payload["review_summary"]["review_sample_count"] == 1
+    selected = select_review_aggregate(db, canonical.id)
+    assert selected["review_sample_count"] == 1
+    assert selected["review_summary"]["review_samples"][0]["text"] == (
+        "The cream feels rich yet comfortable and leaves a luminous finish."
+    )
+    summarized = summarize_product_reviews(db, canonical.id)
+    assert summarized["review_sample_count"] == 1
+    assert summarized["ai_summary_text"]
 
 
 def test_product_research_rejects_conflicting_fragrance_edition(db):

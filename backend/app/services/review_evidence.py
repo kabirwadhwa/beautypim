@@ -52,6 +52,7 @@ def sanitize_review_samples_with_rejections(
             "title": " ".join(str(row.get("title") or "").split())[:300] or None,
             "rating": row.get("rating"), "date": row.get("date"),
             "source_url": row.get("source_url"), "locale": row.get("locale"),
+            "source_domain": row.get("source_domain"),
             "verified_purchase": row.get("verified_purchase") if isinstance(row.get("verified_purchase"), bool) else None,
         })
         if len(output) >= limit:

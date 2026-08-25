@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +113,8 @@ def test_generic_parser_extracts_reviews_from_embedded_application_state():
     assert product.review_count == 81
     assert product.review_summary["review_sample_count"] == 2
     assert len(product.review_summary["review_samples"]) == 2
+    assert len(product.review_samples) == 2
+    assert product.review_samples[0].text.startswith("Beautiful shade")
     assert product.review_summary["review_samples"][0]["text"].startswith("Beautiful shade")
     assert "author" not in product.review_summary["review_samples"][0]
     assert "longevity" in product.review_summary["frequently_praised_topics"]
@@ -152,6 +155,7 @@ def test_generic_parser_extracts_rendered_review_dom_with_metadata():
         "text": "My skin feels smoother and looks radiant after regular use.",
         "title": "Visible radiance", "rating": 5.0, "date": "2026-06-12",
         "source_url": "https://retailer.example/pure-gold/reviews", "locale": None,
+        "source_domain": "retailer.example",
         "verified_purchase": None,
     }
 
@@ -174,6 +178,41 @@ def test_generic_parser_extracts_jsonld_review_records():
     assert product.review_summary["review_samples"][0]["title"] == "Luxury texture"
 
 
+def test_generic_parser_extracts_graph_and_standalone_review_nodes():
+    html = """
+    <html><head><title>Pure Gold Radiance Cream Reviews</title>
+    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[
+      {"@type":"Product","name":"Pure Gold Radiance Cream","sku":"PGRC"},
+      {"@type":"Review","itemReviewed":{"name":"Pure Gold Radiance Cream"},
+       "reviewBody":"This cream feels luxurious and gives my skin a visible luminous finish.",
+       "reviewRating":{"ratingValue":"5"}}
+    ]}</script></head><body><h1>Pure Gold Radiance Cream Reviews</h1></body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/reviews/pure-gold")
+
+    assert len(product.review_samples) == 1
+    assert product.review_samples[0].rating == 5
+    assert product.review_summary["review_sample_count"] == 1
+
+
+def test_dedicated_review_page_extracts_unwrapped_review_body_hook():
+    html = """
+    <html><head><title>Pure Gold Radiance Cream customer reviews</title></head><body>
+      <h1>Customer reviews</h1>
+      <div class="customer-review"><h3 class="ReviewTitle">Visible glow</h3>
+        <p class="ReviewBody">After several weeks my skin looks smoother and has a healthy glow.</p>
+        <span aria-label="4 out of 5 stars"></span>
+      </div>
+    </body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/reviews/product/pg")
+
+    assert [sample.text for sample in product.review_samples] == [
+        "After several weeks my skin looks smoother and has a healthy glow."
+    ]
+    assert product.review_samples[0].title == "Visible glow"
+
+
 def test_generic_parser_extracts_reviews_from_javascript_assigned_state():
     html = """
     <meta property="og:title" content="Pure Gold Radiance Cream" />
@@ -184,6 +223,21 @@ def test_generic_parser_extracts_reviews_from_javascript_assigned_state():
     """
     product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold")
     assert product.review_summary["review_sample_count"] == 2
+
+
+def test_generic_parser_extracts_reviews_from_react_flight_json_string():
+    inner = json.dumps({"reviews": [{
+        "reviewText": "The texture feels refined and leaves a soft luminous finish.",
+        "rating": 5,
+    }]})
+    html = f"""
+    <meta property="og:title" content="Pure Gold Radiance Cream" />
+    <script>self.__next_f.push([1,{json.dumps(inner)}])</script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold")
+
+    assert len(product.review_samples) == 1
+    assert "react_hydration_json" in product.review_summary["review_extraction_strategies"]
 
 
 def test_generic_review_page_without_product_markup_extracts_multiple_reviews():

@@ -17,10 +17,13 @@ from app.models import (
 )
 from app.scraping.adapters.base import ProductAdapter
 from app.scraping.ingredients import normalize_ingredient, split_inci
-from app.scraping.schemas import ScrapedProduct
+from app.scraping.schemas import ReviewSample, ScrapedProduct
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.product_identity import research_identity_compatible
-from app.services.review_evidence import enforce_review_summary_invariants
+from app.services.review_evidence import (
+    enforce_review_summary_invariants,
+    sanitize_review_samples_with_rejections,
+)
 
 
 def stable_hash(value) -> str:
@@ -84,7 +87,24 @@ def persist_product(
     db: Session, job: CrawlJob, raw_page: RawPageObservation,
     product: ScrapedProduct, adapter: ProductAdapter, *, create_unmatched_draft: bool = True,
 ) -> ScrapedProductObservation:
-    product.review_summary = enforce_review_summary_invariants(product.review_summary)
+    # Written review evidence is first-class on ScrapedProduct.  Sanitize it at
+    # the persistence boundary, then mirror the exact persisted collection into
+    # review_summary for backwards-compatible consumers. A declared count can
+    # never stand in for text that was not actually retained.
+    candidate_samples = [
+        sample.model_dump(mode="json") if hasattr(sample, "model_dump") else sample
+        for sample in (product.review_samples or [])
+    ]
+    if not candidate_samples and isinstance(product.review_summary, dict):
+        candidate_samples = product.review_summary.get("review_samples") or []
+    persisted_samples, persistence_rejections = sanitize_review_samples_with_rejections(candidate_samples)
+    product.review_samples = [ReviewSample.model_validate(sample) for sample in persisted_samples]
+    summary = dict(product.review_summary or {})
+    summary["review_samples"] = persisted_samples
+    summary["review_sample_count"] = len(persisted_samples)
+    if persistence_rejections:
+        summary["review_sample_rejections"] = list(summary.get("review_sample_rejections") or []) + persistence_rejections
+    product.review_summary = enforce_review_summary_invariants(summary)
     payload = product.model_dump(mode="json", exclude={"fields"})
     safe_fields_only = bool((job.configuration or {}).get("research_safe_fields_only"))
     identity_only = bool((job.configuration or {}).get("research_identity_only"))

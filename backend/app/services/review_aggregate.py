@@ -93,6 +93,11 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
     for row in rows:
         payload = row.normalized_payload or {}
         summary = payload.get("review_summary") if isinstance(payload.get("review_summary"), dict) else {}
+        # First-class normalized review samples are authoritative. Retain the
+        # nested fallback only for observations created before this schema.
+        top_level_samples = payload.get("review_samples")
+        if isinstance(top_level_samples, list):
+            summary = {**summary, "review_samples": top_level_samples}
         rating = summary.get("average_rating", payload.get("rating"))
         count = summary.get("review_count", payload.get("review_count"))
         if rating in (None, "") and count in (None, "") and not summary:
@@ -263,7 +268,7 @@ def select_review_aggregate(db, product_id) -> dict[str, Any] | None:
                 "text": text, "title": sample.get("title"), "rating": sample.get("rating"),
                 "date": sample.get("date"), "locale": sample.get("locale"),
                 "verified_purchase": sample.get("verified_purchase"),
-                "source_domain": entry["domain"],
+                "source_domain": sample.get("source_domain") or entry["domain"],
                 "source_url": sample.get("source_url"),
                 "observation_date": _json_safe(entry.get("observed_at")), "match_scope": entry.get("scope"),
             })
