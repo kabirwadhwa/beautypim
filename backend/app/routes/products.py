@@ -864,17 +864,19 @@ def _automatic_product_research(
                 ScrapedProductObservation.crawl_job_id == job.id,
             ).all()
             run_extracted = 0
+            run_accepted = 0
             run_rejected: dict[str, int] = {}
             for run_observation in run_observations:
                 run_summary = (run_observation.normalized_payload or {}).get("review_summary") or {}
+                run_extracted += int(run_summary.get("raw_review_candidate_count") or 0)
                 run_samples = run_summary.get("review_samples")
                 if isinstance(run_samples, list):
                     accepted_samples = len([
                         sample for sample in run_samples
                         if isinstance(sample, dict) and str(sample.get("text") or "").strip()
                     ])
-                    run_extracted += accepted_samples
-                    review_texts_extracted += accepted_samples
+                    run_accepted += accepted_samples
+                    review_texts_extracted += int(run_summary.get("raw_review_candidate_count") or accepted_samples)
                 for rejection in run_summary.get("review_sample_rejections") or []:
                     if not isinstance(rejection, dict):
                         continue
@@ -882,11 +884,16 @@ def _automatic_product_research(
                     count = int(rejection.get("count") or 1)
                     review_sample_rejections[reason] = review_sample_rejections.get(reason, 0) + count
                     run_rejected[reason] = run_rejected.get(reason, 0) + count
+            if run_extracted and not run_accepted and not run_rejected:
+                run_rejected["raw_candidates_not_persisted"] = run_extracted
+                review_sample_rejections["raw_candidates_not_persisted"] = (
+                    review_sample_rejections.get("raw_candidates_not_persisted", 0) + run_extracted
+                )
             product_research_log(
                 "review_extraction", **log_context, domain=domain,
-                crawl_job_id=str(job.id), extracted=run_extracted,
-                accepted=run_extracted, rejected=sum(run_rejected.values()),
-                rejection_reasons=run_rejected, persisted=run_extracted,
+                crawl_job_id=str(job.id), raw_candidates=run_extracted, extracted=run_extracted,
+                accepted=run_accepted, rejected=sum(run_rejected.values()),
+                rejection_reasons=run_rejected, persisted=run_accepted,
             )
             product_research_log(
                 "crawl_result", **log_context, url=url, domain=domain,

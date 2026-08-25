@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 
@@ -12,6 +13,7 @@ def sanitize_review_samples_with_rejections(
     output: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     seen: set[str] = set()
+    accepted_normalized: list[tuple[str, set[str]]] = []
     rows = value if isinstance(value, list) else []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -25,10 +27,26 @@ def sanitize_review_samples_with_rejections(
         if len(text) < 20:
             rejected.append({"index": index, "reason": "review_text_too_short"})
             continue
-        if key in seen:
+        normalized = re.sub(r"\W+", " ", text.casefold()).strip()
+        tokens = set(normalized.split())
+        near_duplicate = any(
+            {token for token in tokens if token.isdigit()} == {
+                token for token in other_tokens if token.isdigit()
+            }
+            and (
+                (
+                bool(tokens | other_tokens)
+                and len(tokens & other_tokens) / len(tokens | other_tokens) >= 0.94
+                )
+                or SequenceMatcher(None, normalized, other).ratio() >= 0.96
+            )
+            for other, other_tokens in accepted_normalized
+        )
+        if key in seen or near_duplicate:
             rejected.append({"index": index, "reason": "duplicate_review_text"})
             continue
         seen.add(key)
+        accepted_normalized.append((normalized, tokens))
         output.append({
             "text": text,
             "title": " ".join(str(row.get("title") or "").split())[:300] or None,

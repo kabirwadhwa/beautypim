@@ -136,6 +136,109 @@ def test_generic_parser_persists_all_eight_public_widget_review_texts():
     assert product.review_summary["review_sample_rejections"] == []
 
 
+def test_generic_parser_extracts_rendered_review_dom_with_metadata():
+    html = """
+    <html><head><meta property="og:title" content="Pure Gold Radiance Cream" /></head><body>
+      <article class="review-card" data-testid="review-card">
+        <h3 data-testid="review-title">Visible radiance</h3>
+        <div data-testid="review-content">My skin feels smoother and looks radiant after regular use.</div>
+        <span aria-label="5 out of 5 stars"></span><time datetime="2026-06-12"></time>
+      </article>
+    </body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold/reviews")
+    sample = product.review_summary["review_samples"][0]
+    assert sample == {
+        "text": "My skin feels smoother and looks radiant after regular use.",
+        "title": "Visible radiance", "rating": 5.0, "date": "2026-06-12",
+        "source_url": "https://retailer.example/pure-gold/reviews", "locale": None,
+        "verified_purchase": None,
+    }
+
+
+def test_generic_parser_extracts_jsonld_review_records():
+    html = """
+    <script type="application/ld+json">{
+      "@type":"Product", "name":"Pure Gold Radiance Cream",
+      "review":[
+        {"@type":"Review","reviewBody":"A rich cream that leaves my complexion looking luminous.",
+         "headline":"Luxury texture","datePublished":"2026-04-02",
+         "reviewRating":{"ratingValue":"5"}},
+        {"@type":"Review","reviewBody":"The texture is nourishing without feeling overly heavy.",
+         "reviewRating":{"ratingValue":"4"}}
+      ]
+    }</script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://brand.example/pure-gold")
+    assert product.review_summary["review_sample_count"] == 2
+    assert product.review_summary["review_samples"][0]["title"] == "Luxury texture"
+
+
+def test_generic_parser_extracts_reviews_from_javascript_assigned_state():
+    html = """
+    <meta property="og:title" content="Pure Gold Radiance Cream" />
+    <script>window.__INITIAL_STATE__ = {"reviews":{"results":[
+      {"content":"The finish is silky and the jar lasts longer than expected.","rating":5},
+      {"content":"Comfortable on dry skin and layers well at night.","rating":4}
+    ]}};</script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold")
+    assert product.review_summary["review_sample_count"] == 2
+
+
+def test_generic_review_page_without_product_markup_extracts_multiple_reviews():
+    html = """
+    <html><head><title>Pure Gold Radiance Cream Reviews</title></head><body><h1>Customer reviews</h1>
+      <div data-automation-id="review-card"><p data-automation-id="review-text">Leaves a soft glow and feels comforting throughout the evening.</p></div>
+      <div data-automation-id="review-card"><p data-automation-id="review-text">A little rich for daytime, but excellent as a night cream.</p></div>
+    </body></html>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://walmart.example/reviews/product/123")
+    assert product is not None
+    assert product.review_summary["review_sample_count"] == 2
+
+
+def test_generic_parser_rejects_near_duplicate_review_text():
+    html = """
+    <meta property="og:title" content="Pure Gold Radiance Cream" />
+    <script type="application/json">{"reviews":[
+      {"text":"This cream leaves my skin soft, smooth, luminous and comfortable all day."},
+      {"text":"This cream leaves my skin soft smooth luminous and comfortable all day!"}
+    ]}</script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold")
+    assert product.review_summary["review_sample_count"] == 1
+    assert {row["reason"]: row["count"] for row in product.review_summary["review_sample_rejections"]}["duplicate_review_text"] >= 1
+
+
+def test_generic_parser_counts_and_rejects_empty_review_bodies():
+    html = """
+    <meta property="og:title" content="Pure Gold Radiance Cream" />
+    <script type="application/json">{"reviews":[
+      {"text":""}, {"title":"No body supplied","rating":5}
+    ]}</script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold")
+    assert product.review_summary["raw_review_candidate_count"] >= 2
+    assert product.review_summary["review_sample_count"] == 0
+    reasons = {row["reason"]: row["count"] for row in product.review_summary["review_sample_rejections"]}
+    assert reasons["missing_review_text"] >= 2
+
+
+def test_generic_parser_rejects_review_for_a_different_product():
+    html = """
+    <script type="application/ld+json">{
+      "@type":"Product", "name":"Pure Gold Radiance Cream",
+      "review":[{"@type":"Review","itemReviewed":{"name":"Different Night Serum"},
+        "reviewBody":"This serum feels lightweight and absorbs very quickly into my skin."}]
+    }</script>
+    """
+    product = GenericJsonLdAdapter().parse(html, "https://retailer.example/pure-gold")
+    assert product.review_summary["review_sample_count"] == 0
+    reasons = {row["reason"]: row["count"] for row in product.review_summary["review_sample_rejections"]}
+    assert reasons["wrong_product_review"] >= 1
+
+
 def test_generic_parser_prefers_rich_pdp_copy_and_extracts_bulleted_inci():
     html = """
     <html><head>

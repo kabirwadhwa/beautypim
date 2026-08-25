@@ -1,5 +1,6 @@
 import json
 import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
@@ -139,12 +140,15 @@ def _normalize_review_record(review: dict) -> dict:
     rating = review.get("reviewRating") or review.get("rating") or review.get("score") or review.get("stars")
     if isinstance(rating, dict):
         rating = rating.get("ratingValue") or rating.get("value") or rating.get("score") or rating.get("rating")
+    item_reviewed = review.get("itemReviewed") or review.get("product") or review.get("productInfo") or {}
+    item_reviewed_name = _text(item_reviewed) if isinstance(item_reviewed, (dict, list, str)) else None
     return {
         "reviewBody": body,
         "reviewRating": {"ratingValue": rating} if rating not in (None, "") else {},
         "headline": _review_text_value(review.get("headline") or review.get("title") or review.get("subject")),
         "datePublished": review.get("datePublished") or review.get("createdAt") or review.get("created_at") or review.get("date"),
         "verifiedPurchase": review.get("verifiedPurchase") if isinstance(review.get("verifiedPurchase"), bool) else None,
+        "itemReviewedName": item_reviewed_name or review.get("productName") or review.get("product_name"),
     }
 
 
@@ -183,41 +187,96 @@ def _embedded_review_evidence(soup: BeautifulSoup) -> tuple[dict, list]:
                 if isinstance(child, (dict, list)):
                     walk(child, parent_key)
 
-    for script in soup.select('script[type="application/ld+json"], script[type="application/json"], script#__NEXT_DATA__'):
+    decoder = json.JSONDecoder()
+
+    def script_payloads(script):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw or len(raw) > 3_000_000:
+            return
         try:
-            walk(json.loads(script.string or script.get_text() or "{}"))
-        except (json.JSONDecodeError, TypeError, RecursionError):
-            continue
+            yield json.loads(raw)
+            return
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Public application state is frequently assigned to window globals
+        # rather than emitted as application/json. Decode JSON values only;
+        # never execute page script.
+        if not re.search(r"review|rating|__NEXT_DATA__|__INITIAL_STATE__|__PRELOADED_STATE__", raw, re.I):
+            return
+        starts = [match.start() for match in re.finditer(r"[\[{]", raw)]
+        for start in starts[:50]:
+            try:
+                value, _ = decoder.raw_decode(raw[start:])
+            except (json.JSONDecodeError, TypeError, RecursionError):
+                continue
+            if isinstance(value, (dict, list)):
+                yield value
+                return
+
+    for script in soup.select("script"):
+        for payload in script_payloads(script) or ():
+            try:
+                walk(payload)
+            except RecursionError:
+                continue
     def review_total(row):
         value = str(row.get("reviewCount") or row.get("ratingCount") or 0).replace(",", "")
         match = re.search(r"\d+(?:\.\d+)?", value)
         return float(match.group()) if match else 0
     aggregate = max(aggregates, key=review_total, default={})
-    reviews = max(review_sets, key=len, default=[])
+    # A page can expose complementary reviews through JSON-LD, application
+    # state, and a rendered widget.  Keep all candidates here and let the
+    # deterministic acceptance layer deduplicate them below.
+    reviews = [review for review_set in review_sets for review in review_set][:500]
     # Some public retailer widgets render semantic review cards without
     # serializing them into JSON-LD. Capture only public copy and rating; never
     # retain author/profile/customer identifiers.
     dom_reviews = []
     for card in soup.select(
         '[itemprop="review"], [data-testid*="review-card"], [data-testid*="review-item"], '
-        'article[class*="review"], li[class*="review"], div[class*="review-card"], div[class*="ReviewCard"]'
+        '[data-automation-id*="review"], [data-testid="review"], '
+        'article[class*="review"], li[class*="review"], div[class*="review-card"], '
+        'div[class*="ReviewCard"], section[class*="review-item"]'
     )[:100]:
         body_node = card.select_one(
             '[itemprop="reviewBody"], [data-testid*="review-content"], [data-testid*="review-text"], '
-            '.review-content, .review-body, .review-text, [class*="ReviewText"], [class*="reviewBody"]'
+            '[data-automation-id*="review-text"], [data-automation-id*="review-body"], '
+            '.review-content, .review-body, .review-text, [class*="ReviewText"], '
+            '[class*="reviewBody"], [class*="review-content"], [class*="review-text"]'
         )
         body = " ".join((body_node.get_text(" ", strip=True) if body_node else "").split())
-        if len(body) < 20:
-            continue
         rating_node = card.select_one('[itemprop="ratingValue"], [data-rating], [aria-label*="out of 5"]')
+        title_node = card.select_one(
+            '[itemprop="headline"], [data-testid*="review-title"], '
+            '[data-automation-id*="review-title"], .review-title, [class*="ReviewTitle"]'
+        )
+        date_node = card.select_one(
+            '[itemprop="datePublished"], time[datetime], [data-testid*="review-date"], '
+            '[data-automation-id*="review-date"], .review-date, [class*="ReviewDate"]'
+        )
         raw_rating = None
         if rating_node:
             raw_rating = rating_node.get("content") or rating_node.get("data-rating") or rating_node.get("aria-label") or rating_node.get_text(" ", strip=True)
         match = re.search(r"([0-5](?:\.\d+)?)", str(raw_rating or ""))
-        dom_reviews.append({"reviewBody": body, "reviewRating": {"ratingValue": match.group(1)} if match else {}})
-    if len(dom_reviews) > len(reviews):
-        reviews = dom_reviews
-    return aggregate, reviews
+        dom_reviews.append({
+            "reviewBody": body,
+            "reviewRating": {"ratingValue": match.group(1)} if match else {},
+            "headline": title_node.get_text(" ", strip=True) if title_node else None,
+            "datePublished": (
+                date_node.get("datetime") or date_node.get("content") or date_node.get_text(" ", strip=True)
+                if date_node else None
+            ),
+        })
+    reviews.extend(dom_reviews)
+    unique_reviews = []
+    seen_records = set()
+    for review in reviews:
+        fingerprint = json.dumps(review, sort_keys=True, default=str)
+        if fingerprint in seen_records:
+            continue
+        seen_records.add(fingerprint)
+        unique_reviews.append(review)
+    return aggregate, unique_reviews
 
 
 def _clean_review_text(value) -> str:
@@ -254,6 +313,30 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
     samples = []
     seen_samples = set()
     rejection_counts: dict[str, int] = {}
+    expected_name = _clean_review_text(node.get("name")).casefold()
+    expected_tokens = {token for token in re.findall(r"[a-z0-9]+", expected_name) if len(token) > 2}
+
+    def near_duplicate(text: str) -> bool:
+        normalized = re.sub(r"\W+", " ", text.casefold()).strip()
+        tokens = set(normalized.split())
+        for sample in samples:
+            existing = re.sub(r"\W+", " ", sample["text"].casefold()).strip()
+            existing_tokens = set(existing.split())
+            # Distinct numbered/quantified reviews can otherwise look almost
+            # identical to a fuzzy matcher (for example templated survey text).
+            if {token for token in tokens if token.isdigit()} != {
+                token for token in existing_tokens if token.isdigit()
+            }:
+                continue
+            union = tokens | existing_tokens
+            if normalized == existing:
+                return True
+            if union and len(tokens & existing_tokens) / len(union) >= 0.94:
+                return True
+            if SequenceMatcher(None, normalized, existing).ratio() >= 0.96:
+                return True
+        return False
+
     for review in reviews[:250]:
         if not isinstance(review, dict):
             continue
@@ -272,7 +355,11 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
             rejection_reason = "missing_review_text"
         elif len(body_text) < 20:
             rejection_reason = "review_text_too_short"
-        elif sample_key in seen_samples:
+        reviewed_name = _clean_review_text(review.get("itemReviewedName")).casefold()
+        reviewed_tokens = {token for token in re.findall(r"[a-z0-9]+", reviewed_name) if len(token) > 2}
+        if reviewed_name and expected_tokens and not (expected_tokens & reviewed_tokens):
+            rejection_reason = "wrong_product_review"
+        elif sample_key in seen_samples or near_duplicate(body_text):
             rejection_reason = "duplicate_review_text"
         elif len(samples) >= 25:
             rejection_reason = "review_sample_limit_reached"
@@ -312,6 +399,9 @@ def _review_summary(node: dict, aggregate: dict, source_url: str, locale: str | 
         "average_rating": round(normalized_rating, 3) if normalized_rating is not None else None,
         "review_count": int(aggregate["reviewCount"]) if str(aggregate.get("reviewCount", "")).isdigit() else len(reviews) or None,
         "review_sample_count": len(samples),
+        "raw_review_candidate_count": len(reviews),
+        "accepted_review_candidate_count": len(samples),
+        "rejected_review_candidate_count": sum(rejection_counts.values()),
         "review_samples": samples,
         "review_sample_rejections": [
             {"reason": reason, "count": count} for reason, count in sorted(rejection_counts.items())
@@ -344,16 +434,29 @@ class GenericJsonLdAdapter(ProductAdapter):
             description = soup.select_one('meta[property="og:description"][content], meta[name="description"][content]')
             image = soup.select_one('meta[property="og:image"][content], meta[name="twitter:image"][content]')
             brand = soup.select_one('meta[property="product:brand"][content]')
-            if not title or not title.get("content"):
+            is_review_page = bool(
+                re.search(r"/reviews?(?:/|$)", urlsplit(url).path, re.I)
+                or soup.select_one(
+                    '[itemprop="review"], [data-testid*="review"], '
+                    '[data-automation-id*="review"], article[class*="review"], '
+                    'li[class*="review"], div[class*="review-card"]'
+                )
+            )
+            fallback_title = soup.select_one("h1, title") if is_review_page else None
+            resolved_title = (
+                title.get("content") if title and title.get("content")
+                else fallback_title.get_text(" ", strip=True) if fallback_title else None
+            )
+            if not resolved_title:
                 return None
             node = {
                 "@type": "Product",
-                "name": title.get("content"),
+                "name": resolved_title,
                 "description": description.get("content") if description else None,
                 "image": image.get("content") if image else None,
                 "brand": brand.get("content") if brand else None,
             }
-            extraction_method = "open_graph"
+            extraction_method = "open_graph" if title and title.get("content") else "review_page_dom"
         offers = node.get("offers") or {}
         if isinstance(offers, list):
             offers = offers[0] if offers else {}
