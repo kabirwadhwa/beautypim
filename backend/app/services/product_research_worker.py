@@ -218,6 +218,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         SearchRateLimited, poll_product_source_discovery, start_product_source_discovery,
     )
     from app.worker import process_item_enrichment
+    from app.services.product_research_logging import product_research_log
 
     db = SessionLocal()
     try:
@@ -248,6 +249,12 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             ProductVariant.is_deleted == False,
         ).first() if requested_variant_id else None
         variant = variant or preferred_product_variant(db, product.id)
+        log_context = {
+            "job_id": str(job.id), "product_id": str(product.id),
+            "gtin": variant.gtin if variant and variant.gtin else None,
+            "product_name": product.product_name,
+        }
+        product_research_log("job_started", **log_context, technical_status=job.status)
         source_listing = db.query(SourceListing).filter(SourceListing.id == item.source_listing_id).first()
         from app.services.product_improvement import product_improvement_summary
         from app.services.research_reliability import build_identity_query_plan
@@ -269,6 +276,15 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             # claims, formulation and commercial synthesis wait for resolution.
             safe = {"consumer_brand", "product_family", "variant", "category", "subcategory", "product_type"}
             research_objectives = [field for field in research_objectives if field in safe]
+        product_research_log(
+            "research_plan", **log_context,
+            phase=configuration.get("research_phase") or initial_quality.get("research_phase"),
+            objectives=research_objectives,
+            identity_status=(initial_quality.get("product_understanding") or {}).get("identity_status"),
+            taxonomy_status=(initial_quality.get("product_understanding") or {}).get("taxonomy_status"),
+        )
+        for index, query in enumerate(identity_queries, 1):
+            product_research_log("search_query_attempted", **log_context, attempt=index, query=query)
         discovery = configuration.get("discovery")
         if not discovery:
             discovery = start_product_source_discovery(
@@ -283,6 +299,10 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             _assign_configuration(job, discovery=discovery)
             job.heartbeat_at = datetime.utcnow()
             db.commit()
+            product_research_log(
+                "search_started", **log_context, provider=discovery.get("provider"),
+                response_id=discovery.get("response_id"), objectives=research_objectives,
+            )
 
         rate_limit_retries = int(configuration.get("rate_limit_retries") or 0)
         retry_delays = list(configuration.get("retry_delays") or discovery.get("retry_delays") or [])
@@ -301,6 +321,11 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                     settings.OPENAI_WEB_RESEARCH_BACKOFF_SECONDS * (2 ** (rate_limit_retries - 1)),
                 )
                 retry_delays.append(round(delay, 3))
+                product_research_log(
+                    "provider_rate_limited", level=logging.WARNING, **log_context,
+                    retry=rate_limit_retries, retry_after_seconds=round(delay, 3),
+                    restart_required=exc.restart_required,
+                )
                 _assign_configuration(
                     job, rate_limit_retries=rate_limit_retries,
                     retry_delays=retry_delays, waiting_for_rate_limit=True,
@@ -326,6 +351,14 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             if discovery.get("status") in {"queued", "in_progress"}:
                 time.sleep(2)
 
+        product_research_log(
+            "search_discovery_result", **log_context, status=discovery.get("status"),
+            candidate_count=len(discovery.get("candidates") or []),
+            candidate_domains=sorted({str(row.get("domain") or "") for row in (discovery.get("candidates") or []) if isinstance(row, dict)}),
+            provider_attempts=discovery.get("provider_attempts"),
+            error=discovery.get("error"),
+        )
+
         discovery_market = ({"image_found": False, "review_evidence_found": False} if identity_only else
             _persist_discovery_market_evidence(
                 db, product, discovery, expected_gtin=variant.gtin if variant else "",
@@ -340,6 +373,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
             research_objectives=research_objectives,
             research_variant_id=variant.id if variant else None,
             identity_only=identity_only,
+            research_log_context=log_context,
         )
         result["image_found"] = bool(result.get("image_found") or discovery_market["image_found"])
         result["review_evidence_found"] = bool(
@@ -429,6 +463,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 db, product, user, candidates=second.get("candidates") or [],
                 research_objectives=remaining_objectives,
                 research_variant_id=variant.id if variant else None,
+                research_log_context=log_context,
             )
             result["second_pass"] = second_result
             result["second_pass_used"] = True
@@ -463,6 +498,7 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                     db, product, user, candidates=discovery.get("candidates") or [],
                     research_objectives=attribute_objectives,
                     research_variant_id=variant.id if variant else None,
+                    research_log_context=log_context,
                 )
                 result["attribute_completion"] = attribute_result
                 result["sources_ingested"] = int(result.get("sources_ingested") or 0) + int(attribute_result.get("sources_ingested") or 0)
@@ -560,6 +596,22 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         job.heartbeat_at = job.completed_at
         job.error_summary = "\n".join(result.get("errors") or []) or None
         db.commit()
+        product_research_log(
+            "fields_result", **log_context,
+            fields_added=result.get("fields_added") or [],
+            fields_changed=result.get("fields_changed") or [],
+            evidence_gate_rejections=result.get("fields_rejected") or result.get("evidence_gate_rejections") or [],
+            remaining_important_gaps=result.get("fields_still_missing") or [],
+            completeness_before=before_metrics.get("overall_completeness"),
+            completeness_after=after_metrics.get("overall_completeness"),
+            sources_ingested=result.get("sources_ingested"), blocked_domains=result.get("blocked_domains"),
+            review_summary_generated=bool(result.get("review_summary_generated")),
+        )
+        product_research_log(
+            "job_finished", **log_context, technical_status=job.status,
+            business_outcome=outcome, completeness_before=before_metrics.get("overall_completeness"),
+            completeness_after=after_metrics.get("overall_completeness"),
+        )
     except Exception as exc:
         db.rollback()
         job = db.query(CrawlJob).filter(CrawlJob.id == job_id).first()
@@ -580,6 +632,11 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
                 "retry_delays": (job.configuration or {}).get("retry_delays") or [],
             })
             db.commit()
+        product_research_log(
+            "job_error", level=logging.ERROR, job_id=str(job_id),
+            product_id=str((job.configuration or {}).get("research_product_id")) if job else None,
+            error_type=type(exc).__name__, error=str(exc),
+        )
         logger.exception("Background product research failed for %s", job_id)
     finally:
         db.close()

@@ -620,6 +620,7 @@ def _automatic_product_research(
     research_objectives: list[str] | None = None,
     research_variant_id: uuid.UUID | None = None,
     identity_only: bool = False,
+    research_log_context: dict | None = None,
 ) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
@@ -630,6 +631,9 @@ def _automatic_product_research(
     from app.services.web_discovery import discover_product_sources
     from app.services.image_urls import normalize_public_image_url
     from app.scraping.runner import run_crawl_job
+    from app.services.product_research_logging import product_research_log
+
+    log_context = dict(research_log_context or {})
 
     from app.services.product_identity import preferred_product_variant
     variant = db.query(ProductVariant).filter(
@@ -711,11 +715,22 @@ def _automatic_product_research(
         exact_candidate = candidate_has_exact_identity(candidate)
         if identity_compatible and exact_candidate:
             compatible_candidates.append(candidate)
+            product_research_log(
+                "candidate_accepted", **log_context, url=candidate.get("url"),
+                domain=candidate.get("domain") or (urlparse(str(candidate.get("url") or "")).hostname or ""),
+                reason="identity_and_format_compatible",
+            )
         else:
-            candidate_rejections.append({
+            rejection = {
                 "url": candidate.get("url"),
                 "reason": "format_conflict" if not identity_compatible else "insufficient_exact_identity",
-            })
+            }
+            candidate_rejections.append(rejection)
+            product_research_log(
+                "candidate_rejected", **log_context, url=rejection["url"],
+                domain=candidate.get("domain") or (urlparse(str(rejection["url"] or "")).hostname or ""),
+                rejection_reason=rejection["reason"],
+            )
     candidates = compatible_candidates
     candidates = sorted(candidates, key=candidate_score, reverse=True)
     image_before_run = bool(product.image_url)
@@ -802,6 +817,7 @@ def _automatic_product_research(
     review_signature_before = review_evidence_signature()
     from app.services.review_aggregate import select_review_aggregate
     for url, domain in selected:
+        product_research_log("crawl_attempt", **log_context, url=url, domain=domain)
         configuration = {
             "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
             "maximum_crawl_depth": 1 if review_objective else 0,
@@ -847,20 +863,37 @@ def _automatic_product_research(
             run_observations = db.query(ScrapedProductObservation).filter(
                 ScrapedProductObservation.crawl_job_id == job.id,
             ).all()
+            run_extracted = 0
+            run_rejected: dict[str, int] = {}
             for run_observation in run_observations:
                 run_summary = (run_observation.normalized_payload or {}).get("review_summary") or {}
                 run_samples = run_summary.get("review_samples")
                 if isinstance(run_samples, list):
-                    review_texts_extracted += len([
+                    accepted_samples = len([
                         sample for sample in run_samples
                         if isinstance(sample, dict) and str(sample.get("text") or "").strip()
                     ])
+                    run_extracted += accepted_samples
+                    review_texts_extracted += accepted_samples
                 for rejection in run_summary.get("review_sample_rejections") or []:
                     if not isinstance(rejection, dict):
                         continue
                     reason = str(rejection.get("reason") or "unspecified")
                     count = int(rejection.get("count") or 1)
                     review_sample_rejections[reason] = review_sample_rejections.get(reason, 0) + count
+                    run_rejected[reason] = run_rejected.get(reason, 0) + count
+            product_research_log(
+                "review_extraction", **log_context, domain=domain,
+                crawl_job_id=str(job.id), extracted=run_extracted,
+                accepted=run_extracted, rejected=sum(run_rejected.values()),
+                rejection_reasons=run_rejected, persisted=run_extracted,
+            )
+            product_research_log(
+                "crawl_result", **log_context, url=url, domain=domain,
+                crawl_job_id=str(job.id), status=job.status,
+                pages_fetched=int(job.pages_fetched or 0), products_persisted=int(job.products_persisted or 0),
+                error=job.error_summary,
+            )
             if job.products_persisted:
                 completed += 1
                 db.refresh(product)
@@ -883,9 +916,24 @@ def _automatic_product_research(
         except Exception as exc:
             db.rollback()
             errors.append(f"{domain}: {exc}")
+            product_research_log(
+                "crawl_failure", level=__import__("logging").ERROR, **log_context,
+                url=url, domain=domain, error_type=type(exc).__name__, error=str(exc),
+            )
     db.commit()
     review_signature_after = review_evidence_signature()
     canonical_review = select_review_aggregate(db, product.id) or {}
+    product_research_log(
+        "review_result", **log_context,
+        average_rating=canonical_review.get("average_rating"),
+        review_count=canonical_review.get("review_count"),
+        review_source_count=canonical_review.get("source_count"),
+        actual_review_text_count=int(canonical_review.get("review_sample_count") or 0),
+        extracted=review_texts_extracted,
+        rejected=sum(review_sample_rejections.values()),
+        rejection_reasons=review_sample_rejections,
+        persisted=int(canonical_review.get("review_sample_count") or 0),
+    )
     return {
         "candidates": len(candidates), "sources_ingested": completed,
         "accepted_candidates": [url for url, _ in selected],
