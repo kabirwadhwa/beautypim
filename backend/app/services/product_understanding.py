@@ -421,6 +421,18 @@ def understanding_snapshot_values(understanding: dict[str, Any]) -> dict[str, An
     }
 
 
+def understanding_contract_changed(current: Any, resolved: dict[str, Any]) -> bool:
+    """Return whether foundational Product Understanding must be versioned.
+
+    This deliberately ignores the caller's enrichment-field selection mode.
+    Identity/taxonomy state is authoritative orchestration state and therefore
+    must never remain stale merely because the user chose ``missing_only``.
+    """
+    if not isinstance(current, dict):
+        return True
+    return current != resolved
+
+
 def semantic_issues(understanding: dict[str, Any], payload: dict[str, Any] | None = None) -> list[dict[str, str]]:
     """Deterministic high-severity contradictions and placeholder leakage."""
     payload = payload or {}

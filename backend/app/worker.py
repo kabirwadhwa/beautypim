@@ -969,7 +969,18 @@ def process_item_enrichment(
 
     # Persist the versioned decision contract independently of individual
     # enriched attributes so every downstream consumer can use one decision.
-    if should_write("product_understanding"):
+    # Product Understanding is foundational state, not an optional enrichment
+    # field.  A missing-only run must refresh it whenever identity/taxonomy
+    # evidence changes; otherwise downstream completeness and UI surfaces keep
+    # consuming a stale contract even though the canonical category was just
+    # corrected.  Avoid needless versions when the contract is unchanged.
+    from app.services.product_understanding import understanding_contract_changed
+    current_understanding = current_values.get("product_understanding")
+    understanding_changed = understanding_contract_changed(
+        current_understanding.value if current_understanding else None,
+        product_understanding,
+    )
+    if understanding_changed:
         create_field_value_version(
             db=db, canonical_product_id=item.canonical_product_id, product_variant_id=None,
             field_name="product_understanding", value=product_understanding,

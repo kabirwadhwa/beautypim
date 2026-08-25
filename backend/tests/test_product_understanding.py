@@ -1,6 +1,7 @@
 from app.services.category_completeness import build_gap_plan, category_module, evaluate_completeness, quality_gate
 from app.services.product_understanding import (
     enforce_evidence_scope, infer_module, is_placeholder, resolve_product_understanding, semantic_issues,
+    understanding_contract_changed,
 )
 from app.services.product_pdf import build_product_pdf
 from pypdf import PdfReader
@@ -90,6 +91,19 @@ def test_exact_beauty_accessory_keeps_identity_and_resolves_accessory_taxonomy(m
     assert quality["taxonomy_status"] == "resolved"
     assert "inci" not in quality["field_states"]
     assert "shade_colour" not in quality["field_states"]
+
+
+def test_missing_only_cannot_leave_stale_product_understanding_contract():
+    stale = {
+        "contract_version": "1.0", "identity_status": "resolved",
+        "category_module": "unknown", "taxonomy_status": None,
+    }
+    resolved = {
+        "contract_version": "1.1", "identity_status": "resolved",
+        "category_module": "beauty_accessory", "taxonomy_status": "resolved",
+    }
+    assert understanding_contract_changed(stale, resolved) is True
+    assert understanding_contract_changed(resolved, resolved) is False
 
 
 def test_enterprise_row_resolves_brand_family_variant_and_makeup(monkeypatch):
