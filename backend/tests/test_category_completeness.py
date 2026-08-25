@@ -73,7 +73,7 @@ def test_category_specific_modules_do_not_cross_contaminate():
     assert "coverage" in makeup["field_states"] and "hair_types" not in makeup["field_states"]
 
 
-def test_makeup_tool_does_not_require_formula_or_colour_cosmetic_attributes():
+def test_makeup_tool_uses_accessory_module_without_formula_or_colour_cosmetic_attributes():
     puff = {
         **base_product("Makeup", "Makeup"),
         "product_name": "Givenchy Prisme Libre Puff",
@@ -81,11 +81,10 @@ def test_makeup_tool_does_not_require_formula_or_colour_cosmetic_attributes():
         "makeup": {},
     }
     result = evaluate_completeness(puff)
-    assert result["category_module"] == "makeup"
-    assert result["category_completeness"] == 100
-    assert result["field_states"]["finish"]["state"] == "not_applicable"
-    assert result["field_states"]["inci"]["state"] == "not_applicable"
-    assert result["field_states"]["targeted_concerns"]["state"] == "not_applicable"
+    assert result["category_module"] == "beauty_accessory"
+    assert "finish" not in result["field_states"]
+    assert "inci" not in result["field_states"]
+    assert "targeted_concerns" not in result["field_states"]
     assert "finish" not in result["missing_high_priority_fields"]
 
 
