@@ -18,7 +18,7 @@ BUSINESS_EXPORT_COLUMNS = (
     "all_variants", "variant_count", "category", "subcategory", "product_type",
     "application_area", "category_module", "identity_status", "taxonomy_status",
     # Canonical commercial content
-    "description", "product_positioning", "target_audience_profile_1",
+    "description", "product_usp", "product_positioning", "target_audience_profile_1",
     "target_audience_profile_2", "target_audience_profile_3", "target_audience_profiles",
     "benefits", "targeted_concerns", "directions_how_to_use", "routine_time",
     "routine_step", "sensory_description", "claims", "warnings_considerations",
@@ -89,7 +89,7 @@ INTERNAL_PRODUCT_DETAIL_FIELDS = {
 
 FIELD_VALUE_EXPORT_COVERAGE = {
     "subcategory", "product_type", "application_area", "target_audience",
-    "product_positioning", "benefits", "targeted_concerns", "directions",
+    "product_usp", "product_positioning", "benefits", "targeted_concerns", "directions",
     "sensory_description", "routine_time", "routine_step", "claims",
     "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
     "ingredients_intelligence", "product_family", "purpose", "compatibility", "material",
@@ -230,7 +230,8 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "application_area": _unwrap(fields.get("application_area")), "category_module": module,
         "identity_status": understanding.get("identity_status") or detail.get("identity_review_status"),
         "taxonomy_status": understanding.get("taxonomy_status") or completeness.get("taxonomy_status"),
-        "description": detail.get("description"), "product_positioning": _unwrap(fields.get("product_positioning")),
+        "description": detail.get("description"), "product_usp": _unwrap(fields.get("product_usp")),
+        "product_positioning": _unwrap(fields.get("product_positioning")),
         "target_audience_profile_1": targets[0], "target_audience_profile_2": targets[1],
         "target_audience_profile_3": targets[2], "target_audience_profiles": [item for item in targets if item],
         "benefits": _unwrap(fields.get("benefits")), "targeted_concerns": _unwrap(fields.get("targeted_concerns")),

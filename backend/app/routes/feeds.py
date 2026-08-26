@@ -7,6 +7,7 @@ from app.database import get_db
 from app.auth import get_current_user, require_editor_or_admin
 from app.models import ImportJob, ImportJobItem, MappingTemplate, User
 from app.services.ingestion import compute_file_hash, read_preview, suggest_mapping, ingest_file_to_source_listings
+from app.services.source_data_merge import reprocess_import_job_source_data
 from app.worker import run_job_in_background
 from app.schemas import ImportJobOut, ImportJobItemOut, MappingTemplateOut, MappingTemplateCreate, IngestProcessRequest
 
@@ -251,6 +252,19 @@ def get_job_items(
 ):
     items = db.query(ImportJobItem).filter(ImportJobItem.import_job_id == job_id).all()
     return items
+
+@router.post("/jobs/{job_id}/reprocess-source-data")
+def reprocess_stored_source_data(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    """Reapply preserved rows without file upload, AI, web research, or crawling."""
+    try:
+        result = reprocess_import_job_source_data(db, job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"job_id": str(job_id), "mode": "source_data_only", **result.as_dict()}
 
 @router.post("/jobs/{job_id}/cancel", response_model=ImportJobOut)
 def cancel_job(

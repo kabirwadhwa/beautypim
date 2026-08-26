@@ -1692,13 +1692,20 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
                     changed={}
                 )
 
-            # Step 2: Enqueue for AI Enrichment
-            process_item_enrichment(db, item, mapping)
-            queue_exact_formulation_research(db, item, job)
-            
             # Update Listing link
             listing.canonical_product_id = item.canonical_product_id
             listing.product_variant_id = item.product_variant_id
+
+            # Feed ingestion is deterministic source-data merge only. Paid AI
+            # enrichment and product research are explicit, separate actions.
+            from app.services.source_data_merge import merge_source_listing
+            merge_source_listing(
+                db, listing=listing, mapping=mapping,
+                canonical_product_id=item.canonical_product_id,
+            )
+            item.status = "completed"
+            item.enrichment_status = "not_requested"
+            item.completed_at = datetime.utcnow()
             
             job.processed_rows += 1
             db.commit()

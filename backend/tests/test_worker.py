@@ -336,7 +336,7 @@ def test_run_job_worker_lifecycle(db: Session):
     db.refresh(item)
     assert item.status == "completed"
     assert item.match_status == "new_product"
-    assert item.enrichment_status == "succeeded"
+    assert item.enrichment_status == "not_requested"
 
     # Check Canonical Product created
     canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == item.canonical_product_id).first()
@@ -350,16 +350,15 @@ def test_run_job_worker_lifecycle(db: Session):
     assert variant.size == "30"
     assert variant.unit == "ml"
 
-    # Claims are consolidated into one extensible field.
-    claims_fv = db.query(FieldValue).filter(
+    # Explicit source content is merged, while AI remains an explicit action.
+    description_fv = db.query(FieldValue).filter(
         FieldValue.canonical_product_id == canonical.id,
-        FieldValue.field_name == "claims",
+        FieldValue.field_name == "description",
         FieldValue.is_current == True
     ).first()
-    assert claims_fv is not None
-    assert any(claim["name"].lower() == "vegan" for claim in claims_fv.value)
-    vegan = next(claim for claim in claims_fv.value if claim["name"].lower() == "vegan")
-    assert vegan["status"] in {"source_supported", "unverified"}
+    assert description_fv is not None
+    assert description_fv.value.startswith("A hydrating formula")
+    assert description_fv.source_type == "source_data"
 
 def test_recover_unfinished_jobs(db: Session):
     from app.worker import run_job_in_background, recover_unfinished_jobs

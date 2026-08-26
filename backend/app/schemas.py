@@ -455,6 +455,7 @@ EDITABLE_FIELDS_REGISTRY = {
     "product_type": str,
     "application_area": str,
     "target_audience": list,
+    "product_usp": str,
     "product_positioning": str,
     "sensory_description": str,
     "routine_time": str,

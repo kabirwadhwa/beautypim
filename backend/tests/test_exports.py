@@ -44,7 +44,12 @@ def test_business_export_rules(db: Session):
         review_status="confirmed",
         is_current=True
     )
-    db.add(fv)
+    usp = FieldValue(
+        id=uuid.uuid4(), canonical_product_id=prod.id, field_name="product_usp",
+        value="Mineral-rich daily hydration USP", source_type="source_data",
+        review_status="confirmed", is_current=True,
+    )
+    db.add_all([fv, usp])
     db.commit()
 
     # Business export must fetch approved only
@@ -52,6 +57,7 @@ def test_business_export_rules(db: Session):
     assert len(data) == 1
     assert data[0]["product_name"] == "Mineral 89"
     assert data[0]["claims"][0]["status"] == "verified"
+    assert data[0]["product_usp"] == "Mineral-rich daily hydration USP"
     assert tuple(data[0]) == BUSINESS_EXPORT_COLUMNS
     assert data[0]["target_audience_profile_1"] == ""
     assert data[0]["fragrance_top_notes"] == "NOT_APPLICABLE"
@@ -81,7 +87,12 @@ def test_audit_export_rules(db: Session):
         message="Barcode missing.",
         created_by_type="system"
     )
-    db.add(issue)
+    usp = FieldValue(
+        id=uuid.uuid4(), canonical_product_id=prod.id, field_name="product_usp",
+        value="Fine-mist mineral water", source_type="source_data",
+        review_status="confirmed", is_current=True,
+    )
+    db.add_all([issue, usp])
     db.commit()
 
     # Business export must exclude it
@@ -93,6 +104,10 @@ def test_audit_export_rules(db: Session):
     assert len(audit_data) == 1
     assert audit_data[0]["product_name"] == "Thermal Water"
     assert "[warning] Barcode missing." in audit_data[0]["validation_issues"]
+    assert any(
+        item["field"] == "product_usp" and item["value"] == "Fine-mist mineral water"
+        for item in json.loads(audit_data[0]["provenance_history"])
+    )
 
 
 def test_export_endpoint_validates_options_and_requires_download_auth(client):

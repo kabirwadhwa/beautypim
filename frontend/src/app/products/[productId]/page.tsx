@@ -770,7 +770,7 @@ export default function ProductDetailPage() {
 
   // Editable fields registry listing
   const coreFields = [
-    "subcategory", "product_type", "application_area", "product_positioning",
+    "subcategory", "product_type", "application_area", "product_usp", "product_positioning",
     "sensory_description", "routine_time", "routine_step"
   ];
   const activeCategoryModule = product?.completeness?.category_module;

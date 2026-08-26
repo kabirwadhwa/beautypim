@@ -3,8 +3,8 @@ import io
 import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from app.models import CanonicalProduct, ProductVariant, ValidationIssue, FieldValue, ImportJob, User, AuditLog
-from app.worker import run_job_worker
+from app.models import CanonicalProduct, ProductVariant, ValidationIssue, FieldValue, ImportJob, ImportJobItem, User, AuditLog
+from app.worker import run_job_worker, process_item_enrichment
 from app.routes.feeds import file_cache
 from app.routes.products import approve_product
 from fastapi import HTTPException
@@ -61,6 +61,16 @@ def test_business_rules_integration(client: TestClient, db: Session):
     
     # 3. Execute worker processing
     run_job_worker(db, uuid.UUID(job_id))
+
+    # Feed ingestion is source-only. This legacy business-rule suite exercises
+    # the separate, explicit enrichment operation after confirming the import
+    # itself has completed.
+    import_job = db.query(ImportJob).filter(ImportJob.id == uuid.UUID(job_id)).one()
+    for imported_item in db.query(ImportJobItem).filter(
+        ImportJobItem.import_job_id == import_job.id,
+        ImportJobItem.status == "completed",
+    ).all():
+        process_item_enrichment(db, imported_item, import_job.column_mapping)
     
     # --- Assertions ---
     

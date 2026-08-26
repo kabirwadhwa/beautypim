@@ -37,6 +37,8 @@ export default function ImportsPage() {
     { key: "sku", label: "Supplier SKU" },
     { key: "price", label: "List Price" },
     { key: "description", label: "Product Description" },
+    { key: "benefits", label: "Product Benefits" },
+    { key: "product_usp", label: "Product USP" },
     { key: "ingredients", label: "Raw INCI Ingredients List" },
     { key: "category", label: "Product Category" },
     { key: "claims", label: "Product Claims" },
