@@ -77,7 +77,13 @@ def test_existing_ean_source_merge_and_stored_row_reprocess_are_external_call_fr
         source_listing_id=listing.id, status="pending", match_status="not_evaluated",
         enrichment_status="not_requested",
     )
-    db.add_all([brand, product, variant, *existing, job, listing, item]); db.commit()
+    # PostgreSQL cannot insert the job item until its referenced source listing
+    # exists.  Flush the parent records explicitly instead of relying on
+    # SQLite's more permissive insert ordering in the test fixture.
+    db.add_all([brand, product, variant, *existing, job, listing])
+    db.flush()
+    db.add(item)
+    db.commit()
 
     with patch("app.worker.run_ai_enrichment") as ai, \
          patch("app.worker.queue_exact_formulation_research") as research:

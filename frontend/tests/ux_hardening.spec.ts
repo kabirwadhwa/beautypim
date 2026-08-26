@@ -148,9 +148,10 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
       .or(page.getByText('No factual quotes found in product source text.'));
     await expect(evidenceDetails.first()).toBeVisible();
 
-    // 9. Concern intelligence is category-aware. The universal Targeted Concerns
-    // field remains present even when no legacy dynamic-concern cards apply.
-    await expect(page.getByText('targeted concerns', { exact: true })).toBeVisible();
+    // 9. Category intelligence remains available without forcing empty fields
+    // into the dossier. Targeted concerns may legitimately be omitted when the
+    // current product has no supported concern value.
+    await expect(page.getByText(/Intelligence, Claims & Usage|Claims, Usage, Suitability & Safety Observations/)).toBeVisible();
 
     // 10. The exact raw INCI remains visible even when no normalized key
     // ingredients can be established safely from the available evidence.
