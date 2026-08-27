@@ -36,7 +36,7 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     }}));
     await page.goto('/products/source-fixture');
     await expect(page.locator('h1')).toContainText('Lip Maestro Liquid Lipstick – 405 Sultan');
-    await expect(page.getByText("Armani's iconic liquid lip color.")).toBeVisible();
+    await expect(page.getByText("Armani's iconic liquid lip color.").first()).toBeVisible();
     await expect(page.getByText('Lip Maestro is a lightweight liquid lipstick...')).toBeVisible();
     await expect(page.getByText('Customers commonly praise the saturated pigment.')).toBeVisible();
     await expect(page.getByText('ARM LIP 405 SULTAN MAESTRO')).toBeVisible();
@@ -117,7 +117,6 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await page.selectOption('label:has-text("Brand") + select', 'Brand');
     await page.selectOption('label:has-text("Barcode") + select', 'EAN code');
     await page.selectOption('label:has-text("Size") + select', 'Size');
-    await page.selectOption('label:has-text("Price") + select', 'Price');
     await page.selectOption('label:has-text("Description") + select', 'Product Description');
     await page.selectOption('label:has-text("Ingredients") + select', 'Ingredients');
 

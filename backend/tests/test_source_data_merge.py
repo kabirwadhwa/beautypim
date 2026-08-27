@@ -278,7 +278,14 @@ def test_exact_ean_merge_and_old_reprocess_preserve_all_unrelated_objects(db):
         identity_hash="i" * 64, structured_hash="s" * 64, match_status="matched",
         adapter_name="test", adapter_version="1", parser_version="1",
     )
-    db.add_all([brand, product, matched_variant, unrelated_variant, unrelated_field, tag, formulation, crawl, crawl_url, raw_page, review]); db.commit()
+    # Flush each FK layer explicitly so this preservation fixture behaves the
+    # same on PostgreSQL as it does on SQLite (the models use scalar FK ids,
+    # rather than ORM relationships, so SQLAlchemy cannot infer insert order).
+    db.add_all([brand, product]); db.flush()
+    db.add_all([matched_variant, unrelated_variant, unrelated_field, tag, crawl]); db.flush()
+    db.add_all([formulation, crawl_url]); db.flush()
+    db.add(raw_page); db.flush()
+    db.add(review); db.commit()
     preserved_ids = {
         "product": product.id, "matched_variant": matched_variant.id, "unrelated_variant": unrelated_variant.id,
         "field": unrelated_field.id, "tag": tag.id, "formulation": formulation.id, "review": review.id,
