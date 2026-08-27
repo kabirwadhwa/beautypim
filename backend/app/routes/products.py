@@ -27,7 +27,8 @@ from app.config import settings
 from app.services.deduplication import normalize_text
 
 class BulkActionRequest(BaseModel):
-    product_ids: List[uuid.UUID]
+    product_ids: List[uuid.UUID] = Field(default_factory=list)
+    product_variant_ids: List[uuid.UUID] = Field(default_factory=list)
     action: str
     category: Optional[str] = None
     subcategory: Optional[str] = None
@@ -35,7 +36,8 @@ class BulkActionRequest(BaseModel):
 
 
 class BulkImproveRequest(BaseModel):
-    product_ids: List[uuid.UUID]
+    product_ids: List[uuid.UUID] = Field(default_factory=list)
+    product_variant_ids: List[uuid.UUID] = Field(default_factory=list)
     mode: str = "missing_only"
 
 
@@ -159,6 +161,35 @@ def _product_expected_format(db: Session, product: CanonicalProduct) -> str:
 
 def product_internal_code(product_id: uuid.UUID) -> str:
     return f"ICN-{product_id.hex.upper()}"
+
+
+def variant_sku(db: Session, variant: ProductVariant | None) -> Any:
+    """Resolve one variant's SKU without borrowing a sibling's source row."""
+    if not variant:
+        return None
+    direct = db.query(FieldValue).filter(
+        FieldValue.product_variant_id == variant.id, FieldValue.field_name == "sku",
+        FieldValue.is_current == True,
+    ).order_by(FieldValue.created_at.desc()).first()
+    if direct:
+        return direct.value
+    item = db.query(ImportJobItem).filter(
+        ImportJobItem.product_variant_id == variant.id,
+        ImportJobItem.source_listing_id.isnot(None),
+    ).order_by(ImportJobItem.created_at.desc()).first()
+    if not item:
+        return None
+    listing = db.query(SourceListing).filter(SourceListing.id == item.source_listing_id).first()
+    job = db.query(ImportJob).filter(ImportJob.id == item.import_job_id).first()
+    raw = (listing.raw_data or {}) if listing else {}
+    mapped = (job.column_mapping or {}).get("sku") if job else None
+    normalized = {re.sub(r"[^a-z0-9]", "", str(key).lower()): value for key, value in raw.items()}
+    for candidate in (mapped, "SKU Number", "SKU", "Supplier SKU"):
+        if candidate:
+            value = normalized.get(re.sub(r"[^a-z0-9]", "", str(candidate).lower()))
+            if value not in (None, ""):
+                return value
+    return None
 
 
 def _refresh_product_understanding(db: Session, product: CanonicalProduct) -> dict:
@@ -371,10 +402,18 @@ def list_products(
     status_filter: Optional[str] = None,
     brand_filter: Optional[str] = None,
     issue_filter: Optional[bool] = None,
+    response: Response = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_viewer_or_above)
 ):
-    query = db.query(CanonicalProduct).join(Brand).filter(CanonicalProduct.is_deleted == False)
+    # The grid is a variant ledger: canonical identity is shared, but each
+    # persisted ProductVariant/EAN is one independently selectable row.
+    query = db.query(ProductVariant, CanonicalProduct).select_from(CanonicalProduct).outerjoin(
+        ProductVariant, ProductVariant.canonical_product_id == CanonicalProduct.id,
+    ).join(Brand, CanonicalProduct.brand_id == Brand.id).filter(
+        CanonicalProduct.is_deleted == False,
+        or_(ProductVariant.id.is_(None), ProductVariant.is_deleted == False),
+    )
 
     if search and search.strip():
         raw_search = search.strip()
@@ -382,12 +421,8 @@ def list_products(
         search_conditions = [
             func.lower(CanonicalProduct.product_name).like(search_term),
             func.lower(Brand.name).like(search_term),
-            CanonicalProduct.id.in_(
-                db.query(ProductVariant.canonical_product_id).filter(
-                    func.lower(ProductVariant.gtin).like(search_term),
-                    ProductVariant.is_deleted == False,
-                )
-            ),
+            func.lower(ProductVariant.gtin).like(search_term),
+            func.lower(ProductVariant.variant_name).like(search_term),
         ]
         normalized_icn = raw_search.upper().removeprefix("ICN-").replace("-", "")
         if len(normalized_icn) == 32:
@@ -413,28 +448,29 @@ def list_products(
             ValidationIssue.resolved == False,
             ValidationIssue.canonical_product_id.isnot(None),
         )
-        variant_issue_ids = (
-            db.query(ProductVariant.canonical_product_id)
-            .join(ValidationIssue, ValidationIssue.product_variant_id == ProductVariant.id)
-            .filter(
-                ValidationIssue.resolved == False,
-                ProductVariant.is_deleted == False,
-            )
+        variant_issue_ids = db.query(ValidationIssue.product_variant_id).filter(
+            ValidationIssue.resolved == False,
+            ValidationIssue.product_variant_id.isnot(None),
         )
         if issue_filter:
             query = query.filter(or_(
                 CanonicalProduct.id.in_(canonical_issue_ids),
-                CanonicalProduct.id.in_(variant_issue_ids),
+                ProductVariant.id.in_(variant_issue_ids),
             ))
         else:
             query = query.filter(
                 ~CanonicalProduct.id.in_(canonical_issue_ids),
-                ~CanonicalProduct.id.in_(variant_issue_ids),
+                ~ProductVariant.id.in_(variant_issue_ids),
             )
 
+    total = query.count()
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Page"] = str(page)
+        response.headers["X-Page-Limit"] = str(limit)
     offset = (page - 1) * limit
-    products = query.order_by(CanonicalProduct.created_at.desc()).offset(offset).limit(limit).all()
-    product_ids = [product.id for product in products]
+    rows = query.order_by(CanonicalProduct.created_at.desc(), ProductVariant.created_at.asc()).offset(offset).limit(limit).all()
+    product_ids = list(dict.fromkeys(product.id for _, product in rows))
     variant_counts = dict(
         db.query(ProductVariant.canonical_product_id, func.count(ProductVariant.id))
         .filter(
@@ -463,7 +499,7 @@ def list_products(
 
     # Format output items with Brand and Category titles
     out = []
-    for prod in products:
+    for variant, prod in rows:
         category_path = None
         if prod.category_id:
             cat = db.query(Category).filter(Category.id == prod.category_id).first()
@@ -479,8 +515,6 @@ def list_products(
         }
         category_parts = [part.strip() for part in (category_path or "").split(">") if part.strip()]
             
-        from app.services.product_identity import preferred_product_variant
-        variant = preferred_product_variant(db, prod.id)
         issues = (
             db.query(ValidationIssue)
             .outerjoin(ProductVariant, ValidationIssue.product_variant_id == ProductVariant.id)
@@ -488,7 +522,7 @@ def list_products(
                 ValidationIssue.resolved == False,
                 or_(
                     ValidationIssue.canonical_product_id == prod.id,
-                    ProductVariant.canonical_product_id == prod.id,
+                    ValidationIssue.product_variant_id == (variant.id if variant else None),
                 ),
             )
             .all()
@@ -499,8 +533,11 @@ def list_products(
             key=lambda value: severity_rank.get(value, 0),
             default=None,
         )
+        sku_value = variant_sku(db, variant)
         out.append(ProductOut(
             id=prod.id,
+            product_id=prod.id,
+            product_variant_id=variant.id if variant else None,
             internal_code=product_internal_code(prod.id),
             product_name=prod.product_name,
             brand_name=prod.brand.name,
@@ -511,6 +548,10 @@ def list_products(
             ),
             product_type=current_classifications.get("product_type"),
             gtin=variant.gtin if variant else None,
+            sku=str(sku_value) if sku_value is not None else None,
+            variant_name=variant.variant_name if variant else None,
+            size=variant.size if variant else None,
+            unit=variant.unit if variant else None,
             variant_count=variant_counts.get(prod.id, 0),
             image_url=prod.image_url,
             review_status=prod.review_status,
@@ -529,6 +570,7 @@ def list_products(
 @router.post("/{product_id}/re-enrich", response_model=ProductDetailOut)
 def re_enrich_product(
     product_id: uuid.UUID,
+    product_variant_id: Optional[uuid.UUID] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor_or_admin),
 ):
@@ -543,6 +585,7 @@ def re_enrich_product(
     item = db.query(ImportJobItem).filter(
         ImportJobItem.canonical_product_id == product_id,
         ImportJobItem.source_listing_id.isnot(None),
+        *([ImportJobItem.product_variant_id == product_variant_id] if product_variant_id else []),
     ).order_by(ImportJobItem.created_at.desc()).first()
     if not item:
         raise HTTPException(
@@ -992,7 +1035,9 @@ def _enqueue_product_research(
         CrawlJob.status.in_(["queued", "discovering", "crawling", "parsing"]),
     ).order_by(CrawlJob.created_at.desc()).all()
     for job in active:
-        if str((job.configuration or {}).get("research_product_id")) == str(product.id):
+        config = job.configuration or {}
+        if (str(config.get("research_product_id")) == str(product.id)
+                and str(config.get("research_variant_id") or "") == str(item.product_variant_id or "")):
             return job
     from app.services.product_research_worker import _research_snapshot
     job = CrawlJob(
@@ -1550,7 +1595,8 @@ def product_research_results(
 def get_product_detail(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above)
+    current_user: User = Depends(require_viewer_or_above),
+    variant: Optional[uuid.UUID] = None,
 ):
     prod = db.query(CanonicalProduct).filter(
         CanonicalProduct.id == product_id,
@@ -1573,12 +1619,16 @@ def get_product_detail(
         ProductVariant.canonical_product_id == product_id,
         ProductVariant.is_deleted == False
     ).all()
+    if variant:
+        variants.sort(key=lambda row: 0 if row.id == variant else 1)
+    selected_variant = variants[0] if variants else None
 
     # Fetch Formulations
     formulations = db.query(Formulation).filter(
         Formulation.canonical_product_id == product_id,
         Formulation.is_deleted == False,
         func.length(func.trim(Formulation.raw_inci_text)) > 0,
+        *( [or_(Formulation.product_variant_id == variant, Formulation.product_variant_id.is_(None))] if variant else [] ),
     ).all()
 
     # Fetch field values
@@ -1846,6 +1896,8 @@ def get_product_detail(
 
     return ProductDetailOut(
         id=prod.id,
+        product_id=prod.id,
+        product_variant_id=selected_variant.id if selected_variant else None,
         internal_code=product_internal_code(prod.id),
         product_name=prod.product_name,
         brand_id=prod.brand_id,
@@ -1855,7 +1907,11 @@ def get_product_detail(
         product_category=category_parts[0] if category_parts else None,
         subcategory=next((fv.value for fv in fields if fv.is_current and fv.field_name == "subcategory"), None) or (category_parts[-1] if len(category_parts) > 1 else None),
         product_type=next((fv.value for fv in fields if fv.is_current and fv.field_name == "product_type"), None),
-        gtin=variants[0].gtin if variants else None,
+        gtin=selected_variant.gtin if selected_variant else None,
+        sku=variant_sku(db, selected_variant),
+        variant_name=selected_variant.variant_name if selected_variant else None,
+        size=selected_variant.size if selected_variant else None,
+        unit=selected_variant.unit if selected_variant else None,
         variant_count=len(variants),
         image_url=source_image_url,
         description=source_description,
@@ -1948,12 +2004,13 @@ def update_product_tags(
 @router.get("/{product_id}/pdf")
 def download_product_pdf(
     product_id: uuid.UUID,
+    variant: Optional[uuid.UUID] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_viewer_or_above),
 ):
     from app.services.product_pdf import build_product_pdf
 
-    detail = get_product_detail(product_id, db, current_user)
+    detail = get_product_detail(product_id, db, current_user, variant)
     pdf = build_product_pdf(detail)
     safe_name = "".join(
         character if character.isalnum() or character in {"-", "_"} else "-"
@@ -2239,10 +2296,17 @@ def bulk_improve_products(
     current_user: User = Depends(require_editor_or_admin),
 ):
     """Queue durable missing-field improvement for selected grid products."""
-    product_ids = list(dict.fromkeys(req.product_ids))
-    if not product_ids:
+    targets: list[tuple[uuid.UUID, uuid.UUID | None]] = []
+    for variant_id in dict.fromkeys(req.product_variant_ids):
+        variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id, ProductVariant.is_deleted == False).first()
+        if variant:
+            targets.append((variant.canonical_product_id, variant.id))
+        else:
+            targets.append((uuid.UUID(int=0), variant_id))
+    targets.extend((product_id, None) for product_id in dict.fromkeys(req.product_ids))
+    if not targets:
         raise HTTPException(422, "Select at least one product.")
-    if len(product_ids) > 100:
+    if len(targets) > 100:
         raise HTTPException(422, "Bulk Improve supports up to 100 products per request.")
     if req.mode != "missing_only":
         raise HTTPException(422, "Bulk Improve currently supports missing_only mode.")
@@ -2254,7 +2318,7 @@ def bulk_improve_products(
     items = []
     queued_count = skipped_count = failed_count = 0
     improve_request = ProductImproveRequest(mode="missing_only", fields=[])
-    for product_id in product_ids:
+    for product_id, variant_id in targets:
         try:
             product = db.query(CanonicalProduct).filter(
                 CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
@@ -2264,6 +2328,7 @@ def bulk_improve_products(
             source_item = db.query(ImportJobItem).filter(
                 ImportJobItem.canonical_product_id == product_id,
                 ImportJobItem.source_listing_id.isnot(None),
+                *([ImportJobItem.product_variant_id == variant_id] if variant_id else []),
             ).order_by(ImportJobItem.created_at.desc()).first()
             if not source_item:
                 raise ValueError("No source record is available for enrichment")
@@ -2280,7 +2345,8 @@ def bulk_improve_products(
                 })
                 continue
 
-            variant = preferred_product_variant(db, product.id)
+            variant = (db.query(ProductVariant).filter(ProductVariant.id == variant_id).first()
+                       if variant_id else preferred_product_variant(db, product.id))
             category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
             corpus = retrieve_corpus_evidence(
                 db, gtin=variant.gtin if variant else "",
@@ -2302,7 +2368,8 @@ def bulk_improve_products(
             db.commit()
             queued_count += 1
             items.append({
-                "product_id": str(product_id), "product_name": product.product_name,
+                "product_id": str(product_id), "product_variant_id": str(variant_id) if variant_id else None,
+                "product_name": product.product_name,
                 "status": research_job.status, "research_job_id": str(research_job.id),
                 "web_search_planned": not local_only,
                 "missing_high_priority_fields": gaps,
@@ -2310,11 +2377,12 @@ def bulk_improve_products(
         except Exception as exc:
             db.rollback()
             failed_count += 1
-            items.append({"product_id": str(product_id), "status": "failed", "error": str(exc)})
+            items.append({"product_id": str(product_id), "product_variant_id": str(variant_id) if variant_id else None,
+                          "status": "failed", "error": str(exc)})
 
     db.commit()
     return {
-        "action": "improve", "requested_count": len(product_ids),
+        "action": "improve", "requested_count": len(targets),
         "queued_count": queued_count, "skipped_count": skipped_count,
         "failed_count": failed_count, "items": items,
         "message": f"Queued {queued_count} products for background improvement.",
@@ -2413,12 +2481,16 @@ def bulk_product_action(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor_or_admin)
 ):
-    product_ids = list(dict.fromkeys(req.product_ids))
+    targets: list[tuple[uuid.UUID, uuid.UUID | None]] = []
+    for variant_id in dict.fromkeys(req.product_variant_ids):
+        variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id, ProductVariant.is_deleted == False).first()
+        targets.append((variant.canonical_product_id if variant else uuid.UUID(int=0), variant_id))
+    targets.extend((product_id, None) for product_id in dict.fromkeys(req.product_ids))
     action = req.action
 
-    if not product_ids:
+    if not targets:
         raise HTTPException(status_code=422, detail="Select at least one product.")
-    if len(product_ids) > 100:
+    if len(targets) > 100:
         raise HTTPException(status_code=422, detail="Bulk actions support up to 100 products per request.")
     if action not in ["approve", "reject", "re_enrich", "set_classification", "add_tags", "remove_tags"]:
         raise HTTPException(status_code=400, detail="Invalid action name")
@@ -2431,14 +2503,21 @@ def bulk_product_action(
     errors = []
     items = []
 
-    for pid in product_ids:
+    processed_canonical: set[uuid.UUID] = set()
+    for pid, variant_id in targets:
         try:
+            if pid.int == 0:
+                raise HTTPException(status_code=404, detail="Product variant not found")
+            # Canonical actions are intentionally idempotent when several
+            # selected variant rows share one parent. Each selected row still
+            # receives its own successful result below.
+            already_processed = pid in processed_canonical
             if action == "approve":
-                approve_product(pid, db, current_user)
+                if not already_processed: approve_product(pid, db, current_user)
             elif action == "reject":
-                reject_product(pid, db, current_user)
+                if not already_processed: reject_product(pid, db, current_user)
             elif action == "re_enrich":
-                detail = re_enrich_product(pid, db, current_user)
+                detail = re_enrich_product(pid, variant_id, db, current_user)
                 improvement = detail.improvement_result or {}
                 items.append({
                     "product_id": str(pid),
@@ -2449,8 +2528,9 @@ def bulk_product_action(
                 product = db.query(CanonicalProduct).filter(CanonicalProduct.id == pid, CanonicalProduct.is_deleted == False).first()
                 if not product:
                     raise HTTPException(status_code=404, detail="Product not found")
-                _set_product_classification(db, product, req.category or "", req.subcategory or "", current_user)
-                db.commit()
+                if not already_processed:
+                    _set_product_classification(db, product, req.category or "", req.subcategory or "", current_user)
+                    db.commit()
             elif action in {"add_tags", "remove_tags"}:
                 product = db.query(CanonicalProduct).filter(
                     CanonicalProduct.id == pid, CanonicalProduct.is_deleted == False,
@@ -2464,9 +2544,14 @@ def bulk_product_action(
                 else:
                     removed = {name.casefold() for name in requested}
                     target = [name for name in existing if name.casefold() not in removed]
-                _replace_product_tags(db, product, target, current_user)
-                db.commit()
+                if not already_processed:
+                    _replace_product_tags(db, product, target, current_user)
+                    db.commit()
+            processed_canonical.add(pid)
             success_count += 1
+            if action != "re_enrich":
+                items.append({"product_id": str(pid), "product_variant_id": str(variant_id) if variant_id else None,
+                              "status": "completed"})
         except HTTPException as e:
             db.rollback()
             errors.append({"product_id": str(pid), "error": e.detail})
@@ -2479,7 +2564,7 @@ def bulk_product_action(
     return {
         "action": action,
         "success_count": success_count,
-        "failed_count": len(product_ids) - success_count,
+        "failed_count": len(targets) - success_count,
         "errors": errors,
         "items": items,
     }

@@ -12,6 +12,7 @@ from app.models import (
 )
 from app.services.ingestion import read_preview, suggest_mapping
 from app.services.business_export import build_business_row
+from app.routes.exports import build_audit_export_data
 from app.services.source_data_merge import dynamic_source_field_key, reprocess_import_job_source_data
 from app.worker import run_job_worker
 
@@ -143,8 +144,36 @@ def test_real_mat_shape_updates_exact_ean_preserves_enrichment_and_exposes_custo
     assert attributes["customer_review_summary"].value == row["Product Review Summary"]
     assert detail.review_aggregate is None or detail.review_aggregate.get("review_sample_count", 0) == 0
     exported = build_business_row(db, detail, include_inferred=True)
-    assert exported["customer_review_summary"] == row["Product Review Summary"]
+    assert exported["review_summary"] == row["Product Review Summary"]
+    assert exported["review_positive_themes"] == []
+    assert exported["review_negative_themes"] == []
     assert exported["article_description"] == row["Article description"]
+    technical = next(item for item in build_audit_export_data(db) if item["product_id"] == str(product.id))
+    snapshot = technical["canonical_product_snapshot"]
+    assert snapshot["sku"] == "1503369"
+    assert snapshot["description"] == row["Product Description"]
+    assert any(
+        item["key"] == "customer_review_summary" and item["value"] == row["Product Review Summary"]
+        for item in technical["source_attributes"]
+    )
+    from app.services.product_pdf import build_product_pdf
+    from pypdf import PdfReader
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(build_product_pdf(detail))).pages)
+    assert "Review Summary" in pdf_text
+    assert "Customers commonly praise" in pdf_text
+    assert "Customer-provided Review Summary" not in pdf_text
+
+    # A later blank feed and aggregate-only summarization cannot erase a
+    # source-supplied canonical Review Summary.
+    blank_job, _, _ = _make_job(db, {
+        "EAN code": row["EAN code"], "Brand": row["Brand"], "Product Name": row["Product Name"],
+        "Product Review Summary": "",
+    })
+    run_job_worker(db, blank_job.id)
+    from app.services.review_summarization import summarize_product_reviews
+    summarize_product_reviews(db, product.id)
+    db.commit()
+    assert _current(db, product.id, "customer_review_summary").value == row["Product Review Summary"]
 
 
 def test_unknown_columns_are_generic_latest_nonempty_and_exported(db):

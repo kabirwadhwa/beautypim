@@ -186,14 +186,17 @@ def test_pdf_includes_universal_attributes_tags_claims_warnings_and_description(
         "product_name": "Complete Serum", "brand_name": "Beauty Lab",
         "product_category": "Skincare", "subcategory": "Serums",
         "description": "A source-supported daily serum for barrier care.",
-        "tags": ["Investor Ready", "Priority"],
+        "tags": ["Investor Ready", "Priority"], "sku": "SERUM-30",
         "variants": [{"variant_name": "Standard", "size": "30", "unit": "ml", "gtin": "1234567890123"}],
         "formulations": [{"raw_inci_text": "Aqua, Glycerin, Ceramide NP"}],
         "review_aggregate": {"average_rating": 4.7, "review_count": 140, "review_summary": "Customers value its light texture."},
+        "source_attributes": [{"key": "source_attr.packaging.abc", "label": "Packaging Material", "value": "Glass"}],
         "field_values": [
             {"field_name": "product_type", "value": "Face Serum", "is_current": True},
             {"field_name": "application_area", "value": "Face", "is_current": True},
             {"field_name": "product_positioning", "value": "Everyday barrier-support serum", "is_current": True},
+            {"field_name": "product_usp", "value": "Barrier support without heaviness", "is_current": True},
+            {"field_name": "customer_review_summary", "value": "Customers praise the texture and hydration...", "is_current": True},
             {"field_name": "benefits", "value": ["Supports lasting hydration"], "is_current": True},
             {"field_name": "targeted_concerns", "value": {"values": ["Dehydration"]}, "is_current": True},
             {"field_name": "target_audience", "value": {"value": ["Profile one", "Profile two", "Profile three"]}, "is_current": True},
@@ -208,7 +211,9 @@ def test_pdf_includes_universal_attributes_tags_claims_warnings_and_description(
     text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
     for expected in (
         "PRODUCT OVERVIEW", "A source-supported daily serum", "Serums", "Face Serum", "Face",
-        "Investor Ready", "Priority", "Everyday barrier-support serum", "Dehydration",
+        "Investor Ready", "Priority", "SERUM-30", "Barrier support without heaviness",
+        "Everyday barrier-support serum", "Dehydration", "Review Summary",
+        "Customers praise the texture and hydration", "Packaging", "Material", "Glass",
         "Dermatologically tested", "Patch test before use", "4.7/5", "140 reviews",
         "Aqua, Glycerin, Ceramide NP",
     ):

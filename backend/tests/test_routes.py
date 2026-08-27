@@ -4,7 +4,7 @@ import json
 import uuid
 from unittest.mock import patch
 from app.config import settings
-from app.models import CanonicalProduct, Brand, FieldValue, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing, ProductTag, CrawlJob
+from app.models import CanonicalProduct, Brand, FieldValue, Formulation, ImportJob, ImportJobItem, User, ProductVariant, ValidationIssue, Category, SourceListing, ProductTag, CrawlJob
 
 def test_database_dialect_matches_environment(db):
     dialect_name = db.bind.dialect.name
@@ -112,6 +112,109 @@ def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(cli
     assert str(product.id) not in [row["id"] for row in clear.json()]
     status_filtered = client.get("/api/products?status_filter=needs_review", headers=headers)
     assert str(product.id) in [row["id"] for row in status_filtered.json()]
+
+
+def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Variant Grid", normalized_name=f"variantgrid{uuid.uuid4().hex}")
+    db.add(brand)
+    db.flush()
+    products = []
+    variants = []
+    # 42 parents have two variants and five have one: 47 parents / 89 rows.
+    for product_index in range(47):
+        product = CanonicalProduct(
+            id=uuid.uuid4(), brand_id=brand.id, product_name=f"Grid Family {product_index + 1}",
+            normalized_name=f"gridfamily{product_index + 1}", review_status="approved",
+        )
+        db.add(product)
+        db.flush()
+        products.append(product)
+        count = 2 if product_index < 42 else 1
+        for variant_index in range(count):
+            sequence = len(variants) + 1
+            variant = ProductVariant(
+                id=uuid.uuid4(), canonical_product_id=product.id,
+                gtin=f"{3700000000000 + sequence}", variant_name=f"Variant {variant_index + 1}",
+                size=str(10 + variant_index), unit="ml",
+            )
+            db.add(variant)
+            db.add(FieldValue(
+                id=uuid.uuid4(), product_variant_id=variant.id, field_name="sku",
+                value=f"SKU-{sequence}", source_type="source_data", review_status="confirmed", is_current=True,
+            ))
+            variants.append(variant)
+    db.commit()
+
+    response = client.get("/api/products?limit=100", headers=headers)
+    rows = [row for row in response.json() if row["brand_name"] == "Variant Grid"]
+    assert len(rows) == 89
+    assert len({row["product_variant_id"] for row in rows}) == 89
+    assert len({row["product_id"] for row in rows}) == 47
+    assert int(response.headers["x-total-count"]) == 89
+
+    nine_parent = products[0]
+    for extra in range(7):
+        sequence = len(variants) + extra + 1
+        extra_variant = ProductVariant(
+            id=uuid.uuid4(), canonical_product_id=nine_parent.id,
+            gtin=f"{3800000000000 + sequence}", variant_name=f"Extra {extra + 1}",
+        )
+        db.add(extra_variant)
+        db.add(FieldValue(
+            id=uuid.uuid4(), product_variant_id=extra_variant.id, field_name="sku",
+            value=f"EXTRA-SKU-{extra + 1}", source_type="source_data", review_status="confirmed", is_current=True,
+        ))
+    db.commit()
+    family_rows = [row for row in client.get("/api/products?limit=100", headers=headers).json()
+                   if row["product_id"] == str(nine_parent.id)]
+    assert len(family_rows) == 9
+    for row in family_rows:
+        found = client.get(f"/api/products?search={row['gtin']}", headers=headers).json()
+        assert len(found) == 1
+        assert found[0]["product_variant_id"] == row["product_variant_id"]
+
+    selected = ",".join(row["product_variant_id"] for row in family_rows)
+    exported = client.get(
+        f"/api/exports/download?mode=business&format=json&variant_ids={selected}", headers=headers,
+    )
+    assert exported.status_code == 200
+    assert len(exported.json()) == 9
+    assert len({row["product_variant_id"] for row in exported.json()}) == 9
+    assert len({row["gtin_ean_upc"] for row in exported.json()}) == 9
+    assert len({row["sku"] for row in exported.json()}) == 9
+    bulk = client.post("/api/products/bulk/actions", headers=headers, json={
+        "product_variant_ids": [row["product_variant_id"] for row in family_rows],
+        "action": "add_tags", "tags": ["Nine variants"],
+    })
+    assert bulk.status_code == 200
+    assert bulk.json()["success_count"] == 9
+    assert len(bulk.json()["items"]) == 9
+    assert db.query(CanonicalProduct).filter(CanonicalProduct.id == nine_parent.id).count() == 1
+    assert db.query(ProductVariant).filter(ProductVariant.canonical_product_id == nine_parent.id).count() == 9
+
+    selected_row = next(row for row in family_rows if row["sku"])
+    detail = client.get(
+        f"/api/products/{nine_parent.id}?variant={selected_row['product_variant_id']}", headers=headers,
+    )
+    assert detail.status_code == 200
+    assert detail.json()["product_variant_id"] == selected_row["product_variant_id"]
+    assert detail.json()["gtin"] == selected_row["gtin"]
+    assert detail.json()["variant_name"] == selected_row["variant_name"]
+    assert detail.json()["size"] == selected_row["size"]
+    assert detail.json()["unit"] == selected_row["unit"]
+    assert detail.json()["sku"] == selected_row["sku"]
+    pdf = client.get(
+        f"/api/products/{nine_parent.id}/pdf?variant={selected_row['product_variant_id']}", headers=headers,
+    )
+    assert pdf.status_code == 200
+    from io import BytesIO
+    from pypdf import PdfReader
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf.content)).pages)
+    assert selected_row["gtin"] in pdf_text
+    assert selected_row["sku"] in pdf_text
+    assert selected_row["variant_name"] in pdf_text
 
 
 def test_product_tags_single_and_bulk_workflows(client: TestClient, db):

@@ -43,7 +43,7 @@ export default function ImportsPage() {
     { key: "article_description", label: "Article Description" },
     { key: "bgb_subgroup", label: "BGB Subgroup / Customer Category" },
     { key: "bgb_typegroup", label: "BGB Typegroup / Customer Subcategory" },
-    { key: "customer_review_summary", label: "Customer-provided Review Summary" },
+    { key: "customer_review_summary", label: "Review Summary" },
     { key: "ingredients", label: "Raw INCI Ingredients List" },
     { key: "category", label: "Product Category" },
     { key: "claims", label: "Product Claims" },

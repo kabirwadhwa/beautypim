@@ -36,15 +36,41 @@ def _business_fieldnames(data: List[Dict[str, Any]]) -> tuple[str, ...]:
 def _all_fieldnames(data: List[Dict[str, Any]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(key for row in data for key in row))
 
-def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict[str, Any]]:
+def build_business_export_data(
+    db: Session, include_inferred: bool, variant_ids: list[uuid.UUID] | None = None,
+) -> List[Dict[str, Any]]:
     # 1. Fetch only approved or published products
     products = db.query(CanonicalProduct).filter(
         CanonicalProduct.review_status.in_(["approved", "published"]),
         CanonicalProduct.is_deleted == False
     ).all()
 
+    product_ids = [product.id for product in products]
+    variant_query = db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id.in_(product_ids), ProductVariant.is_deleted == False,
+    )
+    if variant_ids is not None:
+        variant_query = variant_query.filter(ProductVariant.id.in_(variant_ids))
+    variants = variant_query.order_by(ProductVariant.created_at.asc()).all()
+    by_product = {variant.canonical_product_id for variant in variants}
+
     from app.routes.products import get_product_detail
-    export_rows = [build_business_row(db, get_product_detail(prod.id, db, None), include_inferred) for prod in products]
+    export_rows = []
+    for variant in variants:
+        row = build_business_row(
+            db, get_product_detail(variant.canonical_product_id, db, None, variant.id), include_inferred,
+        )
+        row.update({
+            "product_variant_id": str(variant.id), "gtin_ean_upc": variant.gtin or "",
+            "variant": variant.variant_name or "", "size": variant.size or "", "unit": variant.unit or "",
+        })
+        export_rows.append(row)
+    # Preserve legacy canonical records that predate variant creation. They
+    # remain one export row until a real ProductVariant exists.
+    if variant_ids is None:
+        for product in products:
+            if product.id not in by_product:
+                export_rows.append(build_business_row(db, get_product_detail(product.id, db, None), include_inferred))
         
     return export_rows
 
@@ -54,6 +80,9 @@ def build_audit_export_data(db: Session) -> List[Dict[str, Any]]:
     export_rows = []
 
     for prod in products:
+        from app.routes.products import get_product_detail
+        detail = get_product_detail(prod.id, db, None)
+        detail_snapshot = detail.model_dump(mode="json")
         variant = db.query(ProductVariant).filter(
             ProductVariant.canonical_product_id == prod.id,
             ProductVariant.is_deleted == False
@@ -65,7 +94,12 @@ def build_audit_export_data(db: Session) -> List[Dict[str, Any]]:
             "brand": prod.brand.name,
             "review_status": prod.review_status,
             "gtin": variant.gtin if variant else "",
-            "size": f"{variant.size or ''} {variant.unit or ''}".strip() if variant else ""
+            "size": f"{variant.size or ''} {variant.unit or ''}".strip() if variant else "",
+            "canonical_product_snapshot": detail_snapshot,
+            "all_variants": detail_snapshot.get("variants") or [],
+            "all_formulations": detail_snapshot.get("formulations") or [],
+            "source_attributes": detail_snapshot.get("source_attributes") or [],
+            "review_aggregate": detail_snapshot.get("review_aggregate"),
         }
 
         # Validation issues summary (semicolon delimited)
@@ -139,11 +173,18 @@ def download_file(
     mode: str = "business",
     format: str = "json",
     inferred: bool = False,
+    variant_ids: str | None = None,
     db: Session = Depends(get_db),
     current_user: Any = Depends(require_viewer_or_above),
 ):
     if mode == "business":
-        data = build_business_export_data(db, inferred)
+        parsed_variant_ids = None
+        if variant_ids:
+            try:
+                parsed_variant_ids = [uuid.UUID(value) for value in variant_ids.split(",") if value]
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="Invalid product variant selection") from exc
+        data = build_business_export_data(db, inferred, parsed_variant_ids)
     else:
         data = build_audit_export_data(db)
 

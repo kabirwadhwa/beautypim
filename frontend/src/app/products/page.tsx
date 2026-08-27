@@ -4,11 +4,13 @@ import { API_URL, BACKEND_URL } from '../../config';
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Shell from '../../components/Shell';
-import { Search, Filter, AlertTriangle, ArrowRight, X, Sparkles, Tag } from 'lucide-react';
+import { Search, Filter, AlertTriangle, ArrowRight, X, Sparkles, Tag, Download } from 'lucide-react';
 import styles from '../page.module.css';
 
 interface Product {
   id: string;
+  product_id: string;
+  product_variant_id: string | null;
   internal_code: string;
   product_name: string;
   brand_name: string;
@@ -17,6 +19,10 @@ interface Product {
   subcategory: string | null;
   product_type: string | null;
   gtin: string | null;
+  sku: string | null;
+  variant_name: string | null;
+  size: string | null;
+  unit: string | null;
   variant_count: number;
   review_status: string;
   validation_issue_count: number;
@@ -154,7 +160,7 @@ export default function ProductsPage() {
         setIdentityQueue(queueData.items || []);
         setIdentityQueueTotal(queueData.total || 0);
       }
-      setSelectedIds(previous => previous.filter(id => allProducts.some(product => product.id === id)));
+      setSelectedIds(previous => previous.filter(id => allProducts.some(product => (product.product_variant_id || product.product_id) === id)));
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(e?.message || "Unable to load products.");
     } finally {
@@ -180,6 +186,13 @@ export default function ProductsPage() {
       setSelectedIds([...selectedIds, id]);
     }
   };
+  const selectedPayload = (ids: string[]) => {
+    const selected = products.filter(product => ids.includes(product.product_variant_id || product.product_id));
+    return {
+      product_variant_ids: selected.flatMap(product => product.product_variant_id ? [product.product_variant_id] : []),
+      product_ids: selected.flatMap(product => product.product_variant_id ? [] : [product.product_id]),
+    };
+  };
 
   const categoryOptions = Array.from(new Set(products.map(p => p.product_category).filter(Boolean) as string[])).sort();
   const productTypeOptions = Array.from(new Set(products.map(p => p.product_type).filter(Boolean) as string[])).sort();
@@ -189,11 +202,9 @@ export default function ProductsPage() {
     (!productTypeFilter || product.product_type === productTypeFilter) &&
     (!tagFilter || (product.tags || []).includes(tagFilter))
   );
-  const visibleVariantCount = visibleProducts.reduce((total, product) => total + (product.variant_count || 0), 0);
-
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(visibleProducts.map(p => p.id));
+      setSelectedIds(visibleProducts.map(p => p.product_variant_id || p.product_id));
     } else {
       setSelectedIds([]);
     }
@@ -224,7 +235,7 @@ export default function ProductsPage() {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            product_ids: selectedIds.slice(offset, offset + chunkSize), action,
+            ...selectedPayload(selectedIds.slice(offset, offset + chunkSize)), action,
             category: action === 'set_classification' ? bulkCategory : undefined,
             subcategory: action === 'set_classification' ? bulkSubcategory : undefined,
             tags: action === 'add_tags' || action === 'remove_tags' ? [bulkTag] : undefined
@@ -288,7 +299,7 @@ export default function ProductsPage() {
             "Authorization": `Bearer ${token}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ product_ids: requestedIds.slice(offset, offset + 100), mode: "missing_only" })
+          body: JSON.stringify({ ...selectedPayload(requestedIds.slice(offset, offset + 100)), mode: "missing_only" })
         });
         const data = await resp.json().catch(() => null);
         if (!resp.ok) throw new Error(data?.detail || "Bulk Improve failed.");
@@ -320,6 +331,32 @@ export default function ProductsPage() {
       setBulkMessage(null);
       setBulkProgress(previous => previous ? { ...previous, running: false, stage: 'Bulk improvement finished with errors' } : previous);
       setError(e?.message || "Bulk Improve failed.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleExportSelected = async () => {
+    if (!selectedIds.length) return;
+    setActionLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const variantIds = selectedPayload(selectedIds).product_variant_ids;
+      if (!variantIds.length) throw new Error('Selected legacy rows do not yet have exportable variants.');
+      const params = new URLSearchParams({ mode: 'business', format: 'xlsx', variant_ids: variantIds.join(',') });
+      const response = await fetch(`${API_URL}/exports/download?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Selected variants could not be exported.');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'beauty_pim_selected_variants.xlsx';
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e?.message || 'Selected variants could not be exported.');
     } finally {
       setActionLoading(false);
     }
@@ -394,6 +431,9 @@ export default function ProductsPage() {
 
         {selectedIds.length > 0 && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button onClick={handleExportSelected} className={`${styles.btn} ${styles.btnSecondary}`} disabled={actionLoading}>
+              <Download size={15} /> Export selected ({selectedIds.length})
+            </button>
             <input className={styles.inputField} value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} placeholder="Category" style={{ width: 145 }} />
             <input className={styles.inputField} value={bulkSubcategory} onChange={e => setBulkSubcategory(e.target.value)} placeholder="Subcategory" style={{ width: 155 }} />
             <button
@@ -619,11 +659,9 @@ export default function ProductsPage() {
 
       {!loading && (
         <div role="status" style={{ marginBottom: 12, color: '#94a3b8', fontSize: 13 }}>
-          Showing <strong style={{ color: '#f8fafc' }}>{visibleProducts.length}</strong> product families
-          {' · '}
-          <strong style={{ color: '#f8fafc' }}>{visibleVariantCount}</strong> variants
+          Showing <strong style={{ color: '#f8fafc' }}>{visibleProducts.length}</strong> product variants
           {(categoryFilter || productTypeFilter) && visibleProducts.length !== products.length
-            ? ` (filtered from ${products.length} loaded families)`
+            ? ` (filtered from ${products.length} loaded variants)`
             : ' loaded'}
         </div>
       )}
@@ -640,7 +678,7 @@ export default function ProductsPage() {
                 <th style={{ width: 40 }}>
                   <input 
                     type="checkbox" 
-                    checked={visibleProducts.length > 0 && visibleProducts.every(product => selectedIds.includes(product.id))}
+                    checked={visibleProducts.length > 0 && visibleProducts.every(product => selectedIds.includes(product.product_variant_id || product.product_id))}
                     onChange={(e) => handleSelectAll(e.target.checked)}
                   />
                 </th>
@@ -648,7 +686,7 @@ export default function ProductsPage() {
                 <th>Brand Name</th>
                 <th>Product Name</th>
                 <th>GTIN / EAN</th>
-                <th>Variants</th>
+                <th>Variant / Size</th>
                 <th>Category</th>
                 <th>Subcategory</th>
                 <th>Product Type</th>
@@ -668,12 +706,12 @@ export default function ProductsPage() {
                 </tr>
               ) : (
                 visibleProducts.map((p) => (
-                  <tr key={p.id} style={{ cursor: 'pointer' }} onClick={() => router.push(`/products/${p.id}`)}>
+                  <tr key={p.product_variant_id || p.product_id} style={{ cursor: 'pointer' }} onClick={() => router.push(`/products/${p.product_id}${p.product_variant_id ? `?variant=${p.product_variant_id}` : ''}`)}>
                     <td onClick={(e) => e.stopPropagation()}>
                       <input 
                         type="checkbox" 
-                        checked={selectedIds.includes(p.id)}
-                        onChange={() => handleSelectRow(p.id)}
+                        checked={selectedIds.includes(p.product_variant_id || p.product_id)}
+                        onChange={() => handleSelectRow(p.product_variant_id || p.product_id)}
                       />
                     </td>
                     <td style={{ fontFamily: 'monospace', color: '#a5b4fc' }} title={p.internal_code}>
@@ -682,7 +720,7 @@ export default function ProductsPage() {
                     <td style={{ fontWeight: 600 }}>{p.brand_name}</td>
                     <td>{p.product_name}</td>
                     <td style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{p.gtin || "—"}</td>
-                    <td>{p.variant_count || 0}</td>
+                    <td>{[p.variant_name, [p.size, p.unit].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || '—'}</td>
                     <td>{p.product_category || "—"}</td>
                     <td style={{ color: '#c4b5fd' }}>{p.subcategory || "—"}</td>
                     <td style={{ color: '#94a3b8' }}>{p.product_type || "—"}</td>
@@ -710,7 +748,7 @@ export default function ProductsPage() {
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <button 
-                        onClick={() => router.push(`/products/${p.id}`)}
+                        onClick={() => router.push(`/products/${p.product_id}${p.product_variant_id ? `?variant=${p.product_variant_id}` : ''}`)}
                         className={`${styles.btn} ${styles.btnSecondary}`}
                         style={{ padding: '4px 8px', fontSize: 11 }}
                       >

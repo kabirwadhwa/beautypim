@@ -2,7 +2,7 @@
 import { API_URL, BACKEND_URL } from '../../../config';
 
 import React, { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Shell from '../../../components/Shell';
 import { 
   ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle, 
@@ -51,6 +51,10 @@ interface ProductDetail {
   description: string | null;
   image_url: string | null;
   gtin: string | null;
+  sku?: string | null;
+  variant_name?: string | null;
+  size?: string | null;
+  unit?: string | null;
   brand_id: string | null;
   brand_name: string | null;
   category_id: string | null;
@@ -62,7 +66,7 @@ interface ProductDetail {
   is_deleted: boolean;
   created_at: string;
   updated_at: string;
-  variants: Array<{ id: string; gtin: string | null; size: string | null; unit: string | null }>;
+  variants: Array<{ id: string; variant_name?: string | null; gtin: string | null; size: string | null; unit: string | null }>;
   formulations: Array<{ id: string; raw_inci_text: string; market: string | null }>;
   market_observations: Array<{
     source_name: string | null; source_domain: string | null; market: string | null;
@@ -188,8 +192,10 @@ interface ImprovementSummary {
 
 export default function ProductDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const productId = params.productId as string;
+  const selectedVariantId = searchParams.get('variant');
 
   const [product, setProduct] = useState<ProductDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -239,7 +245,7 @@ export default function ProductDetailPage() {
     try {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
-      const resp = await fetch(`${API_URL}/products/${productId}`, { headers });
+      const resp = await fetch(`${API_URL}/products/${productId}${selectedVariantId ? `?variant=${selectedVariantId}` : ''}`, { headers });
       if (!resp.ok) throw new Error("Product details not found.");
       const data = await resp.json();
       setProduct(data);
@@ -269,7 +275,7 @@ export default function ProductDetailPage() {
   };
   useEffect(() => {
     fetchDetail();
-  }, [productId]);
+  }, [productId, selectedVariantId]);
 
   useEffect(() => {
     if (!activeResearchJobId) return;
@@ -563,7 +569,7 @@ export default function ProductDetailPage() {
     setError(null);
     try {
       const token = localStorage.getItem("token");
-      const resp = await fetch(`${API_URL}/products/${productId}/pdf`, {
+      const resp = await fetch(`${API_URL}/products/${productId}/pdf${selectedVariantId ? `?variant=${selectedVariantId}` : ''}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (!resp.ok) {
@@ -766,6 +772,7 @@ export default function ProductDetailPage() {
     acc[curr.field_name] = curr;
     return acc;
   }, {} as Record<string, typeof currentValues[0]>);
+  const selectedVariant = product?.variants?.find(item => item.id === selectedVariantId) || product?.variants?.[0];
 
   const activeIssues = product?.validation_issues.filter(i => !i.resolved) || [];
   const blockingIssues = activeIssues.filter(i => i.severity === "blocking");
@@ -850,6 +857,8 @@ export default function ProductDetailPage() {
     : (reviewObservation?.data?.rating ?? reviewSummary.average_rating);
   const reviewCount = reviewObservation?.data?.review_count ?? reviewSummary.review_count;
   const reviewSummaryText = String(reviewSummary.ai_summary_text || reviewSummary.summary || '').trim();
+  const sourceReviewSummary = String(currentValDict.customer_review_summary?.value || '').trim();
+  const canonicalReviewSummary = sourceReviewSummary || reviewSummaryText;
   const reviewSamples = Number(product?.review_aggregate?.review_sample_count ?? reviewSummary.review_sample_count ?? 0);
   const reviewSources = Array.isArray(product?.review_aggregate?.sources) ? product.review_aggregate.sources : [];
   const reviewSourceCount = Number(product?.review_aggregate?.review_source_count ?? reviewSummary.review_source_count ?? reviewSources.length);
@@ -1204,7 +1213,7 @@ export default function ProductDetailPage() {
           <Star size={18} color="#fbbf24" />
           <span>Review Intelligence</span>
         </div>
-        {reviewObservation ? (
+        {reviewObservation || canonicalReviewSummary ? (
           <div style={{ marginTop: 14, padding: 18, borderRadius: 10, border: '1px solid #334155', background: '#10192c' }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px 20px' }}>
               <div style={{ color: '#f8fafc', fontSize: 28, fontWeight: 800 }}>
@@ -1220,11 +1229,11 @@ export default function ProductDetailPage() {
               <span><strong>Review Intelligence:</strong> {String(reviewIntelligenceStrength).replaceAll('_', ' ')}</span>
               <span>{reviewSamples} stored review sample{reviewSamples === 1 ? '' : 's'}</span>
             </div>
-            {reviewSamples > 0 && reviewSummaryText ? (
+            {canonicalReviewSummary ? (
               <>
-                <div style={{ color: '#c4b5fd', fontSize: 14, fontWeight: 750, marginTop: 16, marginBottom: 9 }}>AI Review Summary</div>
-                <p style={{ color: '#e2e8f0', fontSize: 14, lineHeight: 1.65, margin: 0 }}>{reviewSummaryText}</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 10, marginTop: 14 }}>
+                <div style={{ color: '#c4b5fd', fontSize: 14, fontWeight: 750, marginTop: 16, marginBottom: 9 }}>Review Summary</div>
+                <p style={{ color: '#e2e8f0', fontSize: 14, lineHeight: 1.65, margin: 0 }}>{canonicalReviewSummary}</p>
+                {reviewSamples > 0 && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 10, marginTop: 14 }}>
                   {themeGroups.map(([label, themes, color]) => (
                     <div key={label} style={{ padding: 12, borderRadius: 8, border: '1px solid #334155' }}>
                       <strong style={{ color, fontSize: 12 }}>{label}</strong>
@@ -1232,11 +1241,11 @@ export default function ProductDetailPage() {
                         : <div style={{ color: '#64748b', fontSize: 12, marginTop: 7 }}>No reliable recurring theme established.</div>}
                     </div>
                   ))}
-                </div>
+                </div>}
               </>
             ) : reviewRating != null || reviewCount != null ? (
               <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5, marginTop: 14 }}>
-                <strong>Detailed Review Summary:</strong> Unavailable until review-level text is collected. Aggregate rating and review-count evidence is available, but review-text evidence was insufficient for a detailed summary.
+                <strong>Review Summary:</strong> Unavailable until review-level text is collected. Aggregate rating and review-count evidence is available, but review-text evidence was insufficient for a detailed summary.
               </div>
             ) : (
               <div style={{ color: '#94a3b8', fontSize: 14, lineHeight: 1.5 }}>
@@ -1254,23 +1263,15 @@ export default function ProductDetailPage() {
             No reliable review intelligence available yet.
           </div>
         )}
-        {currentValDict.customer_review_summary?.value && (
-          <div style={{ marginTop: 14, padding: 16, border: '1px solid #3b4b70', borderRadius: 9, background: '#10192c' }}>
-            <div style={{ color: '#c4b5fd', fontSize: 13, fontWeight: 800, marginBottom: 7 }}>Customer-provided Review Summary</div>
-            <p style={{ color: '#e2e8f0', fontSize: 14, lineHeight: 1.6, margin: 0 }}>
-              {String(currentValDict.customer_review_summary.value)}
-            </p>
-            <div style={{ color: '#64748b', fontSize: 11, marginTop: 8 }}>Uploaded customer source data; no review count or written-review sample count is implied.</div>
-          </div>
-        )}
       </div>
 
       <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div className={styles.panelTitle}><BookOpen size={18} color="#60a5fa"/><span>Customer Product Content</span></div>
         <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
           {[
-            ['GTIN / EAN', product?.gtin],
-            ['Size', product?.variants?.[0] ? `${product.variants[0].size || ''} ${product.variants[0].unit || ''}`.trim() : null],
+            ['GTIN / EAN', selectedVariant?.gtin || product?.gtin],
+            ['Variant', selectedVariant?.variant_name],
+            ['Size', selectedVariant ? `${selectedVariant.size || ''} ${selectedVariant.unit || ''}`.trim() : null],
             ['Description', product?.description],
             ['Product USP', currentValDict.product_usp?.value],
             ['Product Positioning', currentValDict.product_positioning?.value],
@@ -1280,7 +1281,7 @@ export default function ProductDetailPage() {
             ['BGB Typegroup', currentValDict.bgb_typegroup?.value],
             ['Customer Category', currentValDict.customer_category?.value],
             ['Customer Subcategory', currentValDict.customer_subcategory?.value],
-            ['Customer SKU(s)', currentValDict.sku?.value],
+            ['SKU', product?.sku || currentValDict.sku?.value],
           ].filter(([, value]) => value !== null && value !== undefined && value !== '').map(([label, value]) => (
             <div key={String(label)} style={{ padding: 12, border: '1px solid #2e3c64', borderRadius: 7 }}>
               <div style={{ color: '#64748b', fontSize: 11, fontWeight: 700, marginBottom: 5 }}>{String(label)}</div>

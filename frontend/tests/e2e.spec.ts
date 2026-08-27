@@ -2,6 +2,31 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Beauty PIM End-to-End Workflows', () => {
 
+  test('Product Grid renders sibling variants as separate selectable rows', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('token', 'variant-grid-token'));
+    await page.route('**/api/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ email: 'admin@test.com', role: 'admin' }) }));
+    const productId = '00000000-0000-4000-8000-000000000777';
+    const variants = Array.from({ length: 9 }, (_, index) => ({
+      id: productId, product_id: productId,
+      product_variant_id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      internal_code: 'ICN-000777', product_name: 'Nine Shade Lipstick', brand_name: 'Grid Brand',
+      category_path: 'Makeup > Lips', product_category: 'Makeup', subcategory: 'Lips',
+      product_type: 'Lipstick', gtin: String(3600000000100 + index), sku: `SKU-${index + 1}`,
+      variant_name: `Shade ${index + 1}`, size: '4', unit: 'g', variant_count: 9,
+      review_status: 'imported', validation_issue_count: 0, highest_issue_severity: null, tags: [],
+    }));
+    await page.route('**/api/products?**', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify(new URL(route.request().url()).searchParams.get('page') === '1' ? variants : []),
+    }));
+    await page.goto('/products');
+    await expect(page.getByRole('status')).toContainText('Showing 9 product variants');
+    await expect(page.getByText('Nine Shade Lipstick')).toHaveCount(9);
+    await expect(page.getByText('Shade 9 · 4 g')).toBeVisible();
+    await page.getByRole('button', { name: 'Inspect' }).nth(8).click();
+    await expect(page).toHaveURL(new RegExp(`/products/${productId}\\?variant=${variants[8].product_variant_id}`));
+  });
+
   test('Product Grid loads every backend page and reports families and variants', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('token', 'pagination-test-token'));
     await page.route('**/api/auth/me', route => route.fulfill({
@@ -17,8 +42,10 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
       const start = (requestedPage - 1) * 100;
       const rows = Array.from({ length: requestedPage === 1 ? 100 : requestedPage === 2 ? 1 : 0 }, (_, offset) => {
         const index = start + offset + 1;
+        const id = `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
         return {
-          id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+          id, product_id: id,
+          product_variant_id: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
           internal_code: `ICN-${String(index).padStart(12, '0')}`,
           product_name: `Pagination Product ${index}`,
           brand_name: 'Pagination Brand',
@@ -38,8 +65,7 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
 
     await page.goto('/products');
 
-    await expect(page.getByRole('status')).toContainText('Showing 101 product families');
-    await expect(page.getByRole('status')).toContainText('101 variants');
+    await expect(page.getByRole('status')).toContainText('Showing 101 product variants');
     await expect(page.getByText('Pagination Product 101')).toBeVisible();
     expect(requestedPages).toEqual([1, 2]);
   });
@@ -52,6 +78,8 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     }));
     const products = [1, 2].map(index => ({
       id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      product_id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      product_variant_id: `20000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
       internal_code: `ICN-${index}`, product_name: `Bulk Product ${index}`,
       brand_name: 'Bulk Brand', product_category: 'Skincare', subcategory: 'Face',
       product_type: 'Moisturizer', category_path: 'Skincare > Face', gtin: null,

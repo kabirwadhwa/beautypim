@@ -145,6 +145,8 @@ def _current_fields(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _review_lines(data: dict[str, Any]) -> list[str]:
+    current = _current_fields(data)
+    source_summary = _clean(current.get("customer_review_summary"))
     observation = data.get("review_aggregate") or {}
     if not observation and len(data.get("market_observations") or []) == 1:
         # Backward-compatible serialized dossiers with one unambiguous review
@@ -175,8 +177,9 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
             summary = (summary.get("ai_summary_text") or summary.get("summary") or summary.get("text")
                        or summary.get("review_summary") or summary.get("highlights")
                        or summary.get("sentiment"))
-        if _clean(summary):
-            lines.append(_clean(summary))
+        canonical_summary = source_summary or _clean(summary)
+        if canonical_summary:
+            lines.append("Review Summary: " + canonical_summary)
         summary_data = observation.get("review_summary") or {}
         if isinstance(summary_data, dict):
             for label, key in (("Positive", "positive_themes"), ("Negative", "negative_themes"), ("Mixed", "mixed_themes")):
@@ -190,7 +193,7 @@ def _review_lines(data: dict[str, Any]) -> list[str]:
         if source_names:
             lines.append("Sources: " + ", ".join(source_names[:6]))
         return lines
-    return []
+    return ["Review Summary: " + source_summary] if source_summary else []
 
 
 def _claims(current: dict[str, Any]) -> list[str]:
@@ -217,10 +220,25 @@ def _warnings(current: dict[str, Any]) -> list[str]:
     return warnings
 
 
-def _append_overview(story: list[Any], data: dict[str, Any]) -> None:
+def _append_overview(story: list[Any], data: dict[str, Any], current: dict[str, Any]) -> None:
     description = _clean(data.get("description"))
     if description:
         _append(story, _card("Product Overview", _p(description), CONTENT_W))
+    commercial = [
+        ("Product USP", current.get("product_usp")),
+        ("Product Positioning", current.get("product_positioning")),
+    ]
+    if any(_clean(value) for _, value in commercial):
+        _append(story, _card("Commercial Profile", _label_table(commercial, CONTENT_W - 2 * _DENSITY.get().card_pad_x), CONTENT_W))
+    dynamic_rows = [
+        (item.get("label") or item.get("source_header") or item.get("key"), item.get("value"))
+        for item in data.get("source_attributes") or []
+        if str(item.get("key") or "").startswith("source_attr.") and _clean(item.get("value"))
+    ]
+    if dynamic_rows:
+        _append(story, _card("Additional Product Attributes", _label_table(
+            dynamic_rows, CONTENT_W - 2 * _DENSITY.get().card_pad_x,
+        ), CONTENT_W))
 
 
 def _append_claims_and_warnings(story: list[Any], current: dict[str, Any]) -> None:
@@ -441,10 +459,10 @@ def _build_fragrance_pdf(data: dict[str, Any], current: dict[str, Any]) -> bytes
         ("Category", data.get("product_category") or "Fragrance"),
         ("Subcategory", data.get("subcategory")), ("Product type", concentration),
         ("Variant", variant.get("variant_name")), ("Fragrance family", family),
-        ("GTIN / EAN", gtin), ("Sensory profile", sensory),
+        ("GTIN / EAN", gtin), ("SKU", data.get("sku")), ("Sensory profile", sensory),
         ("Tags", data.get("tags")),
     ]))
-    _append_overview(story, data)
+    _append_overview(story, data, current)
 
     note_width = (CONTENT_W - 2 * gap) / 3
     note_cards = []
@@ -540,10 +558,10 @@ def _build_category_pdf(data: dict[str, Any], current: dict[str, Any], module_na
         ("Category", _clean(data.get("product_category"), module_name.title())),
         ("Subcategory", data.get("subcategory")), ("Product type", product_type),
         ("Application area", current.get("application_area")),
-        ("Variant", variant.get("variant_name")), ("GTIN / EAN", gtin),
+        ("Variant", variant.get("variant_name")), ("GTIN / EAN", gtin), ("SKU", data.get("sku")),
         ("Sensory profile", sensory), ("Tags", data.get("tags")),
     ]))
-    _append_overview(story, data)
+    _append_overview(story, data, current)
 
     profile_width = CONTENT_W * .42
     benefits_width = CONTENT_W - profile_width - gap
@@ -566,6 +584,10 @@ def _build_category_pdf(data: dict[str, Any], current: dict[str, Any], module_na
     ), CONTENT_W))
 
     key_ingredients = current.get("ingredients_intelligence") or data.get("key_ingredients") or []
+    if isinstance(key_ingredients, dict):
+        key_ingredients = key_ingredients.get("key_ingredients") or []
+    if not isinstance(key_ingredients, list):
+        key_ingredients = []
     if key_ingredients:
         ingredient_rows = []
         for item in key_ingredients[:6]:

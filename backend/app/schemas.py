@@ -398,6 +398,8 @@ class ValidationIssueOut(BaseModel):
 
 class ProductOut(BaseModel):
     id: uuid.UUID
+    product_id: Optional[uuid.UUID] = None
+    product_variant_id: Optional[uuid.UUID] = None
     internal_code: str
     product_name: str
     brand_name: Optional[str] = None
@@ -406,6 +408,10 @@ class ProductOut(BaseModel):
     subcategory: Optional[str] = None
     product_type: Optional[str] = None
     gtin: Optional[str] = None
+    sku: Optional[str] = None
+    variant_name: Optional[str] = None
+    size: Optional[str] = None
+    unit: Optional[str] = None
     variant_count: int = 0
     image_url: Optional[str] = None
     review_status: str

@@ -13,7 +13,7 @@ from app.models import ScrapedProductObservation
 
 BUSINESS_EXPORT_COLUMNS = (
     # Identity and workflow
-    "product_id", "internal_code", "review_status", "tags", "brand", "product_name",
+    "product_id", "product_variant_id", "internal_code", "review_status", "tags", "brand", "product_name",
     "product_family", "format", "gtin_ean_upc", "sku", "variant", "size", "unit",
     "all_variants", "variant_count", "category", "subcategory", "product_type",
     "application_area", "category_module", "identity_status", "taxonomy_status",
@@ -49,8 +49,8 @@ BUSINESS_EXPORT_COLUMNS = (
     "actual_review_sample_count", "review_aggregate_strength",
     "review_intelligence_strength", "review_quality", "review_source",
     "review_source_domain", "review_observation_date", "review_positive_themes",
-    "review_negative_themes", "review_mixed_themes", "full_ai_review_summary",
-    "review_limitations", "review_sources", "customer_review_summary",
+    "review_negative_themes", "review_mixed_themes", "review_summary",
+    "review_limitations", "review_sources",
     "customer_taxonomy_bgb_subgroup", "customer_taxonomy_bgb_typegroup", "additional_imported_attributes",
     # Business-useful completeness and quality state
     "overall_completeness", "identity_completeness", "content_completeness",
@@ -64,10 +64,12 @@ BUSINESS_EXPORT_COLUMNS = (
 # represented by one or more business columns or explicitly internal-only.
 PRODUCT_DETAIL_EXPORT_COVERAGE = {
     "id": {"product_id"}, "internal_code": {"internal_code"},
+    "product_id": {"product_id"}, "product_variant_id": {"product_variant_id"},
     "product_name": {"product_name"}, "brand_name": {"brand"},
     "category_path": {"category", "subcategory"}, "product_category": {"category"},
     "subcategory": {"subcategory"}, "product_type": {"product_type"},
     "gtin": {"gtin_ean_upc"}, "variant_count": {"variant_count"},
+    "sku": {"sku"}, "variant_name": {"variant"}, "size": {"size"}, "unit": {"unit"},
     "image_url": {"primary_image_url"}, "review_status": {"review_status"},
     "validation_issue_count": {"validation_issue_count"},
     "highest_issue_severity": {"highest_validation_severity"}, "tags": {"tags"},
@@ -77,7 +79,7 @@ PRODUCT_DETAIL_EXPORT_COVERAGE = {
     "formulations": {"raw_inci", "formulation_market", "formulation_language", "formulation_effective_date"},
     "key_ingredients": {"ordered_ingredients", "key_ingredients", "ingredient_functions", "ingredient_benefits_utilities", "ingredient_caution_notes"},
     "dynamic_concerns": {"targeted_concerns"}, "market_observations": {"market_observations"},
-    "review_aggregate": {"average_rating", "represented_review_count", "full_ai_review_summary"},
+    "review_aggregate": {"average_rating", "represented_review_count", "review_summary"},
     "product_understanding": {"product_family", "sku", "identity_status", "taxonomy_status", "category_module"},
     "completeness": {"overall_completeness", "missing_high_priority_fields"},
     "source_attributes": {"additional_imported_attributes"},
@@ -216,6 +218,8 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
     market = _current_market(market_rows)
     review = detail.get("review_aggregate") or {}
     review_summary = review.get("review_summary") if isinstance(review.get("review_summary"), dict) else {}
+    generated_review_summary = review_summary.get("ai_summary_text") or review_summary.get("summary")
+    customer_review_summary = _unwrap(fields.get("customer_review_summary"))
 
     row: dict[str, Any] = {column: "" for column in BUSINESS_EXPORT_COLUMNS}
     row.update({
@@ -225,7 +229,8 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "product_family": _unwrap(fields.get("product_family")) or _identity_value(understanding, "product_family"),
         "format": _identity_value(understanding, "format"),
         "gtin_ean_upc": first_variant.get("gtin") or detail.get("gtin"),
-        "sku": _identity_value(understanding, "sku"), "variant": first_variant.get("variant_name") or _identity_value(understanding, "variant"),
+        "sku": detail.get("sku") or _identity_value(understanding, "sku"),
+        "variant": detail.get("variant_name") or first_variant.get("variant_name") or _identity_value(understanding, "variant"),
         "size": first_variant.get("size"), "unit": first_variant.get("unit"), "all_variants": variants,
         "variant_count": detail.get("variant_count"), "category": detail.get("product_category") or (category_path[0] if category_path else None),
         "subcategory": _unwrap(fields.get("subcategory")) or detail.get("subcategory"),
@@ -270,10 +275,9 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "review_positive_themes": review_summary.get("positive_themes") or [],
         "review_negative_themes": review_summary.get("negative_themes") or [],
         "review_mixed_themes": review_summary.get("mixed_themes") or [],
-        "full_ai_review_summary": review_summary.get("ai_summary_text") or review_summary.get("summary"),
+        "review_summary": customer_review_summary or generated_review_summary,
         "review_limitations": review_summary.get("evidence_limitation"),
         "review_sources": review.get("sources") or review.get("source_breakdown") or [],
-        "customer_review_summary": _unwrap(fields.get("customer_review_summary")),
         "customer_taxonomy_bgb_subgroup": _unwrap(fields.get("bgb_subgroup")),
         "customer_taxonomy_bgb_typegroup": _unwrap(fields.get("bgb_typegroup")),
         "overall_completeness": completeness.get("overall_completeness"),
