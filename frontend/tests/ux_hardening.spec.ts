@@ -135,7 +135,7 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await expect(page.locator('h1')).toContainText('Cloud Hydrating Masque');
     await expect(page.getByText('A cloud-light hydration mask.').first()).toBeVisible();
     await expect(page.getByText('Hydration mask for skin').first()).toBeVisible();
-    await expect(page.getByText('Hydrates visibly', { exact: true })).toBeVisible();
+    await expect(page.getByText('Hydrates visibly', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Customers commonly praise the soft hydrated finish.').first()).toBeVisible();
     await expect(page.getByText('PTR CLOUD HYDR MASK').first()).toBeVisible();
     await expect(page.getByText('SKINCARE (1ST LEVEL)').first()).toBeVisible();
