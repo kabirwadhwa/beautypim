@@ -140,6 +140,9 @@ def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client
                 size=str(10 + variant_index), unit="ml",
             )
             db.add(variant)
+            # Flush the parent variant before its SKU evidence so PostgreSQL's
+            # immediate foreign-key enforcement observes deterministic order.
+            db.flush()
             db.add(FieldValue(
                 id=uuid.uuid4(), product_variant_id=variant.id, field_name="sku",
                 value=f"SKU-{sequence}", source_type="source_data", review_status="confirmed", is_current=True,
@@ -162,6 +165,7 @@ def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client
             gtin=f"{3800000000000 + sequence}", variant_name=f"Extra {extra + 1}",
         )
         db.add(extra_variant)
+        db.flush()
         db.add(FieldValue(
             id=uuid.uuid4(), product_variant_id=extra_variant.id, field_name="sku",
             value=f"EXTRA-SKU-{extra + 1}", source_type="source_data", review_status="confirmed", is_current=True,
