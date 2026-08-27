@@ -1774,7 +1774,10 @@ def get_product_detail(
 
     # Preserve source-authored marketing copy and image URLs for existing imports.
     # New enrichment runs also persist image_url directly on CanonicalProduct.
-    source_description = None
+    source_description = next((
+        fv.value for fv in fields
+        if fv.is_current and fv.field_name == "description" and fv.value not in (None, "")
+    ), None)
     source_image_url = prod.image_url
     latest_source = db.query(SourceListing).filter(
         SourceListing.canonical_product_id == product_id,
@@ -1786,7 +1789,7 @@ def get_product_detail(
         raw = latest_source.raw_data or {}
         description_key = (mapping or {}).get("description")
         image_key = (mapping or {}).get("image_url")
-        if description_key and raw.get(description_key):
+        if not source_description and description_key and raw.get(description_key):
             source_description = str(raw[description_key]).strip()
         if not source_description:
             for key in ("description", "marketing_description", "marketing_copy", "details"):
@@ -1816,6 +1819,31 @@ def get_product_detail(
     review_aggregate = select_review_aggregate(db, product_id)
     if review_aggregate and review_aggregate.get("observation_id") is not None:
         review_aggregate = {**review_aggregate, "observation_id": str(review_aggregate["observation_id"])}
+    source_attributes = []
+    for fv, fv_out in zip(fields, fields_out):
+        if not fv.is_current or fv.source_type != "source_data" or fv.value in (None, "", [], {}):
+            continue
+        evidence = fv_out.evidence or []
+        customer_evidence = next((
+            item for item in evidence
+            if isinstance(item, dict)
+            and item.get("evidence_type") == "explicit_customer_source"
+            and item.get("import_job_id")
+            and (item.get("source_listing_id") or str(fv.source_reference or "").startswith("feed:"))
+        ), None)
+        if not customer_evidence:
+            continue
+        source_header = next((
+            str(item.get("source_header") or item.get("source_field"))
+            for item in evidence if isinstance(item, dict) and (item.get("source_header") or item.get("source_field"))
+        ), fv.field_name)
+        source_attributes.append({
+            "key": fv.field_name, "label": source_header, "value": fv.value,
+            "source_type": fv.source_type, "source_reference": fv.source_reference,
+            "source_header": source_header, "updated_at": fv.updated_at or fv.created_at,
+        })
+    source_attributes.sort(key=lambda item: (item["label"].lower(), item["key"]))
+
     return ProductDetailOut(
         id=prod.id,
         internal_code=product_internal_code(prod.id),
@@ -1847,6 +1875,7 @@ def get_product_detail(
         variants=variants,
         formulations=formulations,
         field_values=fields_out,
+        source_attributes=source_attributes,
         validation_issues=issues,
         enrichment_metadata=global_meta,
         key_ingredients=key_ingredients_out,

@@ -71,6 +71,10 @@ interface ProductDetail {
     review_summary: any; source_url: string | null; observed_at: string | null;
   }>;
   field_values: FieldValue[];
+  source_attributes: Array<{
+    key: string; label: string; value: any; source_type: string;
+    source_reference: string | null; source_header: string; updated_at: string;
+  }>;
   validation_issues: Array<{
     id: string;
     field_name: string | null;
@@ -781,38 +785,44 @@ export default function ProductDetailPage() {
   ]));
   const claimOverrideFields = ['claims'];
   const structuredOverrideFields = richFields.filter(field => field !== 'source_claims');
+  const standardSourceKeys = new Set([
+    'brand', 'product_name', 'gtin', 'sku', 'variant', 'size', 'unit', 'description',
+    'article_description', 'bgb_subgroup', 'bgb_typegroup', 'customer_review_summary',
+    'product_usp', 'product_positioning', 'benefits', 'directions', 'claims', 'ingredients',
+    'customer_category', 'customer_subcategory', 'product_url', 'image_url', 'price',
+    'market', 'language', 'subcategory', 'product_type', 'application_area',
+  ]);
+  const additionalSourceAttributes = (product?.source_attributes || []).filter(attribute =>
+    attribute.key.startsWith('source_attr.') && !standardSourceKeys.has(attribute.key)
+  );
 
   const prettyStructuredValue = (value: any): string[] => {
-    if (value === null || value === undefined || value === "") return ["No explicit source claim"];
-    if (Array.isArray(value)) {
-      if (value.length === 0) return ["No explicit source claim"];
-      return value.map(item => {
-        if (typeof item !== "object") return String(item);
-        return item.statement || item.value || item.name || item.ingredient_name ||
-          Object.entries(item).filter(([, val]) => typeof val !== "object")
-            .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}`).join(" · ");
-      });
-    }
-    if (typeof value === "object") {
-      if (typeof value.value === "string") return [value.value];
-      if (Array.isArray(value.values)) return value.values.map((item: any) => String(item));
-      if (Array.isArray(value.items)) return value.items.map((item: any) =>
-        typeof item === 'object' ? `${item.name || 'Item'}: ${item.description || ''}` : String(item)
-      );
-      if (value.scores && typeof value.scores === 'object') return Object.entries(value.scores)
-        .map(([key, val]) => `${key.replaceAll("_", " ")}: ${String(val)}/5`);
-      return Object.entries(value)
-        .filter(([, val]) => val !== null && val !== "" && !(Array.isArray(val) && val.length === 0))
-        .flatMap(([key, val]) => {
-          if (Array.isArray(val)) {
-            const printable = val.filter(item => typeof item !== 'object').map(item => String(item));
-            return printable.length ? [`${key.replaceAll("_", " ")}: ${printable.join(', ')}`] : [];
-          }
-          if (typeof val === "object") return [];
-          return [`${key.replaceAll("_", " ")}: ${String(val)}`];
-        });
-    }
-    return [String(value)];
+    const render = (candidate: any, path: string, depth: number): string[] => {
+      const label = path.replaceAll("_", " ");
+      if (candidate === null || candidate === undefined || candidate === "") {
+        return path ? [`${label}: Not provided`] : ["No explicit source claim"];
+      }
+      if (depth >= 5) {
+        let compact: string;
+        try { compact = JSON.stringify(candidate); } catch { compact = String(candidate); }
+        return [`${label ? `${label}: ` : ""}${compact.slice(0, 500)}`];
+      }
+      if (Array.isArray(candidate)) {
+        if (!candidate.length) return path ? [`${label}: None`] : ["No explicit source claim"];
+        if (candidate.every(item => item === null || typeof item !== "object")) {
+          const text = candidate.map(item => item === null ? "Not provided" : String(item)).join(" · ");
+          return [`${label ? `${label}: ` : ""}${text}`];
+        }
+        return candidate.flatMap((item, index) => render(item, path ? `${path} ${index + 1}` : `${index + 1}`, depth + 1));
+      }
+      if (typeof candidate === "object") {
+        const entries = Object.entries(candidate).slice(0, 100);
+        if (!entries.length) return path ? [`${label}: None`] : ["No explicit source claim"];
+        return entries.flatMap(([key, nested]) => render(nested, path ? `${path} › ${key}` : key, depth + 1));
+      }
+      return [`${label ? `${label}: ` : ""}${String(candidate)}`];
+    };
+    return render(value, "", 0);
   };
 
   const displayValue = (value: any, semanticStatus?: string | null) => {
@@ -1244,7 +1254,55 @@ export default function ProductDetailPage() {
             No reliable review intelligence available yet.
           </div>
         )}
+        {currentValDict.customer_review_summary?.value && (
+          <div style={{ marginTop: 14, padding: 16, border: '1px solid #3b4b70', borderRadius: 9, background: '#10192c' }}>
+            <div style={{ color: '#c4b5fd', fontSize: 13, fontWeight: 800, marginBottom: 7 }}>Customer-provided Review Summary</div>
+            <p style={{ color: '#e2e8f0', fontSize: 14, lineHeight: 1.6, margin: 0 }}>
+              {String(currentValDict.customer_review_summary.value)}
+            </p>
+            <div style={{ color: '#64748b', fontSize: 11, marginTop: 8 }}>Uploaded customer source data; no review count or written-review sample count is implied.</div>
+          </div>
+        )}
       </div>
+
+      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+        <div className={styles.panelTitle}><BookOpen size={18} color="#60a5fa"/><span>Customer Product Content</span></div>
+        <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+          {[
+            ['GTIN / EAN', product?.gtin],
+            ['Size', product?.variants?.[0] ? `${product.variants[0].size || ''} ${product.variants[0].unit || ''}`.trim() : null],
+            ['Description', product?.description],
+            ['Product USP', currentValDict.product_usp?.value],
+            ['Product Positioning', currentValDict.product_positioning?.value],
+            ['Product Benefits', currentValDict.benefits?.value],
+            ['Article description', currentValDict.article_description?.value],
+            ['BGB Subgroup', currentValDict.bgb_subgroup?.value],
+            ['BGB Typegroup', currentValDict.bgb_typegroup?.value],
+            ['Customer Category', currentValDict.customer_category?.value],
+            ['Customer Subcategory', currentValDict.customer_subcategory?.value],
+            ['Customer SKU(s)', currentValDict.sku?.value],
+          ].filter(([, value]) => value !== null && value !== undefined && value !== '').map(([label, value]) => (
+            <div key={String(label)} style={{ padding: 12, border: '1px solid #2e3c64', borderRadius: 7 }}>
+              <div style={{ color: '#64748b', fontSize: 11, fontWeight: 700, marginBottom: 5 }}>{String(label)}</div>
+              <div style={{ color: '#e2e8f0', fontSize: 14, lineHeight: 1.55 }}>{prettyStructuredValue(value).join(' · ')}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {additionalSourceAttributes.length > 0 && (
+        <div className={styles.panelCard} style={{ marginBottom: 20 }} data-testid="additional-imported-attributes">
+          <div className={styles.panelTitle}><BookOpen size={18} color="#6ee7b7"/><span>Additional Imported Attributes</span></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, marginTop: 12 }}>
+            {additionalSourceAttributes.map(attribute => (
+              <div key={attribute.key} style={{ padding: 12, border: '1px solid #2e3c64', borderRadius: 7 }}>
+                <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 700, marginBottom: 5 }}>{attribute.label}</div>
+                <div style={{ color: '#f1f5f9', fontSize: 14, lineHeight: 1.5 }}>{prettyStructuredValue(attribute.value).join(' · ')}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {researchDiagnostics && <details className={styles.panelCard} style={{ marginBottom: 20 }}>
         <summary className={styles.panelTitle} style={{ cursor: 'pointer' }}><Search size={18} color="#60a5fa"/><span>Research details</span></summary>
@@ -1438,7 +1496,7 @@ export default function ProductDetailPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, color: '#94a3b8' }}>
               <div style={{ backgroundColor: '#0b0f19', padding: 12, borderRadius: 4, fontFamily: 'monospace', color: '#f8fafc', whiteSpace: 'pre-wrap' }}>
-                {product?.formulations[0]?.raw_inci_text || "No ingredients list recorded for this product."}
+                {product?.formulations[0]?.raw_inci_text || currentValDict.ingredients?.value || "No ingredients list recorded for this product."}
               </div>
             </div>
           </div>

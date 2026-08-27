@@ -22,6 +22,7 @@ export default function ImportsPage() {
   
   // Mapping selections states
   const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [ignoredColumns, setIgnoredColumns] = useState<string[]>([]);
   const [saveTemplate, setSaveTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [sourceName, setSourceName] = useState('');
@@ -39,6 +40,10 @@ export default function ImportsPage() {
     { key: "description", label: "Product Description" },
     { key: "benefits", label: "Product Benefits" },
     { key: "product_usp", label: "Product USP" },
+    { key: "article_description", label: "Article Description" },
+    { key: "bgb_subgroup", label: "BGB Subgroup / Customer Category" },
+    { key: "bgb_typegroup", label: "BGB Typegroup / Customer Subcategory" },
+    { key: "customer_review_summary", label: "Customer-provided Review Summary" },
     { key: "ingredients", label: "Raw INCI Ingredients List" },
     { key: "category", label: "Product Category" },
     { key: "claims", label: "Product Claims" },
@@ -95,6 +100,7 @@ export default function ImportsPage() {
       const data = await resp.json();
       setPreview(data);
       setMapping(data.suggested_mapping || {});
+      setIgnoredColumns([]);
     } catch (err: any) {
       setError(err.message || "Failed to upload.");
       setFile(null);
@@ -107,7 +113,8 @@ export default function ImportsPage() {
     setSelectedTemplate(templateId);
     const tmpl = templates.find(t => t.id === templateId);
     if (tmpl) {
-      setMapping(tmpl.column_mapping);
+      setMapping(Object.fromEntries(Object.entries(tmpl.column_mapping).filter(([key]) => !key.startsWith('__ignore__.'))));
+      setIgnoredColumns(Object.entries(tmpl.column_mapping).filter(([key]) => key.startsWith('__ignore__.')).map(([, value]) => value));
     }
   };
 
@@ -125,10 +132,12 @@ export default function ImportsPage() {
 
     try {
       const token = localStorage.getItem("token");
+      const columnMapping = { ...mapping };
+      ignoredColumns.forEach((header, index) => { columnMapping[`__ignore__.${index}`] = header; });
       const payload = {
         filename: file.name,
         file_hash: preview.file_hash,
-        column_mapping: mapping,
+        column_mapping: columnMapping,
         save_template: saveTemplate,
         template_name: saveTemplate ? templateName : null,
         source_name: sourceName || file.name
@@ -164,7 +173,7 @@ export default function ImportsPage() {
       <div className={styles.pageHeader}>
         <div className={styles.titleGroup}>
           <h1>Feed Ingestion Wizard</h1>
-          <p>Import beauty product catalog datasets (CSV, Excel, or JSON formats)</p>
+          <p>Import product catalog datasets (CSV, XLSX, XLSM, or JSON formats)</p>
         </div>
       </div>
 
@@ -178,13 +187,13 @@ export default function ImportsPage() {
         <div className={styles.panelCard} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '64px 0', borderStyle: 'dashed' }}>
           <UploadCloud size={48} color="#64748b" style={{ marginBottom: 16 }} />
           <p style={{ fontWeight: 500, fontSize: 15, marginBottom: 4 }}>Drag and drop your feed file here</p>
-          <p style={{ color: '#64748b', fontSize: 13, marginBottom: 20 }}>Supports UTF-8 CSV, JSON, or Excel files up to 50MB</p>
+          <p style={{ color: '#64748b', fontSize: 13, marginBottom: 20 }}>Supports UTF-8 CSV, JSON, XLSX, or XLSM files up to 50MB. Macros are never executed.</p>
           <input 
             type="file" 
             id="file-upload" 
             style={{ display: 'none' }} 
             onChange={handleFileUpload}
-            accept=".csv,.xlsx,.json"
+            accept=".csv,.xlsx,.xlsm,.json"
           />
           <label htmlFor="file-upload" className={`${styles.btn} ${styles.btnPrimary}`} style={{ cursor: 'pointer' }}>
             {loading ? "Reading File Preview..." : "Browse Local Files"}
@@ -234,6 +243,26 @@ export default function ImportsPage() {
                   </select>
                 </div>
               ))}
+
+              <div style={{ marginTop: 22, paddingTop: 16, borderTop: '1px solid #2e3c64' }}>
+                <h4 style={{ fontSize: 14, marginBottom: 6 }}>Additional imported attributes</h4>
+                <p style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+                  Every unmapped non-empty column is imported automatically. Select Ignore only for columns you intentionally want to discard.
+                </p>
+                <div style={{ display: 'grid', gap: 7 }}>
+                  {preview.headers.filter((header: string) => !Object.values(mapping).includes(header)).map((header: string) => (
+                    <label key={header} style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#cbd5e1', fontSize: 12 }}>
+                      <input type="checkbox" checked={!ignoredColumns.includes(header)} onChange={(event) => {
+                        setIgnoredColumns(current => event.target.checked ? current.filter(item => item !== header) : [...current, header]);
+                      }} />
+                      <span>{header}</span>
+                      <span style={{ marginLeft: 'auto', color: ignoredColumns.includes(header) ? '#fca5a5' : '#6ee7b7' }}>
+                        {ignoredColumns.includes(header) ? 'Ignored' : 'Import as additional attribute'}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
 
               <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #2e3c64' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>

@@ -18,7 +18,7 @@ BUSINESS_EXPORT_COLUMNS = (
     "all_variants", "variant_count", "category", "subcategory", "product_type",
     "application_area", "category_module", "identity_status", "taxonomy_status",
     # Canonical commercial content
-    "description", "product_usp", "product_positioning", "target_audience_profile_1",
+    "description", "article_description", "product_usp", "product_positioning", "target_audience_profile_1",
     "target_audience_profile_2", "target_audience_profile_3", "target_audience_profiles",
     "benefits", "targeted_concerns", "directions_how_to_use", "routine_time",
     "routine_step", "sensory_description", "claims", "warnings_considerations",
@@ -50,7 +50,8 @@ BUSINESS_EXPORT_COLUMNS = (
     "review_intelligence_strength", "review_quality", "review_source",
     "review_source_domain", "review_observation_date", "review_positive_themes",
     "review_negative_themes", "review_mixed_themes", "full_ai_review_summary",
-    "review_limitations", "review_sources",
+    "review_limitations", "review_sources", "customer_review_summary",
+    "customer_taxonomy_bgb_subgroup", "customer_taxonomy_bgb_typegroup", "additional_imported_attributes",
     # Business-useful completeness and quality state
     "overall_completeness", "identity_completeness", "content_completeness",
     "commercial_completeness", "category_completeness", "evidence_completeness",
@@ -79,6 +80,7 @@ PRODUCT_DETAIL_EXPORT_COVERAGE = {
     "review_aggregate": {"average_rating", "represented_review_count", "full_ai_review_summary"},
     "product_understanding": {"product_family", "sku", "identity_status", "taxonomy_status", "category_module"},
     "completeness": {"overall_completeness", "missing_high_priority_fields"},
+    "source_attributes": {"additional_imported_attributes"},
 }
 INTERNAL_PRODUCT_DETAIL_FIELDS = {
     "brand_id", "category_id", "reviewer_id", "is_deleted", "field_values",
@@ -94,7 +96,8 @@ FIELD_VALUE_EXPORT_COVERAGE = {
     "warnings_considerations", "skincare", "haircare", "makeup", "fragrance",
     "ingredients_intelligence", "product_family", "purpose", "compatibility", "material",
     "care_instructions", "replacement_refill_status", "durability", "ergonomic_characteristics",
-    "availability", "rating", "review_count", "review_summary",
+    "availability", "rating", "review_count", "review_summary", "description",
+    "article_description", "customer_review_summary", "bgb_subgroup", "bgb_typegroup",
 }
 INTERNAL_FIELD_VALUE_FIELDS = {"schema_org", "product_understanding"}
 
@@ -230,7 +233,8 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "application_area": _unwrap(fields.get("application_area")), "category_module": module,
         "identity_status": understanding.get("identity_status") or detail.get("identity_review_status"),
         "taxonomy_status": understanding.get("taxonomy_status") or completeness.get("taxonomy_status"),
-        "description": detail.get("description"), "product_usp": _unwrap(fields.get("product_usp")),
+        "description": detail.get("description"), "article_description": _unwrap(fields.get("article_description")),
+        "product_usp": _unwrap(fields.get("product_usp")),
         "product_positioning": _unwrap(fields.get("product_positioning")),
         "target_audience_profile_1": targets[0], "target_audience_profile_2": targets[1],
         "target_audience_profile_3": targets[2], "target_audience_profiles": [item for item in targets if item],
@@ -269,6 +273,9 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "full_ai_review_summary": review_summary.get("ai_summary_text") or review_summary.get("summary"),
         "review_limitations": review_summary.get("evidence_limitation"),
         "review_sources": review.get("sources") or review.get("source_breakdown") or [],
+        "customer_review_summary": _unwrap(fields.get("customer_review_summary")),
+        "customer_taxonomy_bgb_subgroup": _unwrap(fields.get("bgb_subgroup")),
+        "customer_taxonomy_bgb_typegroup": _unwrap(fields.get("bgb_typegroup")),
         "overall_completeness": completeness.get("overall_completeness"),
         "identity_completeness": completeness.get("identity_completeness"),
         "content_completeness": completeness.get("content_completeness"),
@@ -282,6 +289,19 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "highest_validation_severity": detail.get("highest_issue_severity"),
         "created_at": detail.get("created_at"), "updated_at": detail.get("updated_at"),
     })
+
+    additional: dict[str, Any] = {}
+    for attribute in detail.get("source_attributes") or []:
+        key = str(attribute.get("key") or "")
+        if not key.startswith("source_attr."):
+            continue
+        label = str(attribute.get("label") or attribute.get("source_header") or key)
+        export_key = f"imported_attribute:{label}"
+        if export_key in row:
+            export_key = f"{export_key} [{key.rsplit('.', 1)[-1]}]"
+        row[export_key] = attribute.get("value")
+        additional[label] = attribute.get("value")
+    row["additional_imported_attributes"] = additional
 
     for category, mapping in CATEGORY_FIELD_EXPORT_MAP.items():
         block = fields.get(category) if isinstance(fields.get(category), dict) else {}

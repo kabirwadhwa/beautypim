@@ -29,6 +29,13 @@ def _tabular_rows(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for key, value in row.items()
     } for row in data]
 
+def _business_fieldnames(data: List[Dict[str, Any]]) -> tuple[str, ...]:
+    extras = sorted({key for row in data for key in row if key not in BUSINESS_EXPORT_COLUMNS})
+    return (*BUSINESS_EXPORT_COLUMNS, *extras)
+
+def _all_fieldnames(data: List[Dict[str, Any]]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(key for row in data for key in row))
+
 def build_business_export_data(db: Session, include_inferred: bool) -> List[Dict[str, Any]]:
     # 1. Fetch only approved or published products
     products = db.query(CanonicalProduct).filter(
@@ -74,6 +81,7 @@ def build_audit_export_data(db: Session) -> List[Dict[str, Any]]:
         ).all()
 
         fields_history = []
+        additional_imported: Dict[str, Any] = {}
         for fv in fvs:
             fields_history.append({
                 "field": fv.field_name,
@@ -82,8 +90,17 @@ def build_audit_export_data(db: Session) -> List[Dict[str, Any]]:
                 "confidence": float(fv.confidence_score) if fv.confidence_score is not None else 1.0,
                 "is_current": fv.is_current
             })
+            if fv.is_current and fv.source_type == "source_data" and fv.field_name.startswith("source_attr."):
+                evidence = fv.evidence if isinstance(fv.evidence, list) else []
+                label = next((
+                    str(entry.get("source_header") or entry.get("source_field"))
+                    for entry in evidence if isinstance(entry, dict) and (entry.get("source_header") or entry.get("source_field"))
+                ), fv.field_name)
+                additional_imported[label] = fv.value
+                row[f"imported_attribute:{label}"] = fv.value
         
         row["provenance_history"] = json.dumps(fields_history)
+        row["additional_imported_attributes"] = additional_imported
         export_rows.append(row)
 
     return export_rows
@@ -140,7 +157,7 @@ def download_file(
 
     elif format == "csv":
         output = io.StringIO()
-        fieldnames = BUSINESS_EXPORT_COLUMNS if mode == "business" else (tuple(data[0]) if data else ())
+        fieldnames = _business_fieldnames(data) if mode == "business" else _all_fieldnames(data)
         if fieldnames:
             writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter=";", quoting=csv.QUOTE_MINIMAL)
             writer.writeheader()
@@ -155,7 +172,7 @@ def download_file(
     elif format == "xlsx":
         df = pd.DataFrame(
             _tabular_rows(data),
-            columns=BUSINESS_EXPORT_COLUMNS if mode == "business" else None,
+            columns=_business_fieldnames(data) if mode == "business" else None,
         )
         excel_io = io.BytesIO()
         with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:

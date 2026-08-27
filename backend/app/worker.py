@@ -1526,12 +1526,12 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             item = db.query(ImportJobItem).filter(
                 ImportJobItem.import_job_id == job_id,
                 ImportJobItem.status == "pending"
-            ).with_for_update(skip_locked=True).first()
+            ).order_by(ImportJobItem.source_row_number.asc()).with_for_update(skip_locked=True).first()
         else:
             item = db.query(ImportJobItem).filter(
                 ImportJobItem.import_job_id == job_id,
                 ImportJobItem.status == "pending"
-            ).first()
+            ).order_by(ImportJobItem.source_row_number.asc()).first()
 
         if not item:
             break
@@ -1546,7 +1546,11 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             
             raw_name = source_value(raw_data, mapping, "product_name")
             raw_brand = source_value(raw_data, mapping, "brand")
-            raw_ean = source_value(raw_data, mapping, "ean") or None
+            source_ean = source_value(raw_data, mapping, "ean")
+            # Normalize valid spreadsheet representations for exact matching,
+            # while retaining a genuinely invalid supplied identifier so the
+            # existing validation workflow can report it to the user.
+            raw_ean = normalize_gtin_value(source_ean) or (source_ean or None)
             raw_size, raw_unit = split_size_and_unit(
                 source_value(raw_data, mapping, "size"), source_value(raw_data, mapping, "unit")
             )
@@ -1560,9 +1564,12 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             pre_understanding = resolve_product_understanding(db, raw_data=raw_data, mapping=mapping)
             pre_values = understanding_snapshot_values(pre_understanding)
             if pre_understanding.get("identity_status") == "resolved":
-                raw_name = pre_values.get("product_name") or raw_name
-                raw_brand = pre_values.get("brand") or raw_brand
-                raw_ean = pre_values.get("gtin") or raw_ean
+                # Product Understanding may fill genuinely missing identity
+                # inputs for matching, but it must never replace explicit
+                # customer values during deterministic source ingestion.
+                raw_name = raw_name or pre_values.get("product_name")
+                raw_brand = raw_brand or pre_values.get("brand")
+                raw_ean = raw_ean or pre_values.get("gtin")
                 understood_size = pre_values.get("size")
                 if understood_size and not raw_size:
                     raw_size, raw_unit = split_size_and_unit(str(understood_size), raw_unit)
@@ -1702,6 +1709,7 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
             merge_source_listing(
                 db, listing=listing, mapping=mapping,
                 canonical_product_id=item.canonical_product_id,
+                product_variant_id=item.product_variant_id,
             )
             item.status = "completed"
             item.enrichment_status = "not_requested"

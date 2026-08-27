@@ -73,7 +73,9 @@ def _read_table(file_bytes: bytes, file_type: str) -> pd.DataFrame:
             io.BytesIO(file_bytes), sep=detect_delimiter(file_bytes), dtype=str,
             keep_default_na=False, encoding="utf-8-sig"
         )
-    if file_type == "xlsx":
+    if file_type in {"xlsx", "xlsm"}:
+        # openpyxl reads workbook cell data only; VBA macros are never loaded
+        # or executed by this ingestion path.
         return pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
     if file_type == "json":
         data = json.loads(file_bytes.decode("utf-8-sig"))
@@ -203,13 +205,17 @@ def suggest_mapping(headers: List[str]) -> Dict[str, str]:
     """
     suggestions = {}
     mapping_keywords = {
-        "product_name": ["name", "title", "product_name", "product_title", "label"],
+        "product_name": ["name", "title", "product_name", "product_title", "product name", "product title", "label"],
         "brand": ["brand", "marque", "manufacturer", "vendor", "maker"],
-        "ean": ["ean", "upc", "gtin", "barcode", "code-barre"],
-        "description": ["product_description", "description", "desc", "details", "info", "marketing_copy", "marketing_description"],
+        "ean": ["ean", "ean_code", "ean code", "ean_gtin", "ean/gtin", "upc", "gtin", "barcode", "code-barre"],
+        "description": ["product_description", "description", "description_en", "desc", "details", "info", "marketing_description"],
         "benefits": ["product_benefits", "benefits", "key_benefits"],
         "product_usp": ["product_usp", "usp", "unique_selling_proposition"],
-        "ingredients": ["ingredients", "inci", "composition", "ingredients_list"],
+        "article_description": ["article_description", "article description", "item_description"],
+        "bgb_subgroup": ["bgb_subgroup", "bgb subgroup"],
+        "bgb_typegroup": ["bgb_typegroup", "bgb typegroup"],
+        "customer_review_summary": ["product_review_summary", "product review summary", "customer_review_summary"],
+        "ingredients": ["ingredients", "inci", "inci_ingredients", "inci ingredients", "composition", "ingredients_list"],
         "category": ["category", "department", "rayon", "classification"],
         "product_family": ["product_family", "family", "subcategory", "product_type", "product type", "type", "format", "concentration"],
         "claims": ["claims", "product_claims", "marketing_claims"],
@@ -218,11 +224,11 @@ def suggest_mapping(headers: List[str]) -> Dict[str, str]:
         "language": ["language", "locale"],
         "unit": ["unit", "content_unit", "size_unit"],
         "variant": ["variant", "option_name", "variant_name"],
-        "sku": ["sku", "supplier_sku", "item_code"],
-        "price": ["price", "prix", "cost", "value"],
+        "sku": ["sku", "sku_number", "sku number", "supplier_sku", "supplier sku", "item_code", "item code"],
+        "price": ["price", "product_price", "product price", "productPrice", "prix", "cost", "value"],
         "size": ["size", "volume", "capacity", "continence", "format"],
-        "product_url": ["url", "link", "product_url", "href"],
-        "image_url": ["image", "img", "picture", "image_url", "photo"],
+        "product_url": ["url", "link", "source_url", "source url", "product_url", "product url", "href"],
+        "image_url": ["image", "img", "picture", "image_url", "image url", "product_image_url", "product image url", "photo"],
         "retailer": ["retailer", "retailer_name", "store", "merchant", "source"]
     }
 
@@ -241,18 +247,8 @@ def suggest_mapping(headers: List[str]) -> Dict[str, str]:
                 suggestions[canonical] = header
                 claimed_headers.add(header)
                 break
-        if canonical not in suggestions:
-            for header in headers:
-                if header in claimed_headers:
-                    continue
-                normalized_header = normalize_header(str(header))
-                if any(
-                    len(keyword) >= 3 and
-                    (normalized_header.startswith(keyword) or normalized_header.endswith(keyword))
-                    for keyword in normalized_keywords
-                ):
-                    suggestions[canonical] = header
-                    claimed_headers.add(header)
-                    break
+        # Unknown headers intentionally remain unmapped and flow into dynamic
+        # source attributes. Prefix/substring guessing corrupts business data
+        # (for example, "Marketing Story" must never become "market").
 
     return suggestions

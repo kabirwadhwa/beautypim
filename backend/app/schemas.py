@@ -420,6 +420,16 @@ class ProductOut(BaseModel):
     class Config:
         from_attributes = True
 
+class SourceAttributeOut(BaseModel):
+    key: str
+    label: str
+    value: Any
+    source_type: str
+    source_reference: Optional[str] = None
+    source_header: str
+    updated_at: datetime
+
+
 class ProductDetailOut(ProductOut):
     brand_id: Optional[uuid.UUID] = None
     category_id: Optional[uuid.UUID] = None
@@ -428,6 +438,7 @@ class ProductDetailOut(ProductOut):
     variants: list[VariantOut] = Field(default_factory=list)
     formulations: list[FormulationOut] = Field(default_factory=list)
     field_values: list[FieldValueOut] = Field(default_factory=list)
+    source_attributes: list[SourceAttributeOut] = Field(default_factory=list)
     validation_issues: list[ValidationIssueOut] = Field(default_factory=list)
     
     enrichment_metadata: Optional[EnrichmentMetadataSchema] = None

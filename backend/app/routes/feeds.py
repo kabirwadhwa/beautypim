@@ -28,10 +28,10 @@ async def upload_file_preview(
 ):
     # Validate format
     ext = file.filename.split(".")[-1].lower()
-    if ext not in ["csv", "json", "xlsx"]:
+    if ext not in ["csv", "json", "xlsx", "xlsm"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file format '.{ext}'. Supported formats: CSV, JSON, XLSX"
+            detail=f"Unsupported file format '.{ext}'. Supported formats: CSV, JSON, XLSX, XLSM"
         )
         
     contents = await file.read()

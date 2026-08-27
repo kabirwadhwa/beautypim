@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     
     # Ingestion Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
-    ALLOWED_EXTENSIONS: set = {"csv", "json", "xlsx"}
+    ALLOWED_EXTENSIONS: set = {"csv", "json", "xlsx", "xlsm"}
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
