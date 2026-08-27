@@ -37,11 +37,11 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await page.goto('/products/source-fixture');
     await expect(page.locator('h1')).toContainText('Lip Maestro Liquid Lipstick – 405 Sultan');
     await expect(page.getByText("Armani's iconic liquid lip color.").first()).toBeVisible();
-    await expect(page.getByText('Lip Maestro is a lightweight liquid lipstick...')).toBeVisible();
-    await expect(page.getByText('Customers commonly praise the saturated pigment.')).toBeVisible();
-    await expect(page.getByText('ARM LIP 405 SULTAN MAESTRO')).toBeVisible();
-    await expect(page.getByText('MAKEUP (1ST LEVEL)')).toBeVisible();
-    await expect(page.getByText('LIPS (2ND LEVEL)')).toBeVisible();
+    await expect(page.getByText('Lip Maestro is a lightweight liquid lipstick...').first()).toBeVisible();
+    await expect(page.getByText('Customers commonly praise the saturated pigment.').first()).toBeVisible();
+    await expect(page.getByText('ARM LIP 405 SULTAN MAESTRO').first()).toBeVisible();
+    await expect(page.getByText('MAKEUP (1ST LEVEL)').first()).toBeVisible();
+    await expect(page.getByText('LIPS (2ND LEVEL)').first()).toBeVisible();
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('Packaging Material');
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('Glass');
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('Launch Wave');
@@ -49,7 +49,7 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('true');
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('Retail · Online');
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('outer › material: Cardboard');
-    await expect(page.getByText('Water, Glycerin')).toBeVisible();
+    await expect(page.getByText('Water, Glycerin').first()).toBeVisible();
   });
 
   test('bulk identity review queue supports rapid confirm navigation', async ({ page }) => {
@@ -133,13 +133,13 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
     
     // Ensure we are on the product detail page
     await expect(page.locator('h1')).toContainText('Cloud Hydrating Masque');
-    await expect(page.getByText('A cloud-light hydration mask.')).toBeVisible();
-    await expect(page.getByText('Hydration mask for skin')).toBeVisible();
+    await expect(page.getByText('A cloud-light hydration mask.').first()).toBeVisible();
+    await expect(page.getByText('Hydration mask for skin').first()).toBeVisible();
     await expect(page.getByText('Hydrates visibly', { exact: true })).toBeVisible();
-    await expect(page.getByText('Customers commonly praise the soft hydrated finish.')).toBeVisible();
-    await expect(page.getByText('PTR CLOUD HYDR MASK')).toBeVisible();
-    await expect(page.getByText('SKINCARE (1ST LEVEL)')).toBeVisible();
-    await expect(page.getByText('MASKS (2ND LEVEL)')).toBeVisible();
+    await expect(page.getByText('Customers commonly praise the soft hydrated finish.').first()).toBeVisible();
+    await expect(page.getByText('PTR CLOUD HYDR MASK').first()).toBeVisible();
+    await expect(page.getByText('SKINCARE (1ST LEVEL)').first()).toBeVisible();
+    await expect(page.getByText('MASKS (2ND LEVEL)').first()).toBeVisible();
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('Packaging Material');
     await expect(page.getByTestId('additional-imported-attributes')).toContainText('Glass');
 
