@@ -2,6 +2,56 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Beauty PIM End-to-End Workflows', () => {
 
+  test('Product Grid filters overlapping variants by import provenance and keeps it in the URL', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('token', 'import-filter-token'));
+    await page.route('**/api/auth/me', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ email: 'admin@test.com', role: 'admin' }),
+    }));
+    const jobs = [
+      { id: '00000000-0000-4000-8000-00000000000b', filename: 'Import B.xlsx', status: 'completed', created_at: '2026-08-28T10:00:00Z' },
+      { id: '00000000-0000-4000-8000-00000000000a', filename: 'Import A.xlsx', status: 'completed', created_at: '2026-08-27T10:00:00Z' },
+      { id: '00000000-0000-4000-8000-00000000000c', filename: 'Failed.xlsx', status: 'failed', created_at: '2026-08-29T10:00:00Z' },
+    ];
+    await page.route('**/api/feeds/jobs', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(jobs),
+    }));
+    const variants = Array.from({ length: 5 }, (_, index) => ({
+      id: '00000000-0000-4000-8000-000000000777', product_id: '00000000-0000-4000-8000-000000000777',
+      product_variant_id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      internal_code: 'ICN-777', product_name: `Import Product ${index + 1}`, brand_name: 'Import Brand',
+      category_path: 'Makeup > Lips', product_category: 'Makeup', subcategory: 'Lips', product_type: 'Lipstick',
+      gtin: String(3600000001000 + index), sku: `SKU-${index + 1}`, variant_name: `Variant ${index + 1}`,
+      size: '4', unit: 'g', variant_count: 5, review_status: 'approved', validation_issue_count: 0,
+      highest_issue_severity: null, tags: [],
+    }));
+    await page.route('**/api/products?**', route => {
+      const params = new URL(route.request().url()).searchParams;
+      const jobId = params.get('import_job_id');
+      const indexes = jobId === jobs[1].id ? [0, 1, 2] : jobId === jobs[0].id ? [2, 3, 4] : [0, 1, 2, 3, 4];
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify(indexes.map(index => variants[index])),
+      });
+    });
+
+    await page.goto('/products');
+    await expect(page.getByText('Import Product 1')).toBeVisible();
+    await expect(page.getByText('Import Product 5')).toBeVisible();
+    const importSelect = page.getByLabel('Import / Enrichment File');
+    await expect(importSelect.locator('option')).toHaveCount(4); // all, latest, A, B; failed is excluded
+    await importSelect.selectOption(jobs[1].id);
+    await expect(page).toHaveURL(new RegExp(`import_job=${jobs[1].id}`));
+    await expect(page.getByText('Import Product 1')).toBeVisible();
+    await expect(page.getByText('Import Product 3')).toBeVisible();
+    await expect(page.getByText('Import Product 4')).toHaveCount(0);
+    await importSelect.selectOption('latest');
+    await expect(page).toHaveURL(/import_job=latest/);
+    await expect(page.getByText('Import Product 3')).toBeVisible();
+    await expect(page.getByText('Import Product 5')).toBeVisible();
+    await expect(page.getByText('Import Product 1')).toHaveCount(0);
+  });
+
   test('Product Grid renders sibling variants as separate selectable rows', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('token', 'variant-grid-token'));
     await page.route('**/api/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ email: 'admin@test.com', role: 'admin' }) }));

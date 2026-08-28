@@ -31,6 +31,13 @@ interface Product {
   identity_review_status?: string | null;
 }
 
+interface ImportJobOption {
+  id: string;
+  filename: string;
+  status: string;
+  created_at: string;
+}
+
 interface IdentityReviewItem {
   product_id: string; product_name: string; source_product_name?: string | null;
   brand?: string | null; gtin?: string | null; reason: string; review_status: string;
@@ -76,6 +83,8 @@ export default function ProductsPage() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [productTypeFilter, setProductTypeFilter] = useState('');
   const [tagFilter, setTagFilter] = useState('');
+  const [importFilter, setImportFilter] = useState('');
+  const [completedImports, setCompletedImports] = useState<ImportJobOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
@@ -136,6 +145,7 @@ export default function ProductsPage() {
 
       const pageSize = 100;
       const allProducts: Product[] = [];
+      const selectedImportJobId = importFilter === 'latest' ? completedImports[0]?.id : importFilter;
       // The backend intentionally caps each response. Fetch every page so the
       // grid, filters, select-all and bulk actions operate on the full customer
       // catalogue rather than silently stopping at the first 100 products.
@@ -144,6 +154,7 @@ export default function ProductsPage() {
         if (debouncedSearch) params.set('search', debouncedSearch);
         if (statusFilter) params.set('status_filter', statusFilter);
         if (issueFilter !== null) params.set('issue_filter', String(issueFilter));
+        if (selectedImportJobId) params.set('import_job_id', selectedImportJobId);
         const resp = await fetch(`${API_URL}/products?${params.toString()}`, { headers, signal });
         if (!resp.ok) {
           const body = await resp.json().catch(() => null);
@@ -174,10 +185,53 @@ export default function ProductsPage() {
   }, [search]);
 
   useEffect(() => {
+    const syncFromUrl = () => {
+      setImportFilter(new URL(window.location.href).searchParams.get('import_job') || '');
+    };
+    syncFromUrl();
+    window.addEventListener('popstate', syncFromUrl);
+    return () => window.removeEventListener('popstate', syncFromUrl);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadImports = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${API_URL}/feeds/jobs`, {
+          headers: { Authorization: `Bearer ${token}` }, signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const jobs: ImportJobOption[] = await response.json();
+        setCompletedImports(jobs.filter(job => job.status === 'completed').sort(
+          (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime(),
+        ));
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') setCompletedImports([]);
+      }
+    };
+    loadImports();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     fetchProducts(controller.signal);
     return () => controller.abort();
-  }, [debouncedSearch, statusFilter, issueFilter]);
+  }, [debouncedSearch, statusFilter, issueFilter, importFilter, completedImports]);
+
+  const changeImportFilter = (value: string) => {
+    setImportFilter(value);
+    setSelectedIds([]);
+    const url = new URL(window.location.href);
+    if (value) url.searchParams.set('import_job', value);
+    else url.searchParams.delete('import_job');
+    window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  };
+
+  const importLabel = (job: ImportJobOption) => `${job.filename} — ${new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium', timeStyle: 'short',
+  }).format(new Date(job.created_at))}`;
 
   const handleSelectRow = (id: string) => {
     if (selectedIds.includes(id)) {
@@ -527,6 +581,21 @@ export default function ProductsPage() {
             <option value="published">Published</option>
           </select>
           <select
+            aria-label="Import / Enrichment File"
+            value={importFilter}
+            onChange={(event) => changeImportFilter(event.target.value)}
+            className={styles.inputField}
+            style={{ backgroundColor: '#0b0f19', width: '260px' }}
+          >
+            <option value="">All products</option>
+            <option value="latest" disabled={!completedImports.length}>
+              {completedImports.length ? `Latest import — ${importLabel(completedImports[0])}` : 'Latest import'}
+            </option>
+            {completedImports.map(job => (
+              <option key={job.id} value={job.id}>{importLabel(job)}</option>
+            ))}
+          </select>
+          <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
             className={styles.inputField}
@@ -567,7 +636,7 @@ export default function ProductsPage() {
             <option value="true">Has validation issues</option>
             <option value="false">Clear of issues</option>
           </select>
-          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter || tagFilter) && (
+          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter || tagFilter || importFilter) && (
             <button
               type="button"
               className={`${styles.btn} ${styles.btnSecondary}`}
@@ -578,6 +647,7 @@ export default function ProductsPage() {
                 setCategoryFilter('');
                 setProductTypeFilter('');
                 setTagFilter('');
+                changeImportFilter('');
               }}
               title="Clear all filters"
             >

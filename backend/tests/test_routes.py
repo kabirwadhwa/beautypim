@@ -114,6 +114,79 @@ def test_product_grid_search_and_filters_include_gtin_icn_and_variant_issues(cli
     assert str(product.id) in [row["id"] for row in status_filtered.json()]
 
 
+def test_product_grid_import_filter_preserves_cross_import_variant_membership(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(id=uuid.uuid4(), name="Import Filter", normalized_name=f"importfilter{uuid.uuid4().hex}")
+    db.add(brand); db.flush()
+    product = CanonicalProduct(
+        id=uuid.uuid4(), brand_id=brand.id, product_name="Shared Family",
+        normalized_name=f"sharedfamily{uuid.uuid4().hex}", review_status="approved",
+    )
+    db.add(product); db.flush()
+    variants = []
+    for index in range(5):
+        variant = ProductVariant(
+            id=uuid.uuid4(), canonical_product_id=product.id,
+            gtin=f"{3600000001000 + index}", variant_name=f"Variant {index + 1}",
+        )
+        db.add(variant); db.flush(); variants.append(variant)
+    jobs = []
+    for filename in ("import-a.xlsx", "import-b.xlsx"):
+        job = ImportJob(
+            id=uuid.uuid4(), filename=filename, source_name="Customer Feed",
+            file_hash=uuid.uuid4().hex, status="completed", total_rows=3,
+            processed_rows=3, column_mapping={},
+        )
+        db.add(job); db.flush(); jobs.append(job)
+
+    # A reaches variants 1/2 through job items and variant 3 through its
+    # preserved source listing. B reaches 3/4 through items and 5 by listing.
+    for row_number, variant in enumerate(variants[:2], start=1):
+        db.add(ImportJobItem(
+            id=uuid.uuid4(), import_job_id=jobs[0].id, source_row_number=row_number,
+            canonical_product_id=product.id, product_variant_id=variant.id,
+            status="completed", match_status="exact_match",
+        ))
+    db.add(SourceListing(
+        id=uuid.uuid4(), import_job_id=jobs[0].id, canonical_product_id=product.id,
+        product_variant_id=variants[2].id, raw_data={"EAN": variants[2].gtin},
+        source_hash=uuid.uuid4().hex,
+    ))
+    for row_number, variant in enumerate(variants[2:4], start=1):
+        db.add(ImportJobItem(
+            id=uuid.uuid4(), import_job_id=jobs[1].id, source_row_number=row_number,
+            canonical_product_id=product.id, product_variant_id=variant.id,
+            status="completed", match_status="exact_match",
+        ))
+    db.add(SourceListing(
+        id=uuid.uuid4(), import_job_id=jobs[1].id, canonical_product_id=product.id,
+        product_variant_id=variants[4].id, raw_data={"EAN": variants[4].gtin},
+        source_hash=uuid.uuid4().hex,
+    ))
+    db.commit()
+
+    all_response = client.get("/api/products?limit=100", headers=headers)
+    all_rows = [row for row in all_response.json() if row["brand_name"] == "Import Filter"]
+    assert {row["product_variant_id"] for row in all_rows} == {str(variant.id) for variant in variants}
+
+    for job, indexes in zip(jobs, ({0, 1, 2}, {2, 3, 4})):
+        response = client.get(f"/api/products?limit=100&import_job_id={job.id}", headers=headers)
+        assert response.status_code == 200
+        assert int(response.headers["x-total-count"]) == 3
+        assert {row["product_variant_id"] for row in response.json()} == {
+            str(variants[index].id) for index in indexes
+        }
+
+    overlap = client.get(
+        f"/api/products?import_job_id={jobs[1].id}&search={variants[2].gtin}&status_filter=approved",
+        headers=headers,
+    )
+    assert overlap.status_code == 200
+    assert int(overlap.headers["x-total-count"]) == 1
+    assert overlap.json()[0]["product_variant_id"] == str(variants[2].id)
+
+
 def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client: TestClient, db):
     token = get_admin_token(client)
     headers = {"Authorization": f"Bearer {token}"}
@@ -148,6 +221,18 @@ def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client
                 value=f"SKU-{sequence}", source_type="source_data", review_status="confirmed", is_current=True,
             ))
             variants.append(variant)
+    import_job = ImportJob(
+        id=uuid.uuid4(), filename="production-89.xlsx", source_name="Customer Feed",
+        file_hash=uuid.uuid4().hex, status="completed", total_rows=89,
+        processed_rows=89, column_mapping={},
+    )
+    db.add(import_job); db.flush()
+    for row_number, variant in enumerate(variants, start=1):
+        db.add(ImportJobItem(
+            id=uuid.uuid4(), import_job_id=import_job.id, source_row_number=row_number,
+            canonical_product_id=variant.canonical_product_id, product_variant_id=variant.id,
+            status="completed", match_status="exact_match",
+        ))
     db.commit()
 
     response = client.get("/api/products?limit=100", headers=headers)
@@ -156,6 +241,15 @@ def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client
     assert len({row["product_variant_id"] for row in rows}) == 89
     assert len({row["product_id"] for row in rows}) == 47
     assert int(response.headers["x-total-count"]) == 89
+    imported_response = client.get(
+        f"/api/products?limit=50&import_job_id={import_job.id}", headers=headers,
+    )
+    assert len(imported_response.json()) == 50
+    assert int(imported_response.headers["x-total-count"]) == 89
+    imported_second_page = client.get(
+        f"/api/products?limit=50&page=2&import_job_id={import_job.id}", headers=headers,
+    )
+    assert len(imported_second_page.json()) == 39
 
     nine_parent = products[0]
     for extra in range(7):

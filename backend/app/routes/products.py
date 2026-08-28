@@ -402,6 +402,7 @@ def list_products(
     status_filter: Optional[str] = None,
     brand_filter: Optional[str] = None,
     issue_filter: Optional[bool] = None,
+    import_job_id: Optional[uuid.UUID] = None,
     response: Response = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_viewer_or_above)
@@ -414,6 +415,24 @@ def list_products(
         CanonicalProduct.is_deleted == False,
         or_(ProductVariant.id.is_(None), ProductVariant.is_deleted == False),
     )
+
+    if import_job_id:
+        # Import membership is provenance-based, never inferred from product
+        # creation time or filename. A pre-existing variant touched by a later
+        # import therefore remains visible under every import it participated in.
+        item_variant_ids = db.query(ImportJobItem.product_variant_id).filter(
+            ImportJobItem.import_job_id == import_job_id,
+            ImportJobItem.product_variant_id.isnot(None),
+        )
+        listing_variant_ids = db.query(SourceListing.product_variant_id).filter(
+            SourceListing.import_job_id == import_job_id,
+            SourceListing.product_variant_id.isnot(None),
+            SourceListing.is_deleted == False,
+        )
+        query = query.filter(or_(
+            ProductVariant.id.in_(item_variant_ids),
+            ProductVariant.id.in_(listing_variant_ids),
+        ))
 
     if search and search.strip():
         raw_search = search.strip()
