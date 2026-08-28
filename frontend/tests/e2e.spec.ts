@@ -24,14 +24,19 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
       gtin: String(3600000001000 + index), sku: `SKU-${index + 1}`, variant_name: `Variant ${index + 1}`,
       size: '4', unit: 'g', variant_count: 5, review_status: 'approved', validation_issue_count: 0,
       highest_issue_severity: null, tags: [],
+      image_url: [0, 3, 4].includes(index) ? `https://cdn.example.com/${index}.jpg` : null,
     }));
     await page.route('**/api/products?**', route => {
       const params = new URL(route.request().url()).searchParams;
       const jobId = params.get('import_job_id');
       const indexes = jobId === jobs[1].id ? [0, 1, 2] : jobId === jobs[0].id ? [2, 3, 4] : [0, 1, 2, 3, 4];
+      const imageStatus = params.get('image_status');
+      const imageFiltered = indexes.filter(index => imageStatus === 'has_image'
+        ? Boolean(variants[index].image_url)
+        : imageStatus === 'missing_image' ? !variants[index].image_url : true);
       return route.fulfill({
         status: 200, contentType: 'application/json',
-        body: JSON.stringify(indexes.map(index => variants[index])),
+        body: JSON.stringify(imageFiltered.map(index => variants[index])),
       });
     });
 
@@ -45,6 +50,16 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     await expect(page.getByText('Import Product 1')).toBeVisible();
     await expect(page.getByText('Import Product 3')).toBeVisible();
     await expect(page.getByText('Import Product 4')).toHaveCount(0);
+    const imageSelect = page.getByLabel('Image Status');
+    await imageSelect.selectOption('missing_image');
+    await expect(page).toHaveURL(new RegExp(`import_job=${jobs[1].id}`));
+    await expect(page).toHaveURL(/image_status=missing_image/);
+    await expect(page.getByText('Import Product 2')).toBeVisible();
+    await expect(page.getByText('Import Product 3')).toBeVisible();
+    await expect(page.getByText('Import Product 1')).toHaveCount(0);
+    await imageSelect.selectOption('');
+    await expect(page).not.toHaveURL(/image_status=/);
+    await expect(page.getByText('Import Product 1')).toBeVisible();
     await importSelect.selectOption('latest');
     await expect(page).toHaveURL(/import_job=latest/);
     await expect(page.getByText('Import Product 3')).toBeVisible();

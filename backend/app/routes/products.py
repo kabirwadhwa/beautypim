@@ -403,6 +403,7 @@ def list_products(
     brand_filter: Optional[str] = None,
     issue_filter: Optional[bool] = None,
     import_job_id: Optional[uuid.UUID] = None,
+    image_status: Optional[str] = Query(None, pattern="^(has_image|missing_image)$"),
     response: Response = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_viewer_or_above)
@@ -433,6 +434,18 @@ def list_products(
             ProductVariant.id.in_(item_variant_ids),
             ProductVariant.id.in_(listing_variant_ids),
         ))
+
+    # Product images are canonical/shared in the current model. Treat only a
+    # stored public HTTP(S) URL as a real image; frontend placeholders are not
+    # persisted and therefore remain correctly classified as missing.
+    usable_image = or_(
+        func.lower(func.trim(CanonicalProduct.image_url)).like("http://%"),
+        func.lower(func.trim(CanonicalProduct.image_url)).like("https://%"),
+    )
+    if image_status == "has_image":
+        query = query.filter(usable_image)
+    elif image_status == "missing_image":
+        query = query.filter(or_(CanonicalProduct.image_url.is_(None), ~usable_image))
 
     if search and search.strip():
         raw_search = search.strip()

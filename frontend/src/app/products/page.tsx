@@ -84,6 +84,7 @@ export default function ProductsPage() {
   const [productTypeFilter, setProductTypeFilter] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [importFilter, setImportFilter] = useState('');
+  const [imageFilter, setImageFilter] = useState('');
   const [completedImports, setCompletedImports] = useState<ImportJobOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -155,6 +156,7 @@ export default function ProductsPage() {
         if (statusFilter) params.set('status_filter', statusFilter);
         if (issueFilter !== null) params.set('issue_filter', String(issueFilter));
         if (selectedImportJobId) params.set('import_job_id', selectedImportJobId);
+        if (imageFilter) params.set('image_status', imageFilter);
         const resp = await fetch(`${API_URL}/products?${params.toString()}`, { headers, signal });
         if (!resp.ok) {
           const body = await resp.json().catch(() => null);
@@ -186,7 +188,9 @@ export default function ProductsPage() {
 
   useEffect(() => {
     const syncFromUrl = () => {
-      setImportFilter(new URL(window.location.href).searchParams.get('import_job') || '');
+      const params = new URL(window.location.href).searchParams;
+      setImportFilter(params.get('import_job') || '');
+      setImageFilter(params.get('image_status') || '');
     };
     syncFromUrl();
     window.addEventListener('popstate', syncFromUrl);
@@ -218,7 +222,7 @@ export default function ProductsPage() {
     const controller = new AbortController();
     fetchProducts(controller.signal);
     return () => controller.abort();
-  }, [debouncedSearch, statusFilter, issueFilter, importFilter, completedImports]);
+  }, [debouncedSearch, statusFilter, issueFilter, importFilter, imageFilter, completedImports]);
 
   const changeImportFilter = (value: string) => {
     setImportFilter(value);
@@ -226,6 +230,15 @@ export default function ProductsPage() {
     const url = new URL(window.location.href);
     if (value) url.searchParams.set('import_job', value);
     else url.searchParams.delete('import_job');
+    window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  };
+
+  const changeImageFilter = (value: string) => {
+    setImageFilter(value);
+    setSelectedIds([]);
+    const url = new URL(window.location.href);
+    if (value) url.searchParams.set('image_status', value);
+    else url.searchParams.delete('image_status');
     window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`);
   };
 
@@ -596,6 +609,17 @@ export default function ProductsPage() {
             ))}
           </select>
           <select
+            aria-label="Image Status"
+            value={imageFilter}
+            onChange={(event) => changeImageFilter(event.target.value)}
+            className={styles.inputField}
+            style={{ backgroundColor: '#0b0f19', width: '150px' }}
+          >
+            <option value="">All</option>
+            <option value="has_image">Has image</option>
+            <option value="missing_image">Missing image</option>
+          </select>
+          <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
             className={styles.inputField}
@@ -636,7 +660,7 @@ export default function ProductsPage() {
             <option value="true">Has validation issues</option>
             <option value="false">Clear of issues</option>
           </select>
-          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter || tagFilter || importFilter) && (
+          {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter || tagFilter || importFilter || imageFilter) && (
             <button
               type="button"
               className={`${styles.btn} ${styles.btnSecondary}`}
@@ -648,6 +672,7 @@ export default function ProductsPage() {
                 setProductTypeFilter('');
                 setTagFilter('');
                 changeImportFilter('');
+                changeImageFilter('');
               }}
               title="Clear all filters"
             >

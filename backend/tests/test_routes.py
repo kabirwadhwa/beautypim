@@ -187,6 +187,76 @@ def test_product_grid_import_filter_preserves_cross_import_variant_membership(cl
     assert overlap.json()[0]["product_variant_id"] == str(variants[2].id)
 
 
+def test_product_grid_image_status_uses_canonical_image_and_combines_with_import(client: TestClient, db):
+    token = get_admin_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    brand = Brand(
+        id=uuid.uuid4(), name="Image Filter", normalized_name=f"imagefilter{uuid.uuid4().hex}",
+    )
+    db.add(brand); db.flush()
+    image_values = ("https://cdn.example.com/product.jpg", None, "/images/product-placeholder.svg")
+    products = []
+    variants = []
+    for index, image_url in enumerate(image_values):
+        product = CanonicalProduct(
+            id=uuid.uuid4(), brand_id=brand.id, product_name=f"Image Product {index + 1}",
+            normalized_name=f"imageproduct{uuid.uuid4().hex}", image_url=image_url,
+            review_status="approved",
+        )
+        db.add(product); db.flush(); products.append(product)
+        variant = ProductVariant(
+            id=uuid.uuid4(), canonical_product_id=product.id, gtin=f"390000000100{index}",
+        )
+        db.add(variant); db.flush(); variants.append(variant)
+    job = ImportJob(
+        id=uuid.uuid4(), filename="image-status.xlsx", source_name="Customer Feed",
+        file_hash=uuid.uuid4().hex, status="completed", total_rows=3,
+        processed_rows=3, column_mapping={},
+    )
+    db.add(job); db.flush()
+    for row_number, (product, variant) in enumerate(zip(products, variants), start=1):
+        db.add(ImportJobItem(
+            id=uuid.uuid4(), import_job_id=job.id, source_row_number=row_number,
+            canonical_product_id=product.id, product_variant_id=variant.id,
+            status="completed", match_status="exact_match",
+        ))
+    db.commit()
+
+    has_image = client.get(
+        f"/api/products?brand_filter={brand.name}&image_status=has_image", headers=headers,
+    )
+    assert has_image.status_code == 200
+    assert int(has_image.headers["x-total-count"]) == 1
+    assert has_image.json()[0]["product_variant_id"] == str(variants[0].id)
+
+    missing = client.get(
+        f"/api/products?import_job_id={job.id}&image_status=missing_image&limit=1", headers=headers,
+    )
+    assert missing.status_code == 200
+    assert int(missing.headers["x-total-count"]) == 2
+    assert len(missing.json()) == 1
+    missing_page_two = client.get(
+        f"/api/products?import_job_id={job.id}&image_status=missing_image&limit=1&page=2",
+        headers=headers,
+    )
+    assert int(missing_page_two.headers["x-total-count"]) == 2
+    assert len(missing_page_two.json()) == 1
+    assert {missing.json()[0]["product_variant_id"], missing_page_two.json()[0]["product_variant_id"]} == {
+        str(variants[1].id), str(variants[2].id),
+    }
+
+    searched_missing = client.get(
+        f"/api/products?import_job_id={job.id}&image_status=missing_image&search={variants[1].gtin}",
+        headers=headers,
+    )
+    assert int(searched_missing.headers["x-total-count"]) == 1
+    assert searched_missing.json()[0]["product_variant_id"] == str(variants[1].id)
+
+    cleared = client.get(f"/api/products?import_job_id={job.id}", headers=headers)
+    assert int(cleared.headers["x-total-count"]) == 3
+    assert {row["product_variant_id"] for row in cleared.json()} == {str(item.id) for item in variants}
+
+
 def test_product_grid_is_variant_granular_for_47_products_and_89_variants(client: TestClient, db):
     token = get_admin_token(client)
     headers = {"Authorization": f"Bearer {token}"}
