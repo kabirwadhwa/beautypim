@@ -583,7 +583,9 @@ def _build_category_pdf(data: dict[str, Any], current: dict[str, Any], module_na
         placeholder="Consumer profiles require stronger product evidence.",
     ), CONTENT_W))
 
-    key_ingredients = current.get("ingredients_intelligence") or data.get("key_ingredients") or []
+    # Canonical exact-product highlights only. AI ingredient intelligence and
+    # ordinary formulation presence are not Key Ingredient evidence.
+    key_ingredients = data.get("key_ingredients") or []
     if isinstance(key_ingredients, dict):
         key_ingredients = key_ingredients.get("key_ingredients") or []
     if not isinstance(key_ingredients, list):
@@ -593,7 +595,10 @@ def _build_category_pdf(data: dict[str, Any], current: dict[str, Any], module_na
         for item in key_ingredients[:6]:
             if not isinstance(item, dict):
                 continue
-            utility = _clean(item.get("benefits") or item.get("functions") or item.get("description"))
+            utility = _clean(item.get("benefits"))
+            if not utility:
+                general_function = _clean(item.get("functions"))
+                utility = f"General cosmetic function: {general_function}" if general_function else ""
             ingredient_rows.append((_ingredient_name(item), utility))
         if ingredient_rows:
             _append(story, _card("Key Ingredients", _label_table(

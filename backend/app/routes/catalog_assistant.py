@@ -442,10 +442,13 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             FieldValue.is_current == True,
         ).all()
         field_map = {field.field_name: field for field in fields}
-        formulations = db.query(Formulation).filter(
-            Formulation.canonical_product_id == product.id,
-            Formulation.is_deleted == False,
-        ).all()
+        from app.services.product_identity import preferred_product_variant
+        from app.services.formulation_resolution import resolve_selected_formulation
+        assistant_variant = preferred_product_variant(db, product.id)
+        selected_formulation = resolve_selected_formulation(
+            db, product.id, assistant_variant.id if assistant_variant else None,
+        )
+        formulations = [selected_formulation] if selected_formulation else []
         ingredients = " ".join(item.raw_inci_text or "" for item in formulations).lower()
         source = _source_context(db, product.id)
         crawl_observations = db.query(ScrapedProductObservation).filter(
@@ -585,6 +588,8 @@ def search_catalogue(db: Session, filters: Dict[str, Any]) -> List[ProductMatch]
             ProductVariant.canonical_product_id == product.id,
             ProductVariant.is_deleted == False,
         ).all()
+        if assistant_variant:
+            variants.sort(key=lambda row: 0 if row.id == assistant_variant.id else 1)
         matched["ingredients"] = ingredient_list
         matched["variants"] = [
             {

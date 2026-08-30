@@ -77,7 +77,8 @@ PRODUCT_DETAIL_EXPORT_COVERAGE = {
     "updated_at": {"updated_at"}, "description": {"description"},
     "variants": {"all_variants", "variant", "size", "unit", "gtin_ean_upc"},
     "formulations": {"raw_inci", "formulation_market", "formulation_language", "formulation_effective_date"},
-    "key_ingredients": {"ordered_ingredients", "key_ingredients", "ingredient_functions", "ingredient_benefits_utilities", "ingredient_caution_notes"},
+    "ingredients": {"ordered_ingredients", "ingredient_functions", "ingredient_benefits_utilities", "ingredient_caution_notes"},
+    "key_ingredients": {"key_ingredients"},
     "dynamic_concerns": {"targeted_concerns"}, "market_observations": {"market_observations"},
     "review_aggregate": {"average_rating", "represented_review_count", "review_summary"},
     "product_understanding": {"product_family", "sku", "identity_status", "taxonomy_status", "category_module"},
@@ -100,6 +101,7 @@ FIELD_VALUE_EXPORT_COVERAGE = {
     "care_instructions", "replacement_refill_status", "durability", "ergonomic_characteristics",
     "availability", "rating", "review_count", "review_summary", "description",
     "article_description", "customer_review_summary", "bgb_subgroup", "bgb_typegroup",
+    "ingredients", "key_ingredients_source",
 }
 INTERNAL_FIELD_VALUE_FIELDS = {"schema_org", "product_understanding"}
 
@@ -107,12 +109,12 @@ INTERNAL_FIELD_VALUE_FIELDS = {"schema_org", "product_understanding"}
 CATEGORY_FIELD_EXPORT_MAP = {
     "skincare": {
         "skin_types": "skincare_skin_types", "texture": "skincare_texture",
-        "finish": "skincare_finish", "inci": "raw_inci", "key_ingredients": "skincare_key_ingredients",
+        "finish": "skincare_finish", "inci": "raw_inci",
         "targeted_concerns": "targeted_concerns",
     },
     "haircare": {
         "hair_types": "haircare_hair_types", "texture_format": "haircare_texture_format",
-        "inci": "raw_inci", "key_ingredients": "haircare_key_ingredients",
+        "inci": "raw_inci",
         "targeted_concerns": "targeted_concerns",
     },
     "makeup": {
@@ -213,7 +215,8 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         targets.append("")
     formulations = detail.get("formulations") or []
     formulation = formulations[0] if formulations else {}
-    ingredients = detail.get("key_ingredients") or []
+    ingredients = detail.get("ingredients") or []
+    key_ingredients = detail.get("key_ingredients") or []
     market_rows = detail.get("market_observations") or []
     market = _current_market(market_rows)
     review = detail.get("review_aggregate") or {}
@@ -258,10 +261,13 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
         "raw_inci": formulation.get("raw_inci_text"), "all_formulations": formulations,
         "formulation_market": formulation.get("market"),
         "formulation_language": formulation.get("language"), "formulation_effective_date": formulation.get("effective_date"),
-        "ordered_ingredients": [{"name": item.get("name"), "position": item.get("position")} for item in ingredients],
-        "key_ingredients": [item for item in ingredients if item.get("is_key_ingredient")],
+        "ordered_ingredients": [{"name": item.get("name"), "canonical_name": item.get("canonical_name"),
+                                 "position": item.get("position"), "resolution_status": item.get("resolution_status")}
+                                for item in ingredients],
+        "key_ingredients": key_ingredients,
         "ingredient_functions": [{"ingredient": item.get("name"), "functions": item.get("functions") or []} for item in ingredients if item.get("functions")],
-        "ingredient_benefits_utilities": [{"ingredient": item.get("name"), "benefits": item.get("benefits") or []} for item in ingredients if item.get("benefits")],
+        "ingredient_benefits_utilities": [{"ingredient": item.get("name"), "benefits": item.get("general_benefits") or []}
+                                           for item in ingredients if item.get("general_benefits")],
         "ingredient_caution_notes": [{"ingredient": item.get("name"), "cautions": item.get("caution_notes") or []} for item in ingredients if item.get("caution_notes")],
         "ingredient_intelligence": fields.get("ingredients_intelligence"),
         "average_rating": review.get("average_rating") if review.get("business_display_rating", True) else None,
@@ -313,6 +319,8 @@ def build_business_row(db, detail_model, include_inferred: bool) -> dict[str, An
             if field_name in {"inci", "directions", "targeted_concerns"}:
                 continue
             row[column] = _unwrap(block.get(field_name)) if category == module else "NOT_APPLICABLE"
+    row["skincare_key_ingredients"] = key_ingredients if module == "skincare" else "NOT_APPLICABLE"
+    row["haircare_key_ingredients"] = key_ingredients if module == "haircare" else "NOT_APPLICABLE"
     # Accessory fields may be persisted top-level by current/legacy workflows.
     if module == "beauty_accessory":
         for field_name, column in CATEGORY_FIELD_EXPORT_MAP["beauty_accessory"].items():

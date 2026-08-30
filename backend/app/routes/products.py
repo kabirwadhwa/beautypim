@@ -15,7 +15,7 @@ from app.models import (
 )
 from app.schemas import (
     ProductOut, ProductDetailOut, ProductEdit, FieldEnrichmentMetadataOut,
-    FieldValueOut, EnrichmentMetadataSchema, KeyIngredientOut, DynamicConcernOut,
+    FieldValueOut, EnrichmentMetadataSchema, IngredientOut, KeyIngredientOut, DynamicConcernOut,
     EDITABLE_FIELDS_REGISTRY, ProductCategoryUpdate, ProductClassificationUpdate, ProductImageUpdate,
     ProductTagsUpdate,
 )
@@ -1746,16 +1746,24 @@ def get_product_detail(
         ProductVariant.is_deleted == False
     ).all()
     if variant:
+        if not any(row.id == variant for row in variants):
+            raise HTTPException(status_code=404, detail="Selected product variant not found.")
         variants.sort(key=lambda row: 0 if row.id == variant else 1)
-    selected_variant = variants[0] if variants else None
+    if variant:
+        selected_variant = variants[0]
+    else:
+        from app.services.product_identity import preferred_product_variant
+        selected_variant = preferred_product_variant(db, product_id)
+        if selected_variant:
+            variants.sort(key=lambda row: 0 if row.id == selected_variant.id else 1)
 
-    # Fetch Formulations
-    formulations = db.query(Formulation).filter(
-        Formulation.canonical_product_id == product_id,
-        Formulation.is_deleted == False,
-        func.length(func.trim(Formulation.raw_inci_text)) > 0,
-        *( [or_(Formulation.product_variant_id == variant, Formulation.product_variant_id.is_(None))] if variant else [] ),
-    ).all()
+    # One deterministic formulation selection is shared by every downstream
+    # surface; database row order can never select a sibling formulation.
+    from app.services.formulation_resolution import resolve_selected_formulation, formulation_ingredient_rows
+    selected_formulation = resolve_selected_formulation(
+        db, product_id, selected_variant.id if selected_variant else None,
+    )
+    formulations = [selected_formulation] if selected_formulation else []
 
     # Fetch field values
     fields = db.query(FieldValue).filter(
@@ -1843,47 +1851,57 @@ def get_product_detail(
         )
 
     # Key Ingredients list construction from persisted FormulationIngredient table
+    ingredients_out = []
     key_ingredients_out = []
     from app.models import FormulationIngredient, IngredientDefinition
     for f in formulations:
-        f_ings = db.query(FormulationIngredient).filter(
-            FormulationIngredient.formulation_id == f.id
-        ).all()
+        f_ings = formulation_ingredient_rows(db, f)
         for fi in f_ings:
             defn = db.query(IngredientDefinition).filter(
                 IngredientDefinition.id == fi.ingredient_definition_id
             ).first()
-            if defn:
-                funcs = [fn.strip() for fn in defn.function.split(",")] if defn.function else []
-                bens = [bn.strip() for bn in defn.benefits.split(",")] if defn.benefits else []
-                
-                # Ingredient source mapping: lowercase controlled source values
-                mapped_source = "unknown"
-                if fi.evidence_source:
-                    src_lower = str(fi.evidence_source).strip().lower()
-                    if src_lower in ["source_data", "ai_inference", "human_edit"]:
-                        mapped_source = src_lower
-                        
-                # evidence list parsing
-                fi_ev = []
-                if fi.evidence:
-                    if isinstance(fi.evidence, str):
-                        try:
-                            fi_ev = json.loads(fi.evidence)
-                        except Exception:
-                            fi_ev = []
-                    elif isinstance(fi.evidence, list):
-                        fi_ev = fi.evidence
+            funcs = [fn.strip() for fn in defn.function.split(",")] if defn and defn.function else []
+            bens = [bn.strip() for bn in defn.benefits.split(",")] if defn and defn.benefits else []
+            fi_ev = []
+            if fi.evidence:
+                if isinstance(fi.evidence, str):
+                    try:
+                        parsed_evidence = json.loads(fi.evidence)
+                        fi_ev = parsed_evidence if isinstance(parsed_evidence, list) else [parsed_evidence]
+                    except Exception:
+                        fi_ev = []
+                elif isinstance(fi.evidence, list):
+                    fi_ev = fi.evidence
+                elif isinstance(fi.evidence, dict):
+                    fi_ev = [fi.evidence]
 
+            identity_evidence = fi.evidence if isinstance(fi.evidence, dict) else {}
+            ingredients_out.append(IngredientOut(
+                name=fi.raw_inci_name, canonical_name=defn.name if defn else None,
+                position=fi.position,
+                resolution_status=str(identity_evidence.get("identity_resolution_status") or ("resolved" if defn else "unresolved")),
+                resolution_method=identity_evidence.get("identity_resolution_method"),
+                functions=[fn for fn in funcs if fn], general_benefits=[bn for bn in bens if bn],
+                caution_notes=[note.strip() for note in (defn.possible_concerns or "").split(",") if note.strip()] if defn else [],
+                glossary_source=defn.source_name if defn else None,
+                glossary_source_url=defn.source_url if defn else None,
+                formulation_reference=f.id, identity_evidence=identity_evidence,
+            ))
+            if fi.is_key_ingredient:
                 key_ingredients_out.append(KeyIngredientOut(
                     name=fi.raw_inci_name,
                     position=fi.position,
                     functions=[fn for fn in funcs if fn],
-                    benefits=[bn for bn in bens if bn],
-                    caution_notes=[note.strip() for note in (defn.possible_concerns or "").split(",") if note.strip()],
+                    # Glossary benefits are general knowledge, not a claim
+                    # about this exact product. They remain available on the
+                    # ordered Ingredient record as ``general_benefits``.
+                    benefits=[],
+                    caution_notes=[note.strip() for note in (defn.possible_concerns or "").split(",") if note.strip()] if defn else [],
                     is_key_ingredient=fi.is_key_ingredient,
                     key_ingredient_status=fi.key_ingredient_status,
-                    formulation_reference=f.id
+                    formulation_reference=f.id,
+                    evidence_source=fi.evidence_source,
+                    evidence=fi_ev,
                 ))
 
     # Compatibility response derived from the single consolidated concern field.
@@ -2060,6 +2078,7 @@ def get_product_detail(
         source_attributes=source_attributes,
         validation_issues=issues,
         enrichment_metadata=global_meta,
+        ingredients=ingredients_out,
         key_ingredients=key_ingredients_out,
         dynamic_concerns=concerns_out,
         market_observations=market_observations,
@@ -2283,6 +2302,55 @@ def edit_product_field(
         )
         db.add(new_fv)
         db.flush()
+
+        if edit_in.field_name == "ingredients":
+            from app.services.formulation_resolution import synchronize_current_source_formulation
+            from app.services.product_identity import preferred_product_variant
+            selected = None
+            if edit_in.product_variant_id:
+                selected = db.query(ProductVariant).filter(
+                    ProductVariant.id == edit_in.product_variant_id,
+                    ProductVariant.canonical_product_id == prod.id,
+                    ProductVariant.is_deleted == False,
+                ).first()
+                if not selected:
+                    raise HTTPException(404, "Selected product variant not found.")
+            else:
+                selected = preferred_product_variant(db, prod.id)
+            if str(edit_in.value or "").strip():
+                result = synchronize_current_source_formulation(db, prod, selected)
+                if result.status not in {"applied", "unchanged"}:
+                    raise HTTPException(409, f"Ingredient formulation could not be applied: {result.reason or result.status}")
+            else:
+                # A deliberate human blank is an explicit removal. It does not
+                # reactivate weaker historical evidence automatically.
+                query = db.query(Formulation).filter(
+                    Formulation.canonical_product_id == prod.id,
+                    Formulation.is_deleted == False,
+                )
+                if selected:
+                    query = query.filter(or_(
+                        Formulation.product_variant_id == selected.id,
+                        Formulation.product_variant_id.is_(None),
+                    ))
+                for formulation in query.all():
+                    formulation.is_deleted = True
+                    formulation.deleted_at = datetime.utcnow()
+        elif edit_in.field_name == "key_ingredients_source":
+            from app.services.formulation_resolution import synchronize_current_key_ingredients
+            from app.services.product_identity import preferred_product_variant
+            selected = None
+            if edit_in.product_variant_id:
+                selected = db.query(ProductVariant).filter(
+                    ProductVariant.id == edit_in.product_variant_id,
+                    ProductVariant.canonical_product_id == prod.id,
+                    ProductVariant.is_deleted == False,
+                ).first()
+                if not selected:
+                    raise HTTPException(404, "Selected product variant not found.")
+            else:
+                selected = preferred_product_variant(db, prod.id)
+            synchronize_current_key_ingredients(db, prod, selected)
 
         # Record Audit event (flushes to verify constraints)
         record_audit(

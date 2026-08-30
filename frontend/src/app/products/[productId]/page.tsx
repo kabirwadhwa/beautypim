@@ -112,6 +112,21 @@ interface ProductDetail {
     is_key_ingredient: boolean;
     key_ingredient_status: string;
     formulation_reference: string;
+    evidence_source?: string;
+    evidence?: unknown[];
+  }>;
+  ingredients?: Array<{
+    name: string;
+    canonical_name?: string | null;
+    position: number;
+    resolution_status: string;
+    resolution_method?: string | null;
+    functions: string[];
+    general_benefits: string[];
+    caution_notes: string[];
+    glossary_source?: string | null;
+    glossary_source_url?: string | null;
+    formulation_reference: string;
   }>;
   dynamic_concerns?: Array<{
     concern_name: string;
@@ -742,7 +757,8 @@ export default function ProductDetailPage() {
         body: JSON.stringify({
           field_name: overrideField,
           value: parsedValue,
-          reason: overrideReason
+          reason: overrideReason,
+          product_variant_id: selectedVariantId || null
         })
       });
       if (!resp.ok) {
@@ -1461,12 +1477,12 @@ export default function ProductDetailPage() {
             </div>
           </div>
 
-          {/* Product-facing ingredient intelligence; evidence remains available through field inspection. */}
+          {/* Exact-product highlights only. Ordered formulation ingredients are rendered separately below. */}
           {product?.key_ingredients && product.key_ingredients.length > 0 && (
             <div className={styles.panelCard}>
               <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
                 <BookOpen size={18} color="#10b981" />
-                <span>Key Ingredient Intelligence</span>
+                <span>Key Ingredients</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginTop: 12 }}>
                 {product.key_ingredients.map((ing, idx) => (
@@ -1482,7 +1498,7 @@ export default function ProductDetailPage() {
 
                     <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
                       {ing.functions.length > 0 && (
-                        <div>Functions: <span style={{ color: '#cbd5e1' }}>{ing.functions.join(', ')}</span></div>
+                        <div>General cosmetic functions: <span style={{ color: '#cbd5e1' }}>{ing.functions.join(', ')}</span></div>
                       )}
                       {ing.benefits.length > 0 && (
                         <div>Benefits: <span style={{ color: '#cbd5e1' }}>{ing.benefits.join(', ')}</span></div>
@@ -1503,8 +1519,32 @@ export default function ProductDetailPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, color: '#94a3b8' }}>
               <div style={{ backgroundColor: '#0b0f19', padding: 12, borderRadius: 4, fontFamily: 'monospace', color: '#f8fafc', whiteSpace: 'pre-wrap' }}>
-                {product?.formulations[0]?.raw_inci_text || currentValDict.ingredients?.value || "No ingredients list recorded for this product."}
+                {product?.formulations[0]?.raw_inci_text || "No exact applicable ingredients list recorded for this product variant."}
               </div>
+              {product?.ingredients && product.ingredients.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+                  {product.ingredients.map((ingredient) => (
+                    <div key={`${ingredient.position}-${ingredient.name}`} style={{ padding: 10, border: '1px solid #1e293b', borderRadius: 5 }}>
+                      <div style={{ color: '#f8fafc', fontWeight: 650 }}>
+                        {ingredient.position}. {ingredient.canonical_name || ingredient.name}
+                      </div>
+                      {ingredient.canonical_name && ingredient.canonical_name !== ingredient.name && (
+                        <div style={{ fontSize: 11 }}>Source wording: {ingredient.name}</div>
+                      )}
+                      <div style={{ fontSize: 11, color: ingredient.resolution_status === 'resolved' ? '#86efac' : '#fbbf24' }}>
+                        Identity: {ingredient.resolution_status.replaceAll('_', ' ')}
+                        {ingredient.resolution_method ? ` · ${ingredient.resolution_method.replaceAll('_', ' ')}` : ''}
+                      </div>
+                      {ingredient.functions.length > 0 && (
+                        <div style={{ fontSize: 12 }}>General cosmetic functions: <span style={{ color: '#cbd5e1' }}>{ingredient.functions.join(', ')}</span></div>
+                      )}
+                      {ingredient.glossary_source && (
+                        <div style={{ fontSize: 11 }}>Glossary source: {ingredient.glossary_source}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

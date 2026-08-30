@@ -48,6 +48,21 @@ def first(metadata, key):
     return values[0] if values else None
 
 
+def trusted_aliases(metadata, inci_name):
+    """Collect exact glossary synonyms supplied by CosIng; infer nothing."""
+    aliases = []
+    for key in (
+        "nameOfCommonIngredientsGlossary", "synonym", "synonyms",
+        "otherName", "otherNames",
+    ):
+        values = metadata.get(key) or []
+        for value in values if isinstance(values, list) else [values]:
+            text = str(value or "").strip()
+            if text and normalize_text(text) != normalize_text(inci_name) and text not in aliases:
+                aliases.append(text)
+    return aliases
+
+
 def fetch_page(session, page_number, page_size):
     query = {
         "bool": {
@@ -108,6 +123,7 @@ def upsert_page(db, payload):
             rows_by_name[normalized_name] = row
         row.name = inci_name
         row.common_name = first(metadata, "nameOfCommonIngredientsGlossary")
+        row.aliases = trusted_aliases(metadata, inci_name)
         row.function = ", ".join(metadata.get("functionName") or []) or None
         row.possible_concerns = "; ".join(metadata.get("cosmeticRestriction") or []) or None
         row.source_name = "European Commission CosIng"

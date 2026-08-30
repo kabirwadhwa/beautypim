@@ -2,7 +2,7 @@ from app.models import IngredientDefinition
 from scripts.sync_cosing import build_http_session, upsert_page
 
 
-def _result(inci_name, record_id, common_name=None):
+def _result(inci_name, record_id, common_name=None, synonyms=None):
     return {
         "reference": record_id,
         "metadata": {
@@ -11,6 +11,7 @@ def _result(inci_name, record_id, common_name=None):
             "substanceId": [record_id],
             "status": ["Active"],
             "functionName": ["SKIN CONDITIONING"],
+            "synonyms": synonyms or [],
         },
     }
 
@@ -39,6 +40,15 @@ def test_upsert_page_preserves_long_cosing_names(db):
     assert row.name == long_name
     assert row.common_name == long_name
     assert len(row.normalized_name) == 300
+
+
+def test_upsert_page_populates_only_trusted_cosing_aliases(db):
+    assert upsert_page(db, {"results": [
+        _result("TOCOPHEROL", "201", common_name="Vitamin E", synonyms=["alpha-Tocopherol"]),
+    ]}) == 1
+    row = db.query(IngredientDefinition).filter_by(source_record_id="201").one()
+    assert row.common_name == "Vitamin E"
+    assert row.aliases == ["Vitamin E", "alpha-Tocopherol"]
 
 
 def test_cosing_http_session_retries_post_requests():

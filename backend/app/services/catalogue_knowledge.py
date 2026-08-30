@@ -253,16 +253,17 @@ def build_catalogue_knowledge_context(
         .limit(MAX_FIELD_VALUES)
         .all()
     )
-    formulations = (
-        db.query(Formulation)
-        .filter(
-            Formulation.canonical_product_id == canonical_product_id,
-            Formulation.is_deleted == False,
-        )
-        .order_by(Formulation.created_at.desc())
-        .limit(3)
-        .all()
-    )
+    from app.models import ProductVariant
+    from app.services.formulation_resolution import resolve_selected_formulation
+    context_variant = db.query(ProductVariant).filter(
+        ProductVariant.canonical_product_id == canonical_product_id,
+        ProductVariant.gtin == gtin,
+        ProductVariant.is_deleted == False,
+    ).first() if gtin else None
+    selected_formulation = resolve_selected_formulation(
+        db, canonical_product_id, context_variant.id if context_variant else None,
+    ) if canonical_product_id else None
+    formulations = [selected_formulation] if selected_formulation else []
 
     retrieval_fields = (
         db.query(FieldValue)

@@ -382,8 +382,7 @@ def test_per_field_metadata_reference(client: TestClient, db: Session):
     assert field_data["enrichment_run"] is not None
     assert field_data["enrichment_run"]["model"] == "gemini-2.5-flash"
 
-def test_key_ingredient_provenance(client: TestClient, db: Session):
-    # 13. Key ingredients card includes source_type, evidence, confidence
+def test_ordered_and_key_ingredient_provenance_are_separate(client: TestClient, db: Session):
     headers = get_auth_headers(client, "admin@test.com")
     brand = Brand(id=uuid.uuid4(), name="Test Brand Ingredients", normalized_name="testbrandingredients")
     db.add(brand)
@@ -423,19 +422,25 @@ def test_key_ingredient_provenance(client: TestClient, db: Session):
         position=1,
         is_key_ingredient=True,
         key_ingredient_status="active",
-        evidence_source="ai_inference",
+        evidence_source="verified_evidence",
+        evidence=[{
+            "match_type": "exact_product",
+            "source_url": "https://brand.example/product",
+            "supporting_text": "Hyaluronic acid hydrates",
+        }],
         confidence_score=0.95,
-        evidence=[{"supporting_text": "Hyaluronic acid hydrates"}]
     )
     db.add(fi)
     db.commit()
     
     resp = client.get(f"/api/products/{product.id}", headers=headers)
     assert resp.status_code == 200
-    ing = resp.json()["key_ingredients"][0]
+    body = resp.json()
+    ing = body["ingredients"][0]
     assert ing["name"] == "Sodium Hyaluronate"
     assert ing["position"] == 1
     assert ing["functions"] == ["Hydration"]
+    assert body["key_ingredients"][0]["evidence_source"] == "verified_evidence"
 
 def test_dynamic_concerns_returned(client: TestClient, db: Session):
     # 14. Concern fields return dynamic concerns

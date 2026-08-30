@@ -21,11 +21,11 @@ CATEGORY_RULES = {
     },
     "skincare": {
         "skin_types": "high", "texture": "medium", "finish": "medium", "inci": "high",
-        "key_ingredients": "high", "targeted_concerns": "high",
+        "targeted_concerns": "high",
     },
     "haircare": {
         "hair_types": "high", "texture_format": "medium", "inci": "high",
-        "key_ingredients": "high", "targeted_concerns": "high",
+        "targeted_concerns": "high",
     },
     "makeup": {
         "shade_colour": "medium", "coverage": "medium", "finish": "high",

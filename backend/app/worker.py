@@ -1,15 +1,14 @@
 import time
 import uuid
 import logging
-import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import (
     ImportJob, ImportJobItem, SourceListing, CanonicalProduct, 
-    ProductVariant, Brand, Category, FieldValue, Formulation, 
-    FormulationIngredient, IngredientDefinition, ValidationIssue, 
+    ProductVariant, Brand, Category, FieldValue, Formulation,
+    ValidationIssue,
     AuditLog, SourcePrice, EnrichmentRun, ScrapedProductObservation, CrawlJob
 )
 from app.services.deduplication import evaluate_match, normalize_text
@@ -808,6 +807,14 @@ def process_item_enrichment(
     exact_market = exact_corpus.get("market") or {}
     raw_desc = raw_desc or str(exact_values.get("description") or "")
     raw_ingr = raw_ingr or str(exact_formulation.get("raw_inci_text") or exact_values.get("ingredient_text_raw") or "")
+    # Canonical formulation persistence is exclusively evidence-first.  The
+    # enrichment model may interpret an accepted formulation but can never
+    # create or replace it from generated ingredient output.
+    from app.services.formulation_resolution import (
+        promote_exact_corpus_formulation, synchronize_current_source_formulation,
+    )
+    synchronize_current_source_formulation(db, product, variant)
+    promote_exact_corpus_formulation(db, product, variant, corpus_result)
     corpus_claims = exact_values.get("claims")
     if not raw_claims and corpus_claims:
         raw_claims = "; ".join(str(value) for value in corpus_claims) if isinstance(corpus_claims, list) else str(corpus_claims)
@@ -993,6 +1000,14 @@ def process_item_enrichment(
     enrichment_result, scope_rejections = enforce_evidence_scope(
         enrichment_result, product_understanding, raw_inci_present=bool(raw_ingr),
     )
+    # Product-facing ingredient identity/intelligence is derived exclusively
+    # from the accepted canonical formulation and trusted glossary. Generated
+    # structures may assist the model internally but are never canonical facts.
+    enrichment_result.pop("ingredients_intelligence", None)
+    for module_name in ("skincare", "haircare"):
+        module_block = enrichment_result.get(module_name)
+        if isinstance(module_block, dict):
+            module_block.pop("key_ingredients", None)
     quality_rejections.extend(scope_rejections)
     if quality_rejections:
         enrichment_result["_quality_rejections"] = quality_rejections
@@ -1165,86 +1180,9 @@ def process_item_enrichment(
             semantic_status="confirmed", semantic_status_type="structured_data",
         )
 
-    # Save formulation only when the requested operation includes formulation
-    # intelligence. A selective merchandising refresh must not touch INCI data.
-    refresh_formulation = mode != "selected" or bool(
-        selected & {"ingredients", "ingredients_intelligence", "skincare", "haircare", "makeup"}
-    )
-    formulation = None
-    # Save formulation
-    content_hash = hashlib.sha256(raw_ingr.encode('utf-8')).hexdigest() if raw_ingr.strip() else None
-    if refresh_formulation and content_hash:
-        formulation = db.query(Formulation).filter(
-            Formulation.canonical_product_id == item.canonical_product_id,
-            Formulation.product_variant_id == item.product_variant_id,
-            Formulation.content_hash == content_hash,
-            Formulation.is_deleted == False,
-        ).order_by(Formulation.created_at.desc()).first()
-    if refresh_formulation and formulation:
-        db.query(FormulationIngredient).filter(
-            FormulationIngredient.formulation_id == formulation.id
-        ).delete(synchronize_session=False)
-        formulation.source_listing_id = None if exact_formulation else listing.id
-        formulation.source_reference = (
-            f"knowledge_corpus:{exact_formulation.get('formulation_hash')}" if exact_formulation else source_ref
-        )
-        formulation.market = raw_market
-        formulation.language = raw_language
-    elif refresh_formulation and content_hash:
-        formulation = Formulation(
-            id=uuid.uuid4(),
-            canonical_product_id=item.canonical_product_id,
-            product_variant_id=item.product_variant_id,
-            source_listing_id=None if exact_formulation else listing.id,
-            raw_inci_text=raw_ingr,
-            market=raw_market,
-            language=raw_language,
-            content_hash=content_hash,
-            source_reference=(
-                f"knowledge_corpus:{exact_formulation.get('formulation_hash')}" if exact_formulation else source_ref
-            ),
-        )
-        db.add(formulation)
-        db.flush()
-
-    # Save formulation ingredients
-    ai_ingredients = enrichment_result.get("ingredients_intelligence", []) if refresh_formulation and formulation else []
-    for pos, ing in enumerate(ai_ingredients):
-        # Check if in glossary
-        norm_name = normalize_text(ing.get("ingredient_name", ""))
-        definition = db.query(IngredientDefinition).filter(IngredientDefinition.normalized_name == norm_name).first()
-        if not definition:
-            definition = IngredientDefinition(
-                id=uuid.uuid4(),
-                name=ing.get("ingredient_name", ""),
-                normalized_name=norm_name,
-                common_name=ing.get("normalized_inci_name"),
-                aliases=[],
-                function=", ".join(ing.get("functions", [])),
-                benefits=", ".join(ing.get("benefits", []))
-            )
-            db.add(definition)
-            db.flush()
-
-        evidence_list = ing.get("evidence", [])
-        if hasattr(evidence_list, "model_dump"):
-            evidence_list = [e.model_dump() for e in evidence_list]
-        elif isinstance(evidence_list, list):
-            evidence_list = [e if isinstance(e, dict) else (e.model_dump() if hasattr(e, "model_dump") else dict(e)) for e in evidence_list]
-
-        form_ing = FormulationIngredient(
-            id=uuid.uuid4(),
-            formulation_id=formulation.id,
-            ingredient_definition_id=definition.id,
-            raw_inci_name=ing.get("ingredient_name", ""),
-            position=pos + 1,
-            is_key_ingredient=ing.get("is_key_ingredient", False),
-            evidence_source="ai_inference",
-            confidence_score=ing.get("confidence", 0.0),
-            evidence=evidence_list,
-            key_ingredient_status=ing.get("key_ingredient_status", "unknown")
-        )
-        db.add(form_ing)
+    # No formulation or glossary writes are permitted here.  Ordered
+    # ingredients are materialized only by formulation_resolution.py from
+    # accepted human/customer/corpus/web evidence.
 
     # Validation Checks
     # Clean/delete existing system validation issues for this item

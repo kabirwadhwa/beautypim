@@ -14,7 +14,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models import (
-    CanonicalProduct, Category, FieldValue, Formulation, ProductVariant,
+    CanonicalProduct, Category, FieldValue, Formulation, IngredientDefinition, ProductVariant,
     ScrapedProductObservation, SourceListing,
 )
 from app.services.deduplication import normalize_text
@@ -96,14 +96,25 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         required_identity_fields.append("size")
     missing_identity = [key for key in required_identity_fields if not _present(identity.get(key))]
 
-    formulations = db.query(Formulation).filter(
-        Formulation.canonical_product_id == product.id,
-        Formulation.is_deleted == False,
-        *([or_(Formulation.product_variant_id == variant.id,
-               Formulation.product_variant_id.is_(None))] if variant else
-          [Formulation.product_variant_id.is_(None)]),
-    ).all()
-    has_inci = any(_present(row.raw_inci_text) for row in formulations)
+    from app.services.formulation_resolution import resolve_selected_formulation, formulation_ingredient_rows
+    selected_formulation = resolve_selected_formulation(db, product.id, variant.id if variant else None)
+    formulations = [selected_formulation] if selected_formulation else []
+    ingredient_rows = formulation_ingredient_rows(db, selected_formulation)
+    has_inci = bool(selected_formulation and _present(selected_formulation.raw_inci_text))
+    resolved_rows = [row for row in ingredient_rows if row.ingredient_definition_id]
+    definitions = {
+        row.id: row for row in db.query(IngredientDefinition).filter(
+            IngredientDefinition.id.in_([item.ingredient_definition_id for item in resolved_rows])
+        ).all()
+    } if resolved_rows else {}
+    intelligent_rows = [
+        row for row in resolved_rows
+        if row.ingredient_definition_id in definitions and any((
+            definitions[row.ingredient_definition_id].function,
+            definitions[row.ingredient_definition_id].possible_concerns,
+        ))
+    ]
+    key_rows = [row for row in ingredient_rows if row.is_key_ingredient]
     coverage_fields = set(current)
     description = (
         current.get("description").value if current.get("description") else None
@@ -122,7 +133,7 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "category": category.path if category else "", "product_type": format_value,
         "description": description, "image_url": product.image_url,
         "inci": next((row.raw_inci_text for row in formulations if _present(row.raw_inci_text)), None),
-        "key_ingredients": [],
+        "key_ingredients": [row.raw_inci_name for row in key_rows],
     }
     understanding_row = current.get("product_understanding")
     if understanding_row and isinstance(understanding_row.value, dict):
@@ -225,6 +236,16 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         "candidate_products": candidates,
         "corpus_match_level": corpus.get("match_level"),
         "category": category.path if category else None,
+        "ingredient_completeness": {
+            "formulation_complete": has_inci,
+            "total_ingredients": len(ingredient_rows),
+            "resolved_ingredients": len(resolved_rows),
+            "identity_resolution_coverage": round(100 * len(resolved_rows) / len(ingredient_rows)) if ingredient_rows else 0,
+            "ingredients_with_trusted_intelligence": len(intelligent_rows),
+            "ingredient_intelligence_coverage": round(100 * len(intelligent_rows) / len(resolved_rows)) if resolved_rows else 0,
+            "key_ingredient_evidence_status": "source_supported" if key_rows else "not_published_or_not_found",
+            "key_ingredient_count": len(key_rows),
+        },
     }
     from app.services.identity_review import does_this_product_require_identity_review
     review = does_this_product_require_identity_review(db, product, result)

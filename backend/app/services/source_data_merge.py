@@ -126,6 +126,9 @@ KNOWN_FIELD_SPECS: dict[str, tuple[str, tuple[str, ...], Callable[[Any], Any]]] 
         "Ingredients", "Ingredient", "INCI", "INCI List", "Raw INCI",
         "Ingredient List", "Ingredients List", "Composition", "Formula", "Formulation",
     ), _text),
+    "key_ingredients_source": ("key_ingredients", (
+        "Key Ingredients", "Hero Ingredients", "Highlighted Ingredients", "Active Ingredients",
+    ), _benefits),
     "customer_category": ("category", ("Category", "Customer Category"), _text),
     "customer_subcategory": ("subcategory", ("Customer Subcategory",), _text),
     "product_url": ("product_url", ("Product URL", "Product Page URL"), _text),
@@ -423,10 +426,14 @@ def merge_source_listing(
     # synchronize from the winning current value (not blindly from this row).
     # This makes historical reprocessing safe and repairs legacy imports that
     # retained INCI only as a FieldValue.
-    from app.services.formulation_resolution import synchronize_current_source_formulation
+    from app.services.formulation_resolution import (
+        synchronize_current_key_ingredients, synchronize_current_source_formulation,
+    )
     db.flush()
     formulation_result = synchronize_current_source_formulation(db, product, variant)
     if formulation_result.status == "applied":
+        wrote_product = True
+    if synchronize_current_key_ingredients(db, product, variant):
         wrote_product = True
 
     recognized = _recognized_headers(raw_data, mapping)

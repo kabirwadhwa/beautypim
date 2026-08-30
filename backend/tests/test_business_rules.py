@@ -3,7 +3,10 @@ import io
 import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from app.models import CanonicalProduct, ProductVariant, ValidationIssue, FieldValue, ImportJob, ImportJobItem, User, AuditLog
+from app.models import (
+    CanonicalProduct, ProductVariant, ValidationIssue, FieldValue, ImportJob,
+    ImportJobItem, User, AuditLog, IngredientDefinition, FormulationIngredient,
+)
 from app.worker import run_job_worker, process_item_enrichment
 from app.routes.feeds import file_cache
 from app.routes.products import approve_product
@@ -71,6 +74,13 @@ def test_business_rules_integration(client: TestClient, db: Session):
         ImportJobItem.status == "completed",
     ).all():
         process_item_enrichment(db, imported_item, import_job.column_mapping)
+
+    # Legacy AI enrichment may interpret source data but must never author
+    # canonical ingredient identities or ingredient/key rows.
+    assert db.query(IngredientDefinition).count() == 0
+    assert db.query(FormulationIngredient).filter(
+        FormulationIngredient.evidence_source == "ai_inference",
+    ).count() == 0
     
     # --- Assertions ---
     

@@ -302,6 +302,25 @@ class KeyIngredientOut(BaseModel):
     is_key_ingredient: bool
     key_ingredient_status: Optional[str] = None
     formulation_reference: Optional[uuid.UUID] = None
+    evidence_source: Optional[str] = None
+    evidence: list[Any] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True
+
+class IngredientOut(BaseModel):
+    name: str
+    canonical_name: Optional[str] = None
+    position: int
+    resolution_status: str
+    resolution_method: Optional[str] = None
+    functions: list[str] = Field(default_factory=list)
+    general_benefits: list[str] = Field(default_factory=list)
+    caution_notes: list[str] = Field(default_factory=list)
+    glossary_source: Optional[str] = None
+    glossary_source_url: Optional[str] = None
+    formulation_reference: uuid.UUID
+    identity_evidence: dict[str, Any] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True
@@ -450,6 +469,7 @@ class ProductDetailOut(ProductOut):
     validation_issues: list[ValidationIssueOut] = Field(default_factory=list)
     
     enrichment_metadata: Optional[EnrichmentMetadataSchema] = None
+    ingredients: list[IngredientOut] = Field(default_factory=list)
     key_ingredients: list[KeyIngredientOut] = Field(default_factory=list)
     dynamic_concerns: list[DynamicConcernOut] = Field(default_factory=list)
     market_observations: list[MarketObservationOut] = Field(default_factory=list)
@@ -470,6 +490,8 @@ class ProductTagsUpdate(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=20)
 
 EDITABLE_FIELDS_REGISTRY = {
+    "ingredients": str,
+    "key_ingredients_source": list,
     "subcategory": str,
     "product_type": str,
     "application_area": str,
@@ -498,6 +520,7 @@ class ProductEdit(BaseModel):
     field_name: str
     value: Any
     reason: Optional[str] = None
+    product_variant_id: Optional[uuid.UUID] = None
 
 # Ingestion Requests
 class IngestProcessRequest(BaseModel):
