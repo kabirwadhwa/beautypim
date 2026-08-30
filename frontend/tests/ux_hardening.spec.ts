@@ -213,7 +213,8 @@ test.describe('Beauty PIM UX Hardening E2E Workflows', () => {
 
     // 10. The exact raw INCI remains visible even when no normalized key
     // ingredients can be established safely from the available evidence.
-    await expect(page.getByText('Raw Ingredients Ingredients List', { exact: true })).toBeVisible();
+    await expect(page.getByText('Ingredients', { exact: true })).toBeVisible();
+    await expect(page.getByText('Water, Hyaluronic Acid, Glycerin, Parfum', { exact: true })).toBeVisible();
   });
 
 });
