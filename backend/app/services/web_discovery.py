@@ -88,6 +88,9 @@ def start_product_source_discovery(
     gtin: str = "", approved_domains: list[str] | None = None,
     research_objectives: list[str] | None = None,
     identity_queries: list[dict[str, str]] | None = None,
+    excluded_urls: list[str] | None = None,
+    excluded_domains: list[str] | None = None,
+    discovery_purpose: str = "primary_evidence",
 ) -> dict:
     """Start one durable provider request and return serializable polling state."""
     if not settings.OPENAI_API_KEY and not settings.BRAVE_SEARCH_API_KEY:
@@ -104,6 +107,7 @@ def start_product_source_discovery(
     model = settings.OPENAI_WEB_SEARCH_FALLBACK_MODEL or settings.OPENAI_WEB_SEARCH_MODEL
     payload, attempts, retry_delays = _start_openai_discovery_with_retry(
         identity, domains, model, research_objectives, identity_queries,
+        excluded_urls, excluded_domains, discovery_purpose,
     )
     status = _provider_status(payload)
     return {
@@ -116,6 +120,9 @@ def start_product_source_discovery(
         if status not in {"queued", "in_progress"} else [],
         "market_observations": _parse_openai_market_observations(payload, domains)
         if status not in {"queued", "in_progress"} else [],
+        "evidence_claims": _parse_openai_evidence_claims(payload, domains)
+        if status not in {"queued", "in_progress"} else [],
+        "discovery_purpose": discovery_purpose,
     }
 
 
@@ -168,6 +175,9 @@ def poll_product_source_discovery(state: dict) -> dict:
         updated["market_observations"] = _parse_openai_market_observations(
             payload, state.get("domains") or [],
         )
+        updated["evidence_claims"] = _parse_openai_evidence_claims(
+            payload, state.get("domains") or [],
+        )
     return updated
 
 
@@ -201,7 +211,10 @@ def _discover_with_openai_model(identity: str, domains: list[str], model: str) -
 
 def _start_openai_discovery(identity: str, domains: list[str], model: str,
                             research_objectives: list[str] | None = None,
-                            identity_queries: list[dict[str, str]] | None = None) -> dict:
+                            identity_queries: list[dict[str, str]] | None = None,
+                            excluded_urls: list[str] | None = None,
+                            excluded_domains: list[str] | None = None,
+                            discovery_purpose: str = "primary_evidence") -> dict:
     tool: dict = {
         "type": "web_search", "external_web_access": True,
         "search_context_size": "low", "search_content_types": ["text", "image"],
@@ -274,8 +287,39 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
                             "required": ["source_url", "source_name", "matched_gtin", "matched_brand", "matched_product_name", "matched_variant", "image_url", "average_rating", "review_count", "evidence_excerpt"],
                         },
                     },
+                    "evidence_claims": {
+                        "type": "array", "maxItems": 24,
+                        "items": {
+                            "type": "object", "additionalProperties": False,
+                            "properties": {
+                                "field_name": {"type": "string"},
+                                "proposed_value": {
+                                    "type": ["string", "number", "integer", "boolean", "array", "null"],
+                                    "items": {"type": "string"},
+                                },
+                                "source_url": {"type": "string"},
+                                "source_title": {"type": ["string", "null"]},
+                                "source_authority": {"type": "string"},
+                                "matched_gtin": {"type": ["string", "null"]},
+                                "matched_brand": {"type": ["string", "null"]},
+                                "matched_product_name": {"type": ["string", "null"]},
+                                "matched_product_family": {"type": ["string", "null"]},
+                                "matched_variant": {"type": ["string", "null"]},
+                                "matched_concentration": {"type": ["string", "null"]},
+                                "matched_shade": {"type": ["string", "null"]},
+                                "matched_size": {"type": ["string", "null"]},
+                                "evidence_type": {"type": "string"},
+                                "evidence_excerpt": {"type": "string"},
+                            },
+                            "required": ["field_name", "proposed_value", "source_url", "source_title",
+                                         "source_authority", "matched_gtin", "matched_brand",
+                                         "matched_product_name", "matched_product_family", "matched_variant",
+                                         "matched_concentration", "matched_shade", "matched_size",
+                                         "evidence_type", "evidence_excerpt"],
+                        },
+                    },
                 },
-                "required": ["candidate_pages", "market_observations"],
+                "required": ["candidate_pages", "market_observations", "evidence_claims"],
             },
         }},
         "input": (
@@ -285,6 +329,9 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             f"Then use these evidence-objective-specific queries rather than asking one page to provide everything: "
             f"{json.dumps(objective_queries)}. "
             f"The unresolved high-value fields are: {', '.join(research_objectives or []) or 'official product evidence'}. "
+            f"This is the {discovery_purpose} pass. Exclude these already attempted URLs: "
+            f"{json.dumps(excluded_urls or [])}. Exclude these blocked/exhausted domains: "
+            f"{json.dumps(excluded_domains or [])}. Seek independent source families not already attempted. "
             "Return only exact or plausible product-version pages; do not use search pages, blogs or editorial articles. "
             "Include up to eight useful distinct domains when available: the official page for identity and imagery, "
             "plus public retailer product pages that expose written customer review bodies. When review intelligence "
@@ -302,6 +349,9 @@ def _start_openai_discovery(identity: str, domains: list[str], model: str,
             "When ingredients or INCI is unresolved, prioritize an exact concentration/variant page that visibly exposes "
             "the complete ingredient list; never substitute a sibling EDT, EDP, Parfum, Elixir, shade or size formulation. "
             "Prioritize exact pages that also expose size, GTIN and a full ingredients/INCI section."
+            " Return evidence_claims only for the requested unresolved fields. Each claim must use a source URL "
+            "that appears in the web-search citations/results, include a short supporting excerpt, and state the "
+            "identity and variant facts actually supported by that source. Never return uncited assertions."
         ),
     }
     request_id = str(uuid.uuid4())
@@ -342,6 +392,9 @@ def _start_openai_discovery_with_retry(
     identity: str, domains: list[str], model: str,
     research_objectives: list[str] | None = None,
     identity_queries: list[dict[str, str]] | None = None,
+    excluded_urls: list[str] | None = None,
+    excluded_domains: list[str] | None = None,
+    discovery_purpose: str = "primary_evidence",
 ) -> tuple[dict, int, list[float]]:
     """Retry only requests that the provider explicitly rejected transiently.
 
@@ -354,6 +407,7 @@ def _start_openai_discovery_with_retry(
         try:
             return _start_openai_discovery(
                 identity, domains, model, research_objectives, identity_queries,
+                excluded_urls, excluded_domains, discovery_purpose,
             ), attempt, delays
         except (SearchRateLimited, SearchTransient) as exc:
             if attempt >= max_attempts:
@@ -430,6 +484,54 @@ def _parse_openai_market_observations(payload: dict, domains: list[str]) -> list
             "evidence_excerpt": value.get("evidence_excerpt"),
             "evidence_method": "OpenAI Responses web_search",
         })
+    return output
+
+
+def _response_text_and_citations(payload: dict) -> tuple[list[str], set[str]]:
+    text_values: list[str] = []
+    cited_urls: set[str] = set()
+    for output in payload.get("output", []):
+        if output.get("type") == "web_search_call":
+            action = output.get("action") or {}
+            cited_urls.update(str(row.get("url") or "").strip() for row in action.get("sources") or [] if row.get("url"))
+            cited_urls.update(str(row.get("source_website_url") or "").strip() for row in output.get("results") or [] if row.get("source_website_url"))
+        if output.get("type") == "message":
+            for content in output.get("content") or []:
+                if content.get("type") == "output_text" and content.get("text"):
+                    text_values.append(content["text"])
+                cited_urls.update(str(row.get("url") or "").strip() for row in content.get("annotations") or []
+                                  if row.get("type") == "url_citation" and row.get("url"))
+    return text_values, cited_urls
+
+
+def _parse_openai_evidence_claims(payload: dict, domains: list[str]) -> list[dict]:
+    """Return only claims whose source URL is an actual provider citation."""
+    text_values, cited_urls = _response_text_and_citations(payload)
+    try:
+        parsed = json.loads("\n".join(text_values))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    claims = parsed.get("evidence_claims") if isinstance(parsed, dict) else None
+    if not isinstance(claims, list):
+        return []
+    output = []
+    for claim in claims[:24]:
+        if not isinstance(claim, dict):
+            continue
+        source_url = str(claim.get("source_url") or "").strip()
+        host = (urlparse(source_url).hostname or "").lower()
+        if source_url not in cited_urls:
+            continue
+        if domains and host not in domains and not any(host.endswith(f".{domain}") for domain in domains):
+            continue
+        try:
+            validate_public_url(source_url, expected_domain=host, allow_subdomains=False)
+        except UnsafeUrl:
+            continue
+        excerpt = str(claim.get("evidence_excerpt") or "").strip()
+        if not excerpt:
+            continue
+        output.append({**claim, "source_domain": host, "acquisition_method": "licensed_web_search"})
     return output
 
 

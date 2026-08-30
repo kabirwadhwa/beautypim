@@ -11,12 +11,11 @@ from sqlalchemy.orm import Session
 from app.auth import log_audit_event
 from app.models import (
     Brand, CanonicalProduct, Category, CrawlConflict, CrawlJob, FieldValue,
-    Formulation, FormulationIngredient, IngredientDefinition, ProductVariant,
+    ProductVariant,
     RawPageObservation, ScrapedFieldObservation, ScrapedProductObservation,
     SourceListing, SourcePrice, ValidationIssue,
 )
 from app.scraping.adapters.base import ProductAdapter
-from app.scraping.ingredients import normalize_ingredient, split_inci
 from app.scraping.schemas import ReviewSample, ScrapedProduct
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.product_identity import research_identity_compatible
@@ -287,11 +286,22 @@ def persist_product(
             variant.unit = product.unit
         _persist_values_and_conflicts(db, job, observation, product, match_status)
         if not safe_fields_only:
-            _persist_formulation(db, listing, canonical_id, variant_id, product)
+            _persist_formulation(db, job, listing, canonical_id, variant_id, product)
         canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == canonical_id).first()
         if canonical and not canonical.image_url and product.image_urls:
             from app.services.image_urls import normalize_public_image_url
-            canonical.image_url = normalize_public_image_url(product.image_urls[0])
+            from app.services.research_evidence import EvidenceItem, validate_evidence
+            image_item = EvidenceItem(
+                field_name="image", proposed_value=product.image_urls[0], source_url=product.source_url,
+                source_domain=product.source_domain, acquisition_method="crawl_html",
+                matched_gtin=product.gtin or product.ean or product.upc,
+                matched_brand=product.brand, matched_product_name=product.product_name,
+                matched_variant=product.variant_name, matched_shade=product.shade,
+                matched_size=product.size, evidence_excerpt=product.image_urls[0],
+            )
+            image_allowed, _ = validate_evidence(image_item, canonical, variant)
+            if image_allowed:
+                canonical.image_url = normalize_public_image_url(product.image_urls[0])
     if product.price is not None and variant_id and not safe_fields_only and not identity_only:
         db.add(SourcePrice(
             id=uuid.uuid4(), source_listing_id=listing.id,
@@ -330,10 +340,34 @@ def _persist_values_and_conflicts(db, job, observation, product, match_status):
             # The normalized payload on ScrapedProductObservation is the
             # append-only evidence store used by the canonical selector.
             continue
+        from app.services.research_evidence import EvidenceItem, validate_evidence
+        canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
+        variant = db.query(ProductVariant).filter(ProductVariant.id == observation.product_variant_id).first()
+        item = EvidenceItem(
+            field_name=field, proposed_value=value, source_url=product.source_url,
+            source_domain=product.source_domain, acquisition_method="crawl_html",
+            source_authority="retailer", source_title=product.product_name,
+            matched_gtin=product.gtin or product.ean or product.upc,
+            matched_brand=product.brand, matched_product_name=product.product_name,
+            matched_variant=product.variant_name, matched_shade=product.shade,
+            matched_size=product.size, evidence_excerpt=str(value)[:1000],
+        )
+        allowed, rejection = validate_evidence(item, canonical, variant)
+        if not allowed:
+            db.add(ValidationIssue(
+                id=uuid.uuid4(), canonical_product_id=product_id, field_name=field,
+                severity="informational", issue_type="research_evidence_policy_rejection",
+                message=f"Crawler evidence rejected for {field}: {rejection}.", created_by_type="system",
+            ))
+            continue
         current = db.query(FieldValue).filter(
             FieldValue.canonical_product_id == product_id,
             FieldValue.field_name == field, FieldValue.is_current.is_(True),
         ).first()
+        if current and current.source_type == "ai_inference":
+            current.is_current = False
+            db.flush()
+            current = None
         if current and current.value != value:
             conflict = CrawlConflict(
                 id=uuid.uuid4(), crawl_job_id=job.id,
@@ -355,46 +389,39 @@ def _persist_values_and_conflicts(db, job, observation, product, match_status):
                 field_name=field, value=value, source_type="source_data",
                 source_reference=product.source_url, confidence_score=1,
                 review_status="inferred",
-                is_current=True, evidence=[{
-                    "source_reference": product.source_url,
+                is_current=True, evidence=[{**item.payload(),
                     "source_field": field,
-                    "supporting_text": str(value)[:1000],
-                    "evidence_type": "scraped_product_observation",
-                    "scraped_product_observation_id": str(observation.id),
-                    "source_domain": product.source_domain,
-                }],
+                    "scraped_product_observation_id": str(observation.id)}],
             ))
 
 
-def _persist_formulation(db, listing, product_id, variant_id, product):
+def _persist_formulation(db, job, listing, product_id, variant_id, product):
     raw = (product.ingredient_text_raw or "").strip()
     if not raw:
         return
-    content_hash = hashlib.sha256(raw.encode()).hexdigest()
-    existing = db.query(Formulation).filter(
-        Formulation.canonical_product_id == product_id,
-        Formulation.content_hash == content_hash,
-    ).first()
-    if existing:
-        return
-    formulation = Formulation(
-        id=uuid.uuid4(), canonical_product_id=product_id,
-        product_variant_id=variant_id, source_listing_id=listing.id,
-        raw_inci_text=raw, market=product.country,
-        language=product.locale, source_reference=product.source_url,
-        content_hash=content_hash,
+    from app.services.research_evidence import EvidenceItem, validate_evidence
+    canonical = db.query(CanonicalProduct).filter(CanonicalProduct.id == product_id).first()
+    variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id).first() if variant_id else None
+    item = EvidenceItem(
+        field_name="inci", proposed_value=raw, source_url=product.source_url,
+        source_domain=product.source_domain, acquisition_method="crawl_html",
+        source_authority="retailer", source_title=product.product_name,
+        matched_gtin=product.gtin or product.ean or product.upc,
+        matched_brand=product.brand, matched_product_name=product.product_name,
+        matched_variant=product.variant_name, matched_shade=product.shade,
+        matched_size=product.size, evidence_excerpt=raw[:1000],
     )
-    db.add(formulation)
-    db.flush()
-    for position, raw_name in enumerate(split_inci(raw), 1):
-        normalized = normalize_ingredient(raw_name)
-        definition = db.query(IngredientDefinition).filter(
-            IngredientDefinition.normalized_name == normalized,
-        ).first()
-        db.add(FormulationIngredient(
-            id=uuid.uuid4(), formulation_id=formulation.id,
-            ingredient_definition_id=definition.id if definition else None,
-            raw_inci_name=raw_name[:255], position=position,
-            evidence_source=product.source_url, confidence_score=1,
-            evidence={"method": "exact_raw_inci_order"},
+    allowed, rejection = validate_evidence(item, canonical, variant)
+    if not allowed:
+        db.add(ValidationIssue(
+            id=uuid.uuid4(), canonical_product_id=product_id, field_name="inci",
+            severity="warning", issue_type="research_evidence_policy_rejection",
+            message=f"Formulation evidence rejected: {rejection}.", created_by_type="system",
         ))
+        return
+    from app.services.formulation_resolution import promote_formulation
+    promote_formulation(
+        db, product=canonical, variant=variant, raw_inci_text=raw,
+        source_kind="crawl_html", source_reference=f"crawl_html:{product.source_url}",
+        market=product.country, language=product.locale,
+    )

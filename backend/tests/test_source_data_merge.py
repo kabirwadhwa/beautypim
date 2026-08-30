@@ -371,7 +371,7 @@ def test_source_attributes_require_explicit_customer_import_provenance(db):
     assert "source_attr.web-only.fake" not in attributes
 
 
-def test_customer_ingredients_remain_visible_without_formulation(db):
+def test_customer_ingredients_populate_canonical_formulation(db):
     brand = Brand(id=uuid.uuid4(), name="Brand", normalized_name="brand")
     product = CanonicalProduct(id=uuid.uuid4(), brand_id=brand.id, product_name="Cream", normalized_name="cream")
     variant = ProductVariant(id=uuid.uuid4(), canonical_product_id=product.id, gtin="9876543210987")
@@ -380,7 +380,8 @@ def test_customer_ingredients_remain_visible_without_formulation(db):
     run_job_worker(db, job.id)
     from app.routes.products import get_product_detail
     detail = get_product_detail(product.id, db, None)
-    assert not detail.formulations
+    assert len(detail.formulations) == 1
+    assert detail.formulations[0].raw_inci_text == "Water, Glycerin"
     assert next(fv.value for fv in detail.field_values if fv.is_current and fv.field_name == "ingredients") == "Water, Glycerin"
 
 

@@ -215,7 +215,11 @@ def suggest_mapping(headers: List[str]) -> Dict[str, str]:
         "bgb_subgroup": ["bgb_subgroup", "bgb subgroup"],
         "bgb_typegroup": ["bgb_typegroup", "bgb typegroup"],
         "customer_review_summary": ["product_review_summary", "product review summary", "customer_review_summary"],
-        "ingredients": ["ingredients", "inci", "inci_ingredients", "inci ingredients", "composition", "ingredients_list"],
+        "ingredients": [
+            "ingredients", "ingredient", "inci", "inci_list", "inci list",
+            "inci_ingredients", "inci ingredients", "ingredient_list", "ingredient list",
+            "ingredients_list", "ingredients list", "composition", "formula", "formulation",
+        ],
         "category": ["category", "department", "rayon", "classification"],
         "product_family": ["product_family", "family", "subcategory", "product_type", "product type", "type", "format", "concentration"],
         "claims": ["claims", "product_claims", "marketing_claims"],

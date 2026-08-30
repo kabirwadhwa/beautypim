@@ -122,7 +122,10 @@ KNOWN_FIELD_SPECS: dict[str, tuple[str, tuple[str, ...], Callable[[Any], Any]]] 
     "customer_review_summary": ("customer_review_summary", ("Product Review Summary", "Customer Review Summary"), _text),
     "claims": ("claims", ("Claims", "Product Claims", "Marketing Claims"), _benefits),
     "directions": ("directions", ("Directions", "Usage Instructions", "How To Use"), _text),
-    "ingredients": ("ingredients", ("Ingredients", "INCI", "Raw INCI", "Ingredients List"), _text),
+    "ingredients": ("ingredients", (
+        "Ingredients", "Ingredient", "INCI", "INCI List", "Raw INCI",
+        "Ingredient List", "Ingredients List", "Composition", "Formula", "Formulation",
+    ), _text),
     "customer_category": ("category", ("Category", "Customer Category"), _text),
     "customer_subcategory": ("subcategory", ("Customer Subcategory",), _text),
     "product_url": ("product_url", ("Product URL", "Product Page URL"), _text),
@@ -414,6 +417,17 @@ def merge_source_listing(
             db, product_id=product.id, field_name=canonical_field, value=value,
             listing=listing, source_header=source_header or aliases[0], raw_value=raw_value, result=result,
         ) or wrote_product
+
+    # ``ingredients`` FieldValue carries immutable customer chronology and
+    # provenance.  The product-facing truth is the live Formulation, so always
+    # synchronize from the winning current value (not blindly from this row).
+    # This makes historical reprocessing safe and repairs legacy imports that
+    # retained INCI only as a FieldValue.
+    from app.services.formulation_resolution import synchronize_current_source_formulation
+    db.flush()
+    formulation_result = synchronize_current_source_formulation(db, product, variant)
+    if formulation_result.status == "applied":
+        wrote_product = True
 
     recognized = _recognized_headers(raw_data, mapping)
     ignored = ignored_source_headers(mapping)

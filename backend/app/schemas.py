@@ -372,6 +372,8 @@ class VariantOut(BaseModel):
 class FormulationOut(BaseModel):
     id: uuid.UUID
     raw_inci_text: str
+    source_listing_id: Optional[uuid.UUID] = None
+    source_reference: Optional[str] = None
     market: Optional[str] = None
     language: Optional[str] = None
     effective_date: Optional[date] = None

@@ -7,7 +7,10 @@ the dossier.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 from typing import Any
+
+from app.services.research_evidence import normalize_research_url
 
 
 TERMINAL_OUTCOMES = {
@@ -63,19 +66,15 @@ def build_identity_query_plan(*, brand: str, product_name: str, gtin: str = "",
     source_category = _raw_value(raw, "category", "bgb subgroup", "bgb typegroup", "subcategory") or category
     context = " ".join((source_category, product_format, raw_name, supplier))
     cleaned = clean_enterprise_product_name(raw_name, context=context)
-    resolved_candidates = [
-        " ".join(_text(row.get(key)) for key in ("brand", "product_name", "product_type") if _text(row.get(key)))
-        for row in (corpus_candidates or [])[:3]
-    ]
+    # Corpus analogues may inform taxonomy, but must never become exact-product
+    # web identity queries. Exact searches are anchored only in this product's
+    # GTIN, resolved identity and preserved customer source row.
     attempts: list[tuple[str, str]] = []
     digits = re.sub(r"\D", "", gtin or "")
     if digits:
         attempts.append(("exact_gtin", digits))
         if source_brand:
             attempts.append(("gtin_brand", f"{digits} {source_brand}"))
-    for candidate in resolved_candidates:
-        if candidate:
-            attempts.append(("corpus_identity", candidate))
     if source_brand and cleaned:
         attempts.append(("brand_clean_name", f"{source_brand} {cleaned}"))
     if supplier and cleaned:
@@ -107,6 +106,85 @@ def classify_research_error(message: str) -> str:
     if any(term in lowered for term in ("gtin mismatch", "wrong product", "unsafe identity", "invalid payload")):
         return "validation"
     return "technical"
+
+
+DETERMINISTIC_BLOCKS = {"blocked_403", "robots_disallowed", "unsafe_url", "redirect_violation"}
+TRANSIENT_FAILURES = {"rate_limited_429", "timeout", "network_transient", "provider_failure"}
+
+
+def classify_source_failure(message: str, http_status: int | None = None) -> str:
+    lowered = _text(message).lower()
+    if http_status == 403 or "403" in lowered or "captcha" in lowered or "bot challenge" in lowered:
+        return "blocked_403"
+    if http_status == 429 or "429" in lowered or "rate limit" in lowered:
+        return "rate_limited_429"
+    if "robots" in lowered and "disallow" in lowered:
+        return "robots_disallowed"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "timeout"
+    if "private" in lowered or "unsafe url" in lowered:
+        return "unsafe_url"
+    if "redirect" in lowered:
+        return "redirect_violation"
+    if "gtin" in lowered or "wrong product" in lowered or "identity" in lowered:
+        return "identity_mismatch"
+    if "variant" in lowered or "edition" in lowered or "concentration" in lowered:
+        return "variant_mismatch"
+    if "empty" in lowered or "no product" in lowered:
+        return "parser_empty"
+    if "connection" in lowered or "network" in lowered or "temporar" in lowered:
+        return "network_transient"
+    return "provider_failure"
+
+
+def blank_source_memory() -> dict[str, Any]:
+    return {
+        "attempted_urls": [], "failed_urls": {}, "blocked_domains": [],
+        "domain_failures": {}, "rejected_candidates": [], "successful_sources": [],
+        "crawl_attempts": 0, "provider_searches": 0, "duplicate_work_avoided": 0,
+    }
+
+
+def record_source_attempt(memory: dict[str, Any], url: str, *, outcome: str,
+                          reason: str | None = None, max_domain_failures: int = 2) -> dict[str, Any]:
+    state = {**blank_source_memory(), **(memory or {})}
+    normalized = normalize_research_url(url)
+    domain = (urlparse(normalized).hostname or "").lower()
+    attempted = list(state.get("attempted_urls") or [])
+    if normalized not in attempted:
+        attempted.append(normalized)
+    state["attempted_urls"] = attempted
+    if outcome == "success":
+        successful = list(state.get("successful_sources") or [])
+        if normalized not in successful:
+            successful.append(normalized)
+        state["successful_sources"] = successful
+        return state
+    classification = reason or "provider_failure"
+    failures = dict(state.get("failed_urls") or {})
+    failures[normalized] = classification
+    state["failed_urls"] = failures
+    domain_failures = dict(state.get("domain_failures") or {})
+    domain_failures[domain] = int(domain_failures.get(domain) or 0) + 1
+    state["domain_failures"] = domain_failures
+    if classification in DETERMINISTIC_BLOCKS and domain_failures[domain] >= max_domain_failures:
+        blocked = set(state.get("blocked_domains") or [])
+        blocked.add(domain)
+        state["blocked_domains"] = sorted(blocked)
+    return state
+
+
+def source_should_be_skipped(memory: dict[str, Any], url: str) -> tuple[bool, str | None]:
+    normalized = normalize_research_url(url)
+    domain = (urlparse(normalized).hostname or "").lower()
+    if domain in set(memory.get("blocked_domains") or []):
+        return True, "domain_circuit_open"
+    failure = (memory.get("failed_urls") or {}).get(normalized)
+    if failure in DETERMINISTIC_BLOCKS or failure in {"identity_mismatch", "variant_mismatch", "unsafe_url", "parser_empty"}:
+        return True, f"previous_{failure}"
+    if normalized in set(memory.get("successful_sources") or []):
+        return True, "already_ingested"
+    return False, None
 
 
 def snapshot_metrics(quality: dict[str, Any], *, field_values: dict[str, Any], image_present: bool,

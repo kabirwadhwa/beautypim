@@ -54,7 +54,11 @@ def resolve_exact_field_evidence(result: dict[str, Any]) -> dict[str, Any]:
     formulations = []
     market_rows = []
     for match in result.get("exact_matches") or []:
-        formulations.extend(match.get("formulations") or [])
+        formulations.extend({
+            **row,
+            "knowledge_product_id": match.get("knowledge_product_id"),
+            "knowledge_variant_id": match.get("knowledge_variant_id"),
+        } for row in (match.get("formulations") or []))
         market_rows.extend(match.get("market_observations") or [])
         for field_name, rows in (match.get("fields") or {}).items():
             usable = [row for row in rows if row.get("value") not in (None, "", [], {})]

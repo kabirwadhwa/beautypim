@@ -10,6 +10,7 @@ import re
 import uuid
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -98,6 +99,9 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
     formulations = db.query(Formulation).filter(
         Formulation.canonical_product_id == product.id,
         Formulation.is_deleted == False,
+        *([or_(Formulation.product_variant_id == variant.id,
+               Formulation.product_variant_id.is_(None))] if variant else
+          [Formulation.product_variant_id.is_(None)]),
     ).all()
     has_inci = any(_present(row.raw_inci_text) for row in formulations)
     coverage_fields = set(current)

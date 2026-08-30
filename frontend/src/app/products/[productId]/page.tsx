@@ -67,7 +67,13 @@ interface ProductDetail {
   created_at: string;
   updated_at: string;
   variants: Array<{ id: string; variant_name?: string | null; gtin: string | null; size: string | null; unit: string | null }>;
-  formulations: Array<{ id: string; raw_inci_text: string; market: string | null }>;
+  formulations: Array<{
+    id: string;
+    raw_inci_text: string;
+    market: string | null;
+    source_listing_id?: string | null;
+    source_reference?: string | null;
+  }>;
   market_observations: Array<{
     source_name: string | null; source_domain: string | null; market: string | null;
     price: number | null; promotional_price: number | null; currency: string | null;
@@ -1489,11 +1495,11 @@ export default function ProductDetailPage() {
             </div>
           )}
 
-          {/* Raw INCI Ingredients */}
+          {/* Canonical Ingredients; provenance remains available in evidence details. */}
           <div className={styles.panelCard}>
             <div className={styles.panelTitle}>
               <BookOpen size={18} color="#94a3b8" />
-              <span>Raw Ingredients Ingredients List</span>
+              <span>Ingredients</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13, color: '#94a3b8' }}>
               <div style={{ backgroundColor: '#0b0f19', padding: 12, borderRadius: 4, fontFamily: 'monospace', color: '#f8fafc', whiteSpace: 'pre-wrap' }}>

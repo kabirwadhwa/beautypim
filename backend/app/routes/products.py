@@ -1,7 +1,7 @@
 import uuid
 import re
 from urllib.parse import urlparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, func
@@ -696,6 +696,7 @@ def _automatic_product_research(
     research_variant_id: uuid.UUID | None = None,
     identity_only: bool = False,
     research_log_context: dict | None = None,
+    research_state: dict | None = None,
 ) -> dict:
     """Discover and ingest a small exact-product evidence set before enrichment.
 
@@ -707,8 +708,25 @@ def _automatic_product_research(
     from app.services.image_urls import normalize_public_image_url
     from app.scraping.runner import run_crawl_job
     from app.services.product_research_logging import product_research_log
+    from app.services.research_reliability import (
+        blank_source_memory, classify_source_failure, record_source_attempt, source_should_be_skipped,
+    )
 
     log_context = dict(research_log_context or {})
+    source_memory = {**blank_source_memory(), **(research_state or {})}
+
+    def checkpoint_source_memory() -> None:
+        parent_id = log_context.get("job_id")
+        if not parent_id:
+            return
+        try:
+            parent = db.query(CrawlJob).filter(CrawlJob.id == uuid.UUID(str(parent_id))).first()
+        except (TypeError, ValueError):
+            parent = None
+        if parent and parent.domain == "product-research.internal":
+            parent.configuration = {**(parent.configuration or {}), "research_state": source_memory}
+            parent.heartbeat_at = datetime.utcnow()
+            db.commit()
 
     from app.services.product_identity import preferred_product_variant
     variant = db.query(ProductVariant).filter(
@@ -807,7 +825,8 @@ def _automatic_product_research(
                 rejection_reason=rejection["reason"],
             )
     candidates = compatible_candidates
-    candidates = sorted(candidates, key=candidate_score, reverse=True)
+    source_memory["rejected_candidates"] = list(source_memory.get("rejected_candidates") or []) + candidate_rejections
+    candidates = sorted(candidates, key=candidate_score, reverse=True)[:int(settings.WEB_RESEARCH_MAX_CANDIDATE_URLS)]
     image_before_run = bool(product.image_url)
     # An image result is tied to its product-page source. Prefer the strongest
     # identity match, not merely the provider's first arbitrary result.
@@ -829,6 +848,17 @@ def _automatic_product_research(
         url = str(candidate.get("url") or "").strip()
         domain = (urlparse(url).hostname or "").lower()
         if not url or not domain or domain in seen_domains:
+            continue
+        skip, skip_reason = source_should_be_skipped(source_memory, url)
+        if skip:
+            source_memory["duplicate_work_avoided"] = int(source_memory.get("duplicate_work_avoided") or 0) + 1
+            product_research_log("crawl_skipped", **log_context, url=url, domain=domain, reason=skip_reason)
+            continue
+        if int(source_memory.get("crawl_attempts") or 0) + len(selected) >= int(settings.WEB_RESEARCH_MAX_TOTAL_CRAWLS):
+            product_research_log("crawl_budget_exhausted", **log_context, budget="max_total_crawls")
+            break
+        if sum(1 for attempted in source_memory.get("attempted_urls") or [] if (urlparse(attempted).hostname or "").lower() == domain) >= int(settings.WEB_RESEARCH_MAX_CRAWLS_PER_DOMAIN):
+            product_research_log("crawl_skipped", **log_context, url=url, domain=domain, reason="per_domain_budget")
             continue
         seen_domains.add(domain)
         selected.append((url, domain))
@@ -879,11 +909,17 @@ def _automatic_product_research(
         return any(brand_token in str(domain or "").replace("-", "").replace(".", "") for (domain,) in rows)
 
     def has_formulation_evidence() -> bool:
-        return db.query(Formulation).filter(
+        query = db.query(Formulation).filter(
             Formulation.canonical_product_id == product.id,
             Formulation.is_deleted == False,
             func.length(func.trim(Formulation.raw_inci_text)) > 0,
-        ).first() is not None
+        )
+        if research_variant_id:
+            query = query.filter(or_(
+                Formulation.product_variant_id == research_variant_id,
+                Formulation.product_variant_id.is_(None),
+            ))
+        return query.first() is not None
 
     def has_variant_identity() -> bool:
         row = preferred_product_variant(db, product.id)
@@ -892,6 +928,7 @@ def _automatic_product_research(
     review_signature_before = review_evidence_signature()
     from app.services.review_aggregate import select_review_aggregate
     for url, domain in selected:
+        source_memory["crawl_attempts"] = int(source_memory.get("crawl_attempts") or 0) + 1
         product_research_log("crawl_attempt", **log_context, url=url, domain=domain)
         configuration = {
             "domain": domain, "starting_urls": [url], "crawl_mode": "single_url",
@@ -984,6 +1021,11 @@ def _automatic_product_research(
             )
             if job.products_persisted:
                 completed += 1
+                source_memory = record_source_attempt(
+                    source_memory, url, outcome="success",
+                    max_domain_failures=int(settings.WEB_RESEARCH_MAX_DOMAIN_FAILURES),
+                )
+                checkpoint_source_memory()
                 db.refresh(product)
                 # Official pages commonly provide imagery but no customer-review
                 # aggregate. Continue across distinct sources until both evidence
@@ -1001,9 +1043,31 @@ def _automatic_product_research(
                     break
             elif job.error_summary:
                 errors.append(f"{domain}: {job.error_summary}")
+                failure_class = classify_source_failure(job.error_summary)
+                source_memory = record_source_attempt(
+                    source_memory, url, outcome="failed", reason=failure_class,
+                    max_domain_failures=int(settings.WEB_RESEARCH_MAX_DOMAIN_FAILURES),
+                )
+                checkpoint_source_memory()
+                product_research_log("source_failure_classified", **log_context, url=url, domain=domain,
+                                     failure_class=failure_class)
+            else:
+                source_memory = record_source_attempt(
+                    source_memory, url, outcome="failed", reason="parser_empty",
+                    max_domain_failures=int(settings.WEB_RESEARCH_MAX_DOMAIN_FAILURES),
+                )
+                checkpoint_source_memory()
+                product_research_log("source_failure_classified", **log_context, url=url, domain=domain,
+                                     failure_class="parser_empty")
         except Exception as exc:
             db.rollback()
             errors.append(f"{domain}: {exc}")
+            failure_class = classify_source_failure(str(exc))
+            source_memory = record_source_attempt(
+                source_memory, url, outcome="failed", reason=failure_class,
+                max_domain_failures=int(settings.WEB_RESEARCH_MAX_DOMAIN_FAILURES),
+            )
+            checkpoint_source_memory()
             product_research_log(
                 "crawl_failure", level=__import__("logging").ERROR, **log_context,
                 url=url, domain=domain, error_type=type(exc).__name__, error=str(exc),
@@ -1051,6 +1115,7 @@ def _automatic_product_research(
             if isinstance(sample, dict) and str(sample.get("text") or "").strip()
         } - {""}),
         "review_sample_rejections": review_sample_rejections,
+        "research_state": source_memory,
         "errors": errors,
     }
 
@@ -1062,15 +1127,33 @@ def _enqueue_product_research(
     research_priority: int = 100,
 ) -> CrawlJob:
     from app.services.product_improvement import product_improvement_summary
+    from app.services.research_evidence import research_fingerprint
+    fingerprint = research_fingerprint(product.id, item.product_variant_id, research_objectives or [])
+    if db.bind.dialect.name == "postgresql":
+        # Transaction-scoped lock makes same-fingerprint enqueue idempotent
+        # across web processes without adding a second job table.
+        lock_key = int(fingerprint[:15], 16)
+        db.execute(__import__("sqlalchemy").text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
     active = db.query(CrawlJob).filter(
         CrawlJob.domain == "product-research.internal",
         CrawlJob.status.in_(["queued", "discovering", "crawling", "parsing"]),
     ).order_by(CrawlJob.created_at.desc()).all()
     for job in active:
         config = job.configuration or {}
-        if (str(config.get("research_product_id")) == str(product.id)
-                and str(config.get("research_variant_id") or "") == str(item.product_variant_id or "")):
+        if config.get("research_fingerprint") == fingerprint:
             return job
+    fresh_cutoff = datetime.utcnow() - timedelta(hours=int(settings.WEB_RESEARCH_EVIDENCE_FRESH_HOURS))
+    completed = db.query(CrawlJob).filter(
+        CrawlJob.domain == "product-research.internal",
+        CrawlJob.status.in_(["completed", "partially_completed"]),
+        CrawlJob.completed_at >= fresh_cutoff,
+    ).order_by(CrawlJob.completed_at.desc()).limit(100).all()
+    for previous in completed:
+        config = previous.configuration or {}
+        result = config.get("result") or {}
+        if (config.get("research_fingerprint") == fingerprint
+                and not set(research_objectives or []).intersection(result.get("fields_still_missing") or [])):
+            return previous
     from app.services.product_research_worker import _research_snapshot
     job = CrawlJob(
         id=uuid.uuid4(), domain="product-research.internal", starting_urls=[],
@@ -1085,6 +1168,8 @@ def _enqueue_product_research(
             "research_objectives": research_objectives or [],
             "research_priority": research_priority,
             "research_phase": product_improvement_summary(db, product).get("research_phase"),
+            "research_fingerprint": fingerprint,
+            "research_state": {},
             "before_metrics": _research_snapshot(db, product),
             "discovery": initial_discovery,
             "result": None,
@@ -1153,9 +1238,7 @@ def improve_product(
         # enrichment model consume exact-source observations. Search/crawl
         # failures remain non-fatal so imported data can still be improved.
         from app.services.product_improvement import product_improvement_summary
-        before_quality = product_improvement_summary(db, product)
         from app.services.identity_review import synchronize_blocking_issue
-        synchronize_blocking_issue(db, product, before_quality.get("identity_review") or {})
         research_summary = None
         from app.knowledge_corpus.retrieval import evidence_is_sufficient, retrieve_corpus_evidence
         from app.services.product_identity import preferred_product_variant
@@ -1165,6 +1248,17 @@ def improve_product(
             db, gtin=variant.gtin if variant else "", brand=product.brand.name if product.brand else "",
             product_name=product.product_name, category=category.path if category else "",
         )
+        # Resolve trustworthy local formulation evidence before calculating
+        # paid research objectives. Uploaded source data wins; an exact,
+        # conflict-free corpus formulation fills only a remaining gap.
+        from app.services.formulation_resolution import (
+            promote_exact_corpus_formulation, synchronize_current_source_formulation,
+        )
+        synchronize_current_source_formulation(db, product, variant)
+        promote_exact_corpus_formulation(db, product, variant, corpus_result)
+        db.flush()
+        before_quality = product_improvement_summary(db, product)
+        synchronize_blocking_issue(db, product, before_quality.get("identity_review") or {})
         requested = set(request.fields or []) if request.mode == "selected" else None
         research_objectives = [
             item["field"] for item in before_quality.get("research_objectives") or []
@@ -1189,7 +1283,7 @@ def improve_product(
                 "sources_ingested": 0, "errors": [],
                 "message": "Catalogue enrichment completed. Image and review research is continuing in the background.",
             }
-        if not before_quality.get("identity_review_required"):
+        if not before_quality.get("identity_review_required") and meaningful_gaps:
             process_item_enrichment(
                 db, item, job.column_mapping or {}, mode=request.mode,
                 selected_fields=request.fields,
