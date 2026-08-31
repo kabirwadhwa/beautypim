@@ -205,6 +205,20 @@ def formulation_ingredient_rows(db: Session, formulation: Formulation | None) ->
     ).order_by(FormulationIngredient.position.asc()).all()
 
 
+def is_defensible_key_ingredient(row: FormulationIngredient) -> bool:
+    """Reject legacy/AI key flags unless exact-product highlight evidence exists."""
+    if not row.is_key_ingredient or str(row.evidence_source or "") == "ai_inference":
+        return False
+    evidence = row.evidence if isinstance(row.evidence, list) else [row.evidence]
+    exact_scopes = {"exact_product", "exact_variant", "exact_gtin", "exact_resolved_identity"}
+    return any(
+        isinstance(item, dict)
+        and str(item.get("match_type") or item.get("match_scope") or item.get("identity_scope") or "").lower()
+        in exact_scopes
+        for item in evidence
+    )
+
+
 def apply_key_ingredient_highlights(
     db: Session, formulation: Formulation, highlights: list[str], *, evidence: list[dict[str, Any]],
     source_kind: str, replace_existing: bool = False,

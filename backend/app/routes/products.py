@@ -1759,7 +1759,10 @@ def get_product_detail(
 
     # One deterministic formulation selection is shared by every downstream
     # surface; database row order can never select a sibling formulation.
-    from app.services.formulation_resolution import resolve_selected_formulation, formulation_ingredient_rows
+    from app.services.formulation_resolution import (
+        formulation_ingredient_rows, is_defensible_key_ingredient,
+        resolve_selected_formulation,
+    )
     selected_formulation = resolve_selected_formulation(
         db, product_id, selected_variant.id if selected_variant else None,
     )
@@ -1887,7 +1890,7 @@ def get_product_detail(
                 glossary_source_url=defn.source_url if defn else None,
                 formulation_reference=f.id, identity_evidence=identity_evidence,
             ))
-            if fi.is_key_ingredient:
+            if is_defensible_key_ingredient(fi):
                 key_ingredients_out.append(KeyIngredientOut(
                     name=fi.raw_inci_name,
                     position=fi.position,

@@ -183,6 +183,44 @@ def test_completeness_dimensions_do_not_require_key_ingredients(db):
     assert "key_ingredients" not in [row["field"] for row in summary["research_objectives"]]
 
 
+def test_legacy_ai_key_flags_are_quarantined_from_detail_and_completeness(db):
+    product, first, _ = _product(db)
+    formulation = promote_formulation(
+        db, product=product, variant=first, raw_inci_text="Aqua, Glycerin",
+        source_kind="customer_source", source_reference="customer_import:test",
+    ).formulation
+    glycerin = formulation_ingredient_rows(db, formulation)[1]
+    glycerin.is_key_ingredient = True
+    glycerin.key_ingredient_status = "source_supported"
+    glycerin.evidence_source = "ai_inference"
+    glycerin.evidence = []
+    db.flush()
+
+    detail = get_product_detail(product.id, db, None, first.id)
+    assert detail.key_ingredients == []
+    summary = product_improvement_summary(db, product)
+    assert summary["ingredient_completeness"]["key_ingredient_count"] == 0
+    assert summary["ingredient_completeness"]["key_ingredient_evidence_status"] == "not_published_or_not_found"
+
+
+def test_exact_source_supported_key_highlight_remains_visible(db):
+    product, first, _ = _product(db)
+    formulation = promote_formulation(
+        db, product=product, variant=first, raw_inci_text="Aqua, Glycerin",
+        source_kind="customer_source", source_reference="customer_import:test",
+    ).formulation
+    assert apply_key_ingredient_highlights(
+        db, formulation, ["Glycerin"], source_kind="customer_source",
+        evidence=[{"match_type": "exact_gtin", "source_url": "https://example.com/product"}],
+    ) == 1
+
+    detail = get_product_detail(product.id, db, None, first.id)
+    assert [row.name for row in detail.key_ingredients] == ["Glycerin"]
+    summary = product_improvement_summary(db, product)
+    assert summary["ingredient_completeness"]["key_ingredient_count"] == 1
+    assert summary["ingredient_completeness"]["key_ingredient_evidence_status"] == "source_supported"
+
+
 def test_backfill_dry_run_is_non_mutating_and_external_call_free(db):
     product, first, _ = _product(db)
     db.add(FieldValue(id=uuid.uuid4(), canonical_product_id=product.id, field_name="ingredients",

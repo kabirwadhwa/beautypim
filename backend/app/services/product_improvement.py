@@ -96,7 +96,10 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         required_identity_fields.append("size")
     missing_identity = [key for key in required_identity_fields if not _present(identity.get(key))]
 
-    from app.services.formulation_resolution import resolve_selected_formulation, formulation_ingredient_rows
+    from app.services.formulation_resolution import (
+        formulation_ingredient_rows, is_defensible_key_ingredient,
+        resolve_selected_formulation,
+    )
     selected_formulation = resolve_selected_formulation(db, product.id, variant.id if variant else None)
     formulations = [selected_formulation] if selected_formulation else []
     ingredient_rows = formulation_ingredient_rows(db, selected_formulation)
@@ -114,7 +117,7 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
             definitions[row.ingredient_definition_id].possible_concerns,
         ))
     ]
-    key_rows = [row for row in ingredient_rows if row.is_key_ingredient]
+    key_rows = [row for row in ingredient_rows if is_defensible_key_ingredient(row)]
     coverage_fields = set(current)
     description = (
         current.get("description").value if current.get("description") else None
