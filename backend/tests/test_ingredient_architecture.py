@@ -7,7 +7,7 @@ from pypdf import PdfReader
 from app.auth import create_access_token
 from app.models import (
     Brand, CanonicalProduct, FieldValue, Formulation, FormulationIngredient,
-    IngredientDefinition, ProductVariant,
+    ImportJob, IngredientDefinition, ProductVariant, SourceListing,
 )
 from app.routes.products import get_product_detail
 from app.services.formulation_resolution import (
@@ -80,6 +80,47 @@ def test_ambiguous_product_level_formulation_never_leaks_to_sibling(db):
     detail = get_product_detail(product.id, db, None, first.id)
     assert detail.formulations == []
     assert detail.ingredients == []
+
+
+def test_historical_plan_assigns_product_level_formulation_only_from_exact_source_gtin(db):
+    product, first, second = _product(db)
+    job = ImportJob(
+        id=uuid.uuid4(), filename="ingredients.xlsx", file_hash=uuid.uuid4().hex,
+        column_mapping={}, status="completed",
+    )
+    exact_listing = SourceListing(
+        id=uuid.uuid4(), import_job_id=job.id, canonical_product_id=product.id,
+        raw_data={"EAN code": f" {second.gtin}.0 "}, source_hash=uuid.uuid4().hex,
+    )
+    conflicting_listing = SourceListing(
+        id=uuid.uuid4(), import_job_id=job.id, canonical_product_id=product.id,
+        raw_data={"EAN": "9999999999999"}, source_hash=uuid.uuid4().hex,
+    )
+    exact = Formulation(
+        id=uuid.uuid4(), canonical_product_id=product.id,
+        source_listing_id=exact_listing.id, raw_inci_text="Aqua, Exactol",
+        content_hash=uuid.uuid4().hex,
+    )
+    conflicting = Formulation(
+        id=uuid.uuid4(), canonical_product_id=product.id,
+        source_listing_id=conflicting_listing.id, raw_inci_text="Aqua, Unknownol",
+        content_hash=uuid.uuid4().hex,
+    )
+    db.add_all([job, exact_listing, conflicting_listing, exact, conflicting]); db.flush()
+
+    plan = repair_legacy_ingredient_state(db, dry_run=True)["reconciliation"]
+    assignments = {
+        row["formulation_id"]: row
+        for row in plan["ambiguous_product_level_formulations"]["safe_assignments"]
+    }
+    manual = {
+        row["formulation_id"]: row
+        for row in plan["ambiguous_product_level_formulations"]["manual_review"]
+    }
+    assert assignments[str(exact.id)]["target_variant_id"] == str(second.id)
+    assert "normalized exact GTIN" in assignments[str(exact.id)]["reason"]
+    assert str(conflicting.id) in manual
+    assert resolve_selected_formulation(db, product.id, first.id) is None
 
 
 def test_explicit_exact_highlight_is_key_and_presence_is_not(db):
@@ -262,4 +303,128 @@ def test_backfill_apply_is_idempotent_external_call_free_and_never_guesses_varia
     assert first_run["actions"]["promoted"]["count"] == 1
     assert second_run["actions"]["promoted"]["count"] == 0
     assert second_run["actions"]["already_correct"]["count"] == 1
+    ai.assert_not_called(); research.assert_not_called()
+
+
+def test_historical_definition_reconciliation_is_deterministic_and_preserves_raw_order(db):
+    product, first, _ = _product(db)
+    trusted = IngredientDefinition(
+        id=uuid.uuid4(), name="TOCOPHEROL", normalized_name="tocopherol",
+        common_name="Vitamin E", function="Antioxidant",
+        source_name="European Commission CosIng", source_record_id="COSING-1",
+    )
+    trusted_a = IngredientDefinition(
+        id=uuid.uuid4(), name="ALPHA", normalized_name="alpha", aliases=["Shared exact alias"],
+        source_name="Trusted glossary", source_record_id="TRUST-1",
+    )
+    trusted_b = IngredientDefinition(
+        id=uuid.uuid4(), name="BETA", normalized_name="beta", aliases=["Shared exact alias"],
+        source_name="Trusted glossary", source_record_id="TRUST-2",
+    )
+    suspected_merge = IngredientDefinition(
+        id=uuid.uuid4(), name="Vitamin E", normalized_name="vitamin e",
+        function="AI function", benefits="AI benefit",
+    )
+    suspected_unknown = IngredientDefinition(
+        id=uuid.uuid4(), name="Mystery Complex", normalized_name="mystery complex",
+        function="AI function", benefits="AI benefit",
+    )
+    suspected_ambiguous = IngredientDefinition(
+        id=uuid.uuid4(), name="Shared exact alias", normalized_name="shared exact alias",
+    )
+    false_positive = IngredientDefinition(
+        id=uuid.uuid4(), name="GLYCERIN", normalized_name="glycerin",
+        function="Humectant", source_name="European Commission CosIng", source_record_id="COSING-2",
+    )
+    metadata_cleanup = IngredientDefinition(
+        id=uuid.uuid4(), name="AQUA", normalized_name="aqua", function="AI-added function",
+        benefits="AI-added benefit", possible_concerns="AI-added concern",
+        source_name="European Commission CosIng", source_url="https://ec.europa.eu/growth/tools-databases/cosing/",
+    )
+    db.add_all([
+        trusted, trusted_a, trusted_b, suspected_merge, suspected_unknown,
+        suspected_ambiguous, false_positive, metadata_cleanup,
+    ]); db.flush()
+    formulation = promote_formulation(
+        db, product=product, variant=first,
+        raw_inci_text="Vitamin E, Mystery Complex, Shared exact alias, Glycerin, Aqua",
+        source_kind="customer_source", source_reference="customer_import:test",
+    ).formulation
+    rows = formulation_ingredient_rows(db, formulation)
+    for row, definition in zip(rows, [
+        suspected_merge, suspected_unknown, suspected_ambiguous, false_positive, metadata_cleanup,
+    ]):
+        row.ingredient_definition_id = definition.id
+        row.evidence_source = "ai_inference"
+    db.flush()
+
+    dry = repair_legacy_ingredient_state(db, dry_run=True)
+    summary = dry["reconciliation"]["summary"]
+    assert summary["SAFE_CANONICAL_MERGE"]["definitions"] == 1
+    assert summary["NO_TRUSTED_MATCH"]["definitions"] == 1
+    assert summary["AMBIGUOUS"]["definitions"] == 1
+    assert summary["ALREADY_TRUSTED_FALSE_POSITIVE"]["definitions"] == 0
+    assert summary["TRUSTED_IDENTITY_NEEDS_METADATA_CLEANUP"]["definitions"] == 1
+    assert [row.ingredient_definition_id for row in rows] == [
+        suspected_merge.id, suspected_unknown.id, suspected_ambiguous.id,
+        false_positive.id, metadata_cleanup.id,
+    ]
+
+    applied = repair_legacy_ingredient_state(db, dry_run=False)
+    db.refresh(formulation)
+    refreshed = formulation_ingredient_rows(db, formulation)
+    assert [row.raw_inci_name for row in refreshed] == [
+        "Vitamin E", "Mystery Complex", "Shared exact alias", "Glycerin", "Aqua",
+    ]
+    assert [row.position for row in refreshed] == [1, 2, 3, 4, 5]
+    assert refreshed[0].ingredient_definition_id == trusted.id
+    assert refreshed[1].ingredient_definition_id is None
+    assert refreshed[2].ingredient_definition_id is None
+    assert refreshed[3].ingredient_definition_id == false_positive.id
+    assert refreshed[4].ingredient_definition_id == metadata_cleanup.id
+    db.refresh(metadata_cleanup)
+    assert metadata_cleanup.function is None
+    assert metadata_cleanup.benefits is None
+    assert metadata_cleanup.possible_concerns is None
+    assert applied["actions"]["references_repointed"]["count"] == 1
+    assert applied["actions"]["references_unresolved"]["count"] == 2
+    assert formulation.raw_inci_text == "Vitamin E, Mystery Complex, Shared exact alias, Glycerin, Aqua"
+
+
+def test_historical_cleanup_quarantines_unsafe_keys_archives_legacy_intelligence_and_is_idempotent(db):
+    product, first, _ = _product(db)
+    formulation = promote_formulation(
+        db, product=product, variant=first, raw_inci_text="Aqua, Glycerin",
+        source_kind="customer_source", source_reference="customer_import:test",
+    ).formulation
+    aqua, glycerin = formulation_ingredient_rows(db, formulation)
+    aqua.is_key_ingredient = True
+    aqua.evidence_source = "ai_inference"
+    aqua.evidence = []
+    glycerin.is_key_ingredient = True
+    glycerin.evidence_source = "customer_source"
+    glycerin.evidence = [{"match_type": "exact_gtin", "source_reference": "feed:test"}]
+    legacy = FieldValue(
+        id=uuid.uuid4(), canonical_product_id=product.id,
+        field_name="ingredients_intelligence", value={"key_ingredients": ["Aqua"]},
+        source_type="ai_inference", review_status="confirmed", is_current=True,
+    )
+    db.add(legacy); db.flush()
+
+    with patch("app.worker.run_ai_enrichment") as ai, \
+         patch("app.routes.products._automatic_product_research") as research:
+        dry = repair_legacy_ingredient_state(db, dry_run=True)
+        assert aqua.is_key_ingredient is True and legacy.is_current is True
+        first_run = repair_legacy_ingredient_state(db, dry_run=False)
+        second_run = repair_legacy_ingredient_state(db, dry_run=False)
+    db.refresh(aqua); db.refresh(glycerin); db.refresh(legacy)
+    assert aqua.is_key_ingredient is False
+    assert aqua.key_ingredient_status == "quarantined_legacy_unsupported"
+    assert glycerin.is_key_ingredient is True
+    assert legacy.is_current is False
+    assert dry["reconciliation"]["key_ingredients"]["quarantined_count"] == 1
+    assert dry["reconciliation"]["key_ingredients"]["retained_count"] == 1
+    assert first_run["actions"]["legacy_fields_archived"]["count"] == 1
+    assert second_run["actions"]["legacy_fields_archived"]["count"] == 0
+    assert formulation.raw_inci_text == "Aqua, Glycerin"
     ai.assert_not_called(); research.assert_not_called()

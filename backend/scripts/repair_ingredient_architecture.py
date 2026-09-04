@@ -8,7 +8,10 @@ from app.services.ingredient_backfill import repair_legacy_ingredient_state
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apply", action="store_true", help="Apply safe repairs; default is dry-run")
+    parser.add_argument(
+        "--apply", action="store_true",
+        help="Apply deterministic subset only; ambiguous product-level formulations remain untouched",
+    )
     args = parser.parse_args()
     db = SessionLocal()
     try:
