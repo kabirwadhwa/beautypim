@@ -2009,7 +2009,9 @@ def get_product_detail(
         product_name=prod.product_name, category=category_path or "", max_comparables=3,
     ))
     from app.services.product_improvement import product_improvement_summary
-    completeness = product_improvement_summary(db, prod)
+    completeness = product_improvement_summary(
+        db, prod, selected_variant.id if selected_variant else None,
+    )
     identity_review = completeness.get("identity_review") or {}
 
     from app.services.review_aggregate import select_review_aggregate

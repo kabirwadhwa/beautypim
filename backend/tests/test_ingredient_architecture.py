@@ -70,6 +70,39 @@ def test_selected_variant_is_deterministic_and_sibling_never_leaks(db):
     assert "Secondol" not in pdf_text
 
 
+def test_product_detail_completeness_uses_explicit_selected_variant(db):
+    product, first, second = _product(db)
+    first.variant_name, first.size, first.unit = "200 ml", "200", "ml"
+    second.variant_name, second.size, second.unit = "50 ml", "50", "ml"
+    promote_formulation(
+        db, product=product, variant=first, raw_inci_text="Aqua, Firstol",
+        source_kind="verified_evidence", source_reference="verified:first",
+    )
+    promote_formulation(
+        db, product=product, variant=second, raw_inci_text="Aqua, Secondol, Thirdol",
+        source_kind="verified_evidence", source_reference="verified:second",
+    )
+
+    first_detail = get_product_detail(product.id, db, None, first.id)
+    second_detail = get_product_detail(product.id, db, None, second.id)
+
+    assert first_detail.product_variant_id == first.id
+    assert first_detail.completeness["identity"]["gtin"] == first.gtin
+    assert first_detail.completeness["identity"]["variant"] == "200 ml"
+    assert first_detail.completeness["identity"]["size"] == "200ml"
+    assert first_detail.completeness["ingredient_completeness"]["total_ingredients"] == 2
+    assert [row.raw_inci_text for row in first_detail.formulations] == ["Aqua, Firstol"]
+
+    assert second_detail.product_variant_id == second.id
+    assert second_detail.completeness["identity"]["gtin"] == second.gtin
+    assert second_detail.completeness["identity"]["variant"] == "50 ml"
+    assert second_detail.completeness["identity"]["size"] == "50ml"
+    assert second_detail.completeness["ingredient_completeness"]["total_ingredients"] == 3
+    assert [row.raw_inci_text for row in second_detail.formulations] == ["Aqua, Secondol, Thirdol"]
+    assert first.gtin not in str(second_detail.completeness)
+    assert "Firstol" not in str(second_detail.formulations)
+
+
 def test_ambiguous_product_level_formulation_never_leaks_to_sibling(db):
     product, first, _ = _product(db)
     promote_formulation(

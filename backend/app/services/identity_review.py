@@ -47,10 +47,15 @@ def _human_fields(db: Session, product_id: uuid.UUID) -> set[str]:
     }
 
 
-def _latest_source(db: Session, product_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, str]]:
-    listing = db.query(SourceListing).filter(
+def _latest_source(
+    db: Session, product_id: uuid.UUID, variant_id: uuid.UUID | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    query = db.query(SourceListing).filter(
         SourceListing.canonical_product_id == product_id, SourceListing.is_deleted == False,
-    ).order_by(SourceListing.created_at.desc()).first()
+    )
+    if variant_id is not None:
+        query = query.filter(SourceListing.product_variant_id == variant_id)
+    listing = query.order_by(SourceListing.created_at.desc()).first()
     job = db.query(ImportJob).filter(ImportJob.id == listing.import_job_id).first() if listing else None
     return dict(listing.raw_data or {}) if listing else {}, dict(job.column_mapping or {}) if job else {}
 
@@ -106,6 +111,7 @@ def _reasons(contract: dict[str, Any], summary: dict[str, Any]) -> list[str]:
 
 def does_this_product_require_identity_review(
     db: Session, product: CanonicalProduct, summary: dict[str, Any],
+    variant_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Return the one canonical identity-review decision used by API/workers/UI."""
     contract = current_understanding(db, product.id)
@@ -137,7 +143,7 @@ def does_this_product_require_identity_review(
         review_status = "REVIEWED"
     else:
         review_status = "RESOLVED"
-    raw, mapping = _latest_source(db, product.id)
+    raw, mapping = _latest_source(db, product.id, variant_id)
     resolved = {
         "brand": ((contract.get("identity") or {}).get("consumer_brand") or {}).get("value"),
         "product_family": ((contract.get("identity") or {}).get("product_family") or {}).get("value"),

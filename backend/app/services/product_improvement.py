@@ -40,10 +40,15 @@ def _present(value: Any) -> bool:
     }
 
 
-def _latest_source(db: Session, product_id: uuid.UUID) -> dict[str, Any]:
-    listing = db.query(SourceListing).filter(
+def _latest_source(
+    db: Session, product_id: uuid.UUID, variant_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    query = db.query(SourceListing).filter(
         SourceListing.canonical_product_id == product_id,
-    ).order_by(SourceListing.created_at.desc()).first()
+    )
+    if variant_id is not None:
+        query = query.filter(SourceListing.product_variant_id == variant_id)
+    listing = query.order_by(SourceListing.created_at.desc()).first()
     return dict(listing.raw_data or {}) if listing else {}
 
 
@@ -56,9 +61,18 @@ def _find_value(raw: dict[str, Any], *names: str) -> Any:
     return None
 
 
-def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[str, Any]:
+def product_improvement_summary(
+    db: Session, product: CanonicalProduct, variant_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
     from app.services.product_identity import preferred_product_variant
-    variant = preferred_product_variant(db, product.id)
+    if variant_id is not None:
+        variant = db.query(ProductVariant).filter(
+            ProductVariant.id == variant_id,
+            ProductVariant.canonical_product_id == product.id,
+            ProductVariant.is_deleted == False,
+        ).first()
+    else:
+        variant = preferred_product_variant(db, product.id)
     current = {
         row.field_name: row
         for row in db.query(FieldValue).filter(
@@ -66,7 +80,7 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
             FieldValue.is_current == True,
         ).all()
     }
-    raw = _latest_source(db, product.id)
+    raw = _latest_source(db, product.id, variant.id if variant else variant_id)
     category = db.query(Category).filter(Category.id == product.category_id).first() if product.category_id else None
     format_row = current.get("product_type")
     format_value = (
@@ -251,7 +265,9 @@ def product_improvement_summary(db: Session, product: CanonicalProduct) -> dict[
         },
     }
     from app.services.identity_review import does_this_product_require_identity_review
-    review = does_this_product_require_identity_review(db, product, result)
+    review = does_this_product_require_identity_review(
+        db, product, result, variant_id=variant.id if variant else variant_id,
+    )
     result["identity_review"] = review
     result["identity_review_required"] = review["requires_review"]
     result["identity_review_status"] = review["review_status"]
