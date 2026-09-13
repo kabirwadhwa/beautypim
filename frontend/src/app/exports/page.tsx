@@ -1,12 +1,13 @@
 "use client";
 import { API_URL, BACKEND_URL } from '../../config';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Shell from '../../components/Shell';
 import { Download, Info, RefreshCw } from 'lucide-react';
 import styles from '../page.module.css';
 
 export default function ExportsPage() {
+  const [isExternalViewer, setIsExternalViewer] = useState(false);
   const [mode, setMode] = useState('business');
   const [format, setFormat] = useState('json');
   const [includeInferred, setIncludeInferred] = useState(false);
@@ -14,6 +15,14 @@ export default function ExportsPage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (localStorage.getItem('role') === 'external_viewer') {
+      setIsExternalViewer(true);
+      setMode('business');
+      setWebhookUrl('');
+    }
+  }, []);
 
   const downloadExport = async (downloadUrl: string) => {
     const token = localStorage.getItem("token");
@@ -82,7 +91,7 @@ export default function ExportsPage() {
       <div className={styles.pageHeader}>
         <div className={styles.titleGroup}>
           <h1>Export Center</h1>
-          <p>Export enriched beauty catalog data to CSV, Excel, JSON or distribute via webhook APIs</p>
+          <p>Download approved product catalogue data in a business-friendly format.</p>
         </div>
       </div>
 
@@ -105,7 +114,7 @@ export default function ExportsPage() {
               style={{ backgroundColor: '#0b0f19' }}
             >
               <option value="business">Business Export (Approved values only)</option>
-              <option value="audit">Audit Export (Detailed provenance + warnings history)</option>
+              {!isExternalViewer && <option value="audit">Audit Export (Detailed provenance + warnings history)</option>}
             </select>
           </div>
 
@@ -137,7 +146,7 @@ export default function ExportsPage() {
             </div>
           )}
 
-          <div className={styles.formGroup} style={{ borderTop: '1px solid #2e3c64', paddingTop: 16 }}>
+          {!isExternalViewer && <div className={styles.formGroup} style={{ borderTop: '1px solid #2e3c64', paddingTop: 16 }}>
             <label>API Distribution Webhook Target (Optional)</label>
             <input 
               type="url" 
@@ -146,7 +155,7 @@ export default function ExportsPage() {
               onChange={(e) => setWebhookUrl(e.target.value)}
               className={styles.inputField}
             />
-          </div>
+          </div>}
 
           <button 
             onClick={handleRunExport}
@@ -182,13 +191,13 @@ export default function ExportsPage() {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: 12, borderTop: '1px solid #2e3c64', paddingTop: 16 }}>
+              {!isExternalViewer && <div style={{ display: 'flex', gap: 12, borderTop: '1px solid #2e3c64', paddingTop: 16 }}>
                 <Info size={24} color="#f59e0b" style={{ flexShrink: 0 }} />
                 <div>
                   <div style={{ fontWeight: 600, color: '#f8fafc', marginBottom: 4 }}>Audit Profile</div>
                   <span>Outputs all catalog elements (including pending reviews or rejected duplicates) with raw provenance history logs, token prices, and active warnings list.</span>
                 </div>
-              </div>
+              </div>}
 
               {result && (
                 <div style={{ padding: 12, backgroundColor: 'rgba(16, 185, 129, 0.1)', border: '1px solid #10b981', borderRadius: 4, color: '#10b981', marginTop: 16 }}>

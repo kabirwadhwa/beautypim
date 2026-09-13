@@ -489,7 +489,6 @@ def test_email_service_direct_call(db: Session):
                 role="editor",
                 raw_token="token123",
                 expires_at=datetime.utcnow() + timedelta(days=1),
-                inviter_email="admin@test.com"
             )
             
         mock_smtp.assert_called_once_with(settings.SMTP_HOST, settings.SMTP_PORT, timeout=5)

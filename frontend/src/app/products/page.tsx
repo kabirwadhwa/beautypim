@@ -75,6 +75,7 @@ interface BulkProgress {
 
 export default function ProductsPage() {
   const router = useRouter();
+  const [isExternalViewer, setIsExternalViewer] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -146,7 +147,7 @@ export default function ProductsPage() {
 
       const pageSize = 100;
       const allProducts: Product[] = [];
-      const selectedImportJobId = importFilter === 'latest' ? completedImports[0]?.id : importFilter;
+      const selectedImportJobId = !isExternalViewer && (importFilter === 'latest' ? completedImports[0]?.id : importFilter);
       // The backend intentionally caps each response. Fetch every page so the
       // grid, filters, select-all and bulk actions operate on the full customer
       // catalogue rather than silently stopping at the first 100 products.
@@ -167,11 +168,13 @@ export default function ProductsPage() {
         if (pageProducts.length < pageSize) break;
       }
       setProducts(allProducts);
-      const queueResp = await fetch(`${API_URL}/products/identity-review-queue?limit=100`, { headers, signal });
-      if (queueResp.ok) {
-        const queueData = await queueResp.json();
-        setIdentityQueue(queueData.items || []);
-        setIdentityQueueTotal(queueData.total || 0);
+      if (!isExternalViewer) {
+        const queueResp = await fetch(`${API_URL}/products/identity-review-queue?limit=100`, { headers, signal });
+        if (queueResp.ok) {
+          const queueData = await queueResp.json();
+          setIdentityQueue(queueData.items || []);
+          setIdentityQueueTotal(queueData.total || 0);
+        }
       }
       setSelectedIds(previous => previous.filter(id => allProducts.some(product => (product.product_variant_id || product.product_id) === id)));
     } catch (e: any) {
@@ -180,6 +183,10 @@ export default function ProductsPage() {
       if (!signal?.aborted) setLoading(false);
     }
   };
+
+  useEffect(() => {
+    setIsExternalViewer(localStorage.getItem('role') === 'external_viewer');
+  }, []);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -200,6 +207,7 @@ export default function ProductsPage() {
   useEffect(() => {
     const controller = new AbortController();
     const loadImports = async () => {
+      if (isExternalViewer) return;
       try {
         const token = localStorage.getItem('token');
         const response = await fetch(`${API_URL}/feeds/jobs`, {
@@ -216,13 +224,13 @@ export default function ProductsPage() {
     };
     loadImports();
     return () => controller.abort();
-  }, []);
+  }, [isExternalViewer]);
 
   useEffect(() => {
     const controller = new AbortController();
     fetchProducts(controller.signal);
     return () => controller.abort();
-  }, [debouncedSearch, statusFilter, issueFilter, importFilter, imageFilter, completedImports]);
+  }, [debouncedSearch, statusFilter, issueFilter, importFilter, imageFilter, completedImports, isExternalViewer]);
 
   const changeImportFilter = (value: string) => {
     setImportFilter(value);
@@ -492,11 +500,11 @@ export default function ProductsPage() {
           <p>Verify matching records, review AI validations, and publish clean schemas</p>
         </div>
 
-        {identityQueue.length > 0 && <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setIdentityQueueIndex(0); setShowIdentityQueue(true); }}>
+        {!isExternalViewer && identityQueue.length > 0 && <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setIdentityQueueIndex(0); setShowIdentityQueue(true); }}>
           <AlertTriangle size={15} /> Review identities ({identityQueueTotal})
         </button>}
 
-        {selectedIds.length > 0 && (
+        {!isExternalViewer && selectedIds.length > 0 && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <button onClick={handleExportSelected} className={`${styles.btn} ${styles.btnSecondary}`} disabled={actionLoading}>
               <Download size={15} /> Export selected ({selectedIds.length})
@@ -593,7 +601,7 @@ export default function ProductsPage() {
             <option value="rejected">Rejected</option>
             <option value="published">Published</option>
           </select>
-          <select
+          {!isExternalViewer && <select
             aria-label="Import / Enrichment File"
             value={importFilter}
             onChange={(event) => changeImportFilter(event.target.value)}
@@ -607,7 +615,7 @@ export default function ProductsPage() {
             {completedImports.map(job => (
               <option key={job.id} value={job.id}>{importLabel(job)}</option>
             ))}
-          </select>
+          </select>}
           <select
             aria-label="Image Status"
             value={imageFilter}
@@ -770,13 +778,13 @@ export default function ProductsPage() {
           <table className={styles.denseTable}>
             <thead>
               <tr>
-                <th style={{ width: 40 }}>
+                {!isExternalViewer && <th style={{ width: 40 }}>
                   <input 
                     type="checkbox" 
                     checked={visibleProducts.length > 0 && visibleProducts.every(product => selectedIds.includes(product.product_variant_id || product.product_id))}
                     onChange={(e) => handleSelectAll(e.target.checked)}
                   />
-                </th>
+                </th>}
                 <th>ICN</th>
                 <th>Brand Name</th>
                 <th>Product Name</th>
@@ -802,13 +810,13 @@ export default function ProductsPage() {
               ) : (
                 visibleProducts.map((p) => (
                   <tr key={p.product_variant_id || p.product_id} style={{ cursor: 'pointer' }} onClick={() => router.push(`/products/${p.product_id}${p.product_variant_id ? `?variant=${p.product_variant_id}` : ''}`)}>
-                    <td onClick={(e) => e.stopPropagation()}>
+                    {!isExternalViewer && <td onClick={(e) => e.stopPropagation()}>
                       <input 
                         type="checkbox" 
                         checked={selectedIds.includes(p.product_variant_id || p.product_id)}
                         onChange={() => handleSelectRow(p.product_variant_id || p.product_id)}
                       />
-                    </td>
+                    </td>}
                     <td style={{ fontFamily: 'monospace', color: '#a5b4fc' }} title={p.internal_code}>
                       {p.internal_code.slice(0, 12)}…
                     </td>
@@ -858,7 +866,7 @@ export default function ProductsPage() {
         )}
       </div>
 
-      {showIdentityQueue && identityQueue[identityQueueIndex] && (() => {
+      {!isExternalViewer && showIdentityQueue && identityQueue[identityQueueIndex] && (() => {
         const item = identityQueue[identityQueueIndex];
         return <div style={{ position: 'fixed', inset: 0, zIndex: 1200, background: 'rgba(0,0,0,.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <div data-testid="identity-review-queue" style={{ width: 'min(760px,96vw)', background: '#0d1325', border: '1px solid #f59e0b88', borderRadius: 12, padding: 22 }}>

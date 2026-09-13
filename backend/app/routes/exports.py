@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime
 from app.database import get_db
-from app.auth import get_current_user, require_viewer_or_above
+from app.auth import require_product_reader
 from app.models import CanonicalProduct, ProductVariant, FieldValue, Brand, Category, ValidationIssue
 from app.services.business_export import BUSINESS_EXPORT_COLUMNS, build_business_row
 from app.schemas import ExportRequest, ExportResponse
@@ -19,6 +19,39 @@ from app.config import settings
 from app.services.webhooks import dispatch_webhook_safe
 
 router = APIRouter(prefix="/exports", tags=["Export Center"])
+
+def _authorize_external_export(current_user, mode: str, webhook_url: str | None = None) -> None:
+    if current_user.role != "external_viewer":
+        return
+    if mode != "business" or webhook_url:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
+_EXTERNAL_EXPORT_PRIVATE_KEYS = {
+    "id", "source_listing_id", "source_reference", "created_by_id", "reviewer_id",
+    "requested_by_id", "invited_by_id", "raw_payload", "raw_response", "prompt",
+    "model_config", "token_count", "cost", "internal_path", "worker_metadata",
+}
+
+def _sanitize_external_export_value(value):
+    if isinstance(value, list):
+        return [_sanitize_external_export_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_external_export_value(item)
+            for key, item in value.items() if key not in _EXTERNAL_EXPORT_PRIVATE_KEYS
+        }
+    return value
+
+def _sanitize_external_business_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sanitized = []
+    for row in rows:
+        projected = {key: _sanitize_external_export_value(value) for key, value in row.items()}
+        for internal_column in (
+            "tags", "validation_issue_count", "highest_validation_severity", "created_at", "updated_at",
+        ):
+            projected[internal_column] = ""
+        sanitized.append(projected)
+    return sanitized
 
 
 def _tabular_rows(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -143,13 +176,16 @@ def build_audit_export_data(db: Session) -> List[Dict[str, Any]]:
 def execute_export(
     req: ExportRequest,
     db: Session = Depends(get_db),
-    current_user: Any = Depends(require_viewer_or_above)
+    current_user: Any = Depends(require_product_reader)
 ):
+    _authorize_external_export(current_user, req.export_mode, req.webhook_url)
     # Fetch products mapping
     if req.export_mode == "business":
         data = build_business_export_data(db, req.include_inferred)
     else:
         data = build_audit_export_data(db)
+    if current_user.role == "external_viewer":
+        data = _sanitize_external_business_rows(data)
 
     # Webhook triggers
     webhook_triggered = False
@@ -175,8 +211,9 @@ def download_file(
     inferred: bool = False,
     variant_ids: str | None = None,
     db: Session = Depends(get_db),
-    current_user: Any = Depends(require_viewer_or_above),
+    current_user: Any = Depends(require_product_reader),
 ):
+    _authorize_external_export(current_user, mode)
     if mode == "business":
         parsed_variant_ids = None
         if variant_ids:
@@ -187,6 +224,8 @@ def download_file(
         data = build_business_export_data(db, inferred, parsed_variant_ids)
     else:
         data = build_audit_export_data(db)
+    if current_user.role == "external_viewer":
+        data = _sanitize_external_business_rows(data)
 
     if format == "json":
         json_str = json.dumps(data, indent=2)

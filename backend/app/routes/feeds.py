@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from typing import Dict, Any, List
 import json
 from app.database import get_db
-from app.auth import get_current_user, require_editor_or_admin
+from app.auth import require_internal_viewer_or_above, require_editor_or_admin
 from app.models import ImportJob, ImportJobItem, MappingTemplate, User
 from app.services.ingestion import compute_file_hash, read_preview, suggest_mapping, ingest_file_to_source_listings
 from app.services.source_data_merge import reprocess_import_job_source_data
@@ -67,7 +67,7 @@ async def upload_file_preview(
     }
 
 @router.get("/templates", response_model=List[MappingTemplateOut])
-def get_templates(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_templates(db: Session = Depends(get_db), current_user: User = Depends(require_internal_viewer_or_above)):
     return db.query(MappingTemplate).all()
 
 @router.post("/templates", response_model=MappingTemplateOut)
@@ -234,11 +234,11 @@ async def process_uploaded_file(
         file_cache.pop(request.file_hash, None)
 
 @router.get("/jobs", response_model=List[ImportJobOut])
-def list_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_jobs(db: Session = Depends(get_db), current_user: User = Depends(require_internal_viewer_or_above)):
     return db.query(ImportJob).order_by(ImportJob.created_at.desc()).all()
 
 @router.get("/jobs/{job_id}", response_model=ImportJobOut)
-def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_internal_viewer_or_above)):
     job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -248,7 +248,7 @@ def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User
 def get_job_items(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_internal_viewer_or_above)
 ):
     items = db.query(ImportJobItem).filter(ImportJobItem.import_job_id == job_id).all()
     return items

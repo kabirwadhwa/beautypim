@@ -14,7 +14,7 @@ from app.auth import (
     log_audit_event
 )
 from app.schemas import (
-    UserCreate, UserOut, Token, UserLogin,
+    UserCreate, UserOut, CurrentUserOut, Token, UserLogin,
     UserInvitationValidate, UserInvitationValidateResponse, UserInvitationAccept
 )
 from app.config import settings
@@ -129,7 +129,7 @@ def login_for_access_token(
         "role": user.role
     }
 
-@router.get("/me", response_model=UserOut)
+@router.get("/me", response_model=CurrentUserOut)
 def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 

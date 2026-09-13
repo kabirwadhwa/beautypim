@@ -3,11 +3,16 @@ import re
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, func
 from typing import List, Optional, Dict, Any
 from app.database import get_db
-from app.auth import get_current_user, require_editor_or_admin, require_viewer_or_above
+from app.auth import (
+    get_current_user, require_editor_or_admin, require_internal_viewer_or_above,
+    require_product_reader,
+)
 from app.models import (
     CanonicalProduct, ProductVariant, Brand, Category, FieldValue, 
     ValidationIssue, AuditLog, User, Formulation, ImportJob, ImportJobItem, SourceListing,
@@ -296,7 +301,7 @@ def _set_product_classification(
 @router.get("/metrics")
 def product_metrics(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_internal_viewer_or_above),
 ):
     total_products = db.query(func.count(CanonicalProduct.id)).filter(
         CanonicalProduct.is_deleted == False,
@@ -313,7 +318,7 @@ def product_metrics(
 @router.get("/identity-review-queue")
 def identity_review_queue(
     page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above),
+    db: Session = Depends(get_db), _: User = Depends(require_internal_viewer_or_above),
 ):
     """Efficient persisted queue; opening it never starts AI or web research."""
     issue_query = db.query(ValidationIssue).filter(
@@ -406,7 +411,7 @@ def list_products(
     image_status: Optional[str] = Query(None, pattern="^(has_image|missing_image)$"),
     response: Response = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above)
+    current_user: User = Depends(require_product_reader)
 ):
     # The grid is a variant ledger: canonical identity is shared, but each
     # persisted ProductVariant/EAN is one independently selectable row.
@@ -416,6 +421,8 @@ def list_products(
         CanonicalProduct.is_deleted == False,
         or_(ProductVariant.id.is_(None), ProductVariant.is_deleted == False),
     )
+    if current_user.role == "external_viewer":
+        query = query.filter(CanonicalProduct.review_status.in_(["approved", "published"]))
 
     if import_job_id:
         # Import membership is provenance-based, never inferred from product
@@ -587,10 +594,10 @@ def list_products(
             variant_count=variant_counts.get(prod.id, 0),
             image_url=prod.image_url,
             review_status=prod.review_status,
-            validation_issue_count=len(issues),
-            highest_issue_severity=highest_severity,
-            tags=tags_by_product.get(prod.id, []),
-            identity_review_status=((identity_review_states.get(prod.id) or "NEEDS_REVIEW") if any(
+            validation_issue_count=0 if current_user.role == "external_viewer" else len(issues),
+            highest_issue_severity=None if current_user.role == "external_viewer" else highest_severity,
+            tags=[] if current_user.role == "external_viewer" else tags_by_product.get(prod.id, []),
+            identity_review_status=(("needs_review" if current_user.role == "external_viewer" else identity_review_states.get(prod.id) or "NEEDS_REVIEW") if any(
                 issue.issue_type == "foundational_identity_unresolved" for issue in issues
             ) else None),
             is_deleted=prod.is_deleted,
@@ -678,7 +685,7 @@ def re_enrich_product(
 def product_improvement(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_internal_viewer_or_above),
 ):
     product = db.query(CanonicalProduct).filter(
         CanonicalProduct.id == product_id, CanonicalProduct.is_deleted == False,
@@ -1198,7 +1205,7 @@ def _research_job_payload(job: CrawlJob) -> dict:
 def product_research_status(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _: User = Depends(require_viewer_or_above),
+    _: User = Depends(require_internal_viewer_or_above),
 ):
     jobs = db.query(CrawlJob).filter(
         CrawlJob.domain == "product-research.internal",
@@ -1702,7 +1709,7 @@ def discover_product_source_candidates(
 def product_research_results(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_internal_viewer_or_above),
 ):
     rows = db.query(ScrapedProductObservation).filter(
         or_(
@@ -1721,7 +1728,7 @@ def product_research_results(
 def get_product_detail(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_product_reader),
     variant: Optional[uuid.UUID] = None,
 ):
     prod = db.query(CanonicalProduct).filter(
@@ -1729,6 +1736,8 @@ def get_product_detail(
         CanonicalProduct.is_deleted == False
     ).first()
     if not prod:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if current_user and current_user.role == "external_viewer" and prod.review_status not in {"approved", "published"}:
         raise HTTPException(status_code=404, detail="Product not found")
 
     brand_name = prod.brand.name if prod.brand else None
@@ -2043,7 +2052,7 @@ def get_product_detail(
         })
     source_attributes.sort(key=lambda item: (item["label"].lower(), item["key"]))
 
-    return ProductDetailOut(
+    detail = ProductDetailOut(
         id=prod.id,
         product_id=prod.id,
         product_variant_id=selected_variant.id if selected_variant else None,
@@ -2096,6 +2105,10 @@ def get_product_detail(
         completeness=completeness,
         identity_review=identity_review,
     )
+    if current_user and current_user.role == "external_viewer":
+        from app.services.external_product_view import external_product_detail
+        return JSONResponse(content=jsonable_encoder(external_product_detail(detail)))
+    return detail
 
 @router.put("/{product_id}/image", response_model=ProductDetailOut)
 def update_product_image(
@@ -2156,11 +2169,21 @@ def download_product_pdf(
     product_id: uuid.UUID,
     variant: Optional[uuid.UUID] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_product_reader),
 ):
     from app.services.product_pdf import build_product_pdf
 
-    detail = get_product_detail(product_id, db, current_user, variant)
+    if current_user.role == "external_viewer":
+        readable = db.query(CanonicalProduct.id).filter(
+            CanonicalProduct.id == product_id,
+            CanonicalProduct.is_deleted == False,
+            CanonicalProduct.review_status.in_(["approved", "published"]),
+        ).first()
+        if not readable:
+            raise HTTPException(status_code=404, detail="Product not found")
+    # PDF projection contains only deliberately client-facing product content;
+    # use the canonical model rather than the external JSON response wrapper.
+    detail = get_product_detail(product_id, db, None, variant)
     pdf = build_product_pdf(detail)
     safe_name = "".join(
         character if character.isalnum() or character in {"-", "_"} else "-"
@@ -2592,7 +2615,7 @@ def bulk_improve_products(
 def bulk_improve_status(
     req: BulkImproveStatusRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_viewer_or_above),
+    _: User = Depends(require_internal_viewer_or_above),
 ):
     """Return one authoritative progress snapshot for a set of improvement jobs."""
     job_ids = list(dict.fromkeys(req.research_job_ids))

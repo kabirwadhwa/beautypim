@@ -4,8 +4,8 @@ import { API_URL, BACKEND_URL } from '../../../config';
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Shell from '../../../components/Shell';
-import { 
-  ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle, 
+import {
+  ArrowLeft, CheckCircle2, ShieldAlert, AlertTriangle,
   History, Settings, Sparkles, BookOpen, User,
   ChevronDown, ChevronUp, Info, ExternalLink, RefreshCw, AlertCircle
   , Download, Image as ImageIcon, WandSparkles, Search, X, Star, Tag
@@ -219,10 +219,11 @@ export default function ProductDetailPage() {
   const selectedVariantId = searchParams.get('variant');
 
   const [product, setProduct] = useState<ProductDetail | null>(null);
+  const [isExternalViewer, setIsExternalViewer] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  
+
   // Collapse states for issues
   const [collapseBlocking, setCollapseBlocking] = useState(false);
   const [collapseWarning, setCollapseWarning] = useState(false);
@@ -274,14 +275,14 @@ export default function ProductDetailPage() {
       setCategoryDraft(data.product_category || '');
       setSubcategoryDraft(data.subcategory || '');
       setImageLoadFailed(false);
-      try {
+      if (localStorage.getItem('role') !== 'external_viewer') try {
         const statusResp = await fetch(`${API_URL}/products/${productId}/research-status`, { headers });
         if (statusResp.ok) {
           const status = await statusResp.json();
           setResearchDiagnostics(status.result || null);
         }
       } catch { setResearchDiagnostics(null); }
-      try {
+      if (localStorage.getItem('role') !== 'external_viewer') try {
         const researchResp = await fetch(`${API_URL}/products/${productId}/research-results`, { headers });
         if (researchResp.ok) setResearchResults(await researchResp.json());
       } catch {
@@ -294,6 +295,9 @@ export default function ProductDetailPage() {
       setLoading(false);
     }
   };
+  useEffect(() => {
+    setIsExternalViewer(localStorage.getItem('role') === 'external_viewer');
+  }, []);
   useEffect(() => {
     fetchDetail();
   }, [productId, selectedVariantId]);
@@ -731,7 +735,7 @@ export default function ProductDetailPage() {
     setError(null);
     try {
       const token = localStorage.getItem("token");
-      
+
       // Determine typed value based on registry matching
       let parsedValue: any = overrideValue;
       if (overrideField === 'target_audience') {
@@ -747,7 +751,7 @@ export default function ProductDetailPage() {
       }
       if (overrideValue.toLowerCase() === 'true') parsedValue = true;
       else if (overrideValue.toLowerCase() === 'false') parsedValue = false;
-      
+
       const resp = await fetch(`${API_URL}/products/${productId}`, {
         method: "PUT",
         headers: {
@@ -925,15 +929,15 @@ export default function ProductDetailPage() {
             {pdfLoading ? "Generating..." : "Generate PDF"}
           </button>
 
-          <button
+          {!isExternalViewer && <button
             onClick={openImproveProduct}
             className={`${styles.btn} ${styles.btnPrimary}`}
             title="Resolve identity, research missing evidence and selectively enrich this product"
           >
             <WandSparkles size={16} /> Improve Product
-          </button>
+          </button>}
 
-          <button
+          {!isExternalViewer && <button
             onClick={handleReEnrich}
             className={`${styles.btn} ${styles.btnSecondary}`}
             disabled={reEnrichLoading}
@@ -941,23 +945,23 @@ export default function ProductDetailPage() {
           >
             <RefreshCw size={16} className={reEnrichLoading ? styles.spin : undefined} />
             {reEnrichLoading ? "Enriching..." : "Re-enrich"}
-          </button>
+          </button>}
 
-          <button 
-            onClick={() => handleStatusChange('approve')} 
+          {!isExternalViewer && <button
+            onClick={() => handleStatusChange('approve')}
             className={`${styles.btn} ${styles.btnPrimary}`}
             disabled={blockingIssues.length > 0}
             style={{ opacity: blockingIssues.length > 0 ? 0.5 : 1 }}
           >
             <CheckCircle2 size={16} /> Approve
-          </button>
-          <button 
-            onClick={() => handleStatusChange('reject')} 
+          </button>}
+          {!isExternalViewer && <button
+            onClick={() => handleStatusChange('reject')}
             className={`${styles.btn} ${styles.btnSecondary}`}
             style={{ color: '#ef4444' }}
           >
             <ShieldAlert size={16} /> Reject
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -972,7 +976,7 @@ export default function ProductDetailPage() {
         </div>
       )}
 
-      {product?.identity_review?.requires_review && (
+      {!isExternalViewer && product?.identity_review?.requires_review && (
         <div data-testid="product-identity-review-banner" style={{ marginBottom: 20, padding: 16, border: '1px solid #f59e0b', borderRadius: 8, background: 'rgba(245,158,11,.1)', display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}>
           <div>
             <strong style={{ color: '#fde68a', fontSize: 16 }}>Identity confirmation required</strong>
@@ -1050,14 +1054,14 @@ export default function ProductDetailPage() {
         </div>
       )}
 
-      {blockingIssues.length > 0 && (
+      {!isExternalViewer && blockingIssues.length > 0 && (
         <div style={{ padding: 12, backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', borderRadius: 6, color: '#ef4444', fontSize: 13, marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
           <AlertTriangle size={18} />
           <span>Product cannot be approved until all blocking validation issues are resolved.</span>
         </div>
       )}
 
-      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+      {!isExternalViewer && <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div className={styles.panelTitle}><Settings size={18} color="#a78bfa" /><span>Product Classification</span></div>
         <p style={{ color: '#94a3b8', fontSize: 13, margin: '8px 0 12px' }}>Edit the customer-facing category and subcategory. The full internal taxonomy path is intentionally hidden.</p>
         <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
@@ -1071,9 +1075,9 @@ export default function ProductDetailPage() {
             {classificationSaving ? 'Saving...' : 'Save classification'}
           </button>
         </div>
-      </div>
+      </div>}
 
-      <div className={styles.panelCard} style={{ marginBottom: 20 }}>
+      {!isExternalViewer && <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div className={styles.panelTitle}><Tag size={18} color="#a78bfa" /><span>Product Tags</span></div>
         <p style={{ color: '#94a3b8', fontSize: 13, margin: '8px 0 12px' }}>
           Add operational labels for campaigns, collections, workflows, or internal organisation.
@@ -1106,7 +1110,7 @@ export default function ProductDetailPage() {
             {tagSaving ? 'Saving…' : 'Add tag'}
           </button>
         </div>
-      </div>
+      </div>}
 
       <div className={styles.panelCard} style={{ marginBottom: 20 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 20, alignItems: 'center' }}>
@@ -1137,10 +1141,10 @@ export default function ProductDetailPage() {
               <ImageIcon size={18} color="#60a5fa" />
               <span>Product Image URL</span>
             </div>
-            <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>
+            {!isExternalViewer && <p style={{ color: '#94a3b8', fontSize: 13, marginBottom: 12 }}>
               Add a public HTTPS image URL. It will appear on this page and in generated product PDFs.
-            </p>
-            <div style={{ display: 'flex', gap: 10 }}>
+            </p>}
+            {!isExternalViewer && <div style={{ display: 'flex', gap: 10 }}>
               <input
                 type="url"
                 value={imageUrlDraft}
@@ -1159,7 +1163,7 @@ export default function ProductDetailPage() {
               >
                 {imageSaving ? "Saving..." : "Save Image"}
               </button>
-            </div>
+            </div>}
             {product?.image_url && (
               <a
                 href={product.image_url}
@@ -1327,7 +1331,7 @@ export default function ProductDetailPage() {
         </div>
       )}
 
-      {researchDiagnostics && <details className={styles.panelCard} style={{ marginBottom: 20 }}>
+      {!isExternalViewer && researchDiagnostics && <details className={styles.panelCard} style={{ marginBottom: 20 }}>
         <summary className={styles.panelTitle} style={{ cursor: 'pointer' }}><Search size={18} color="#60a5fa"/><span>Research details</span></summary>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 14 }}>
           {[
@@ -1371,20 +1375,20 @@ export default function ProductDetailPage() {
                       </div>
 
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <button 
+                        {!isExternalViewer && <button
                           onClick={() => toggleFieldExpand(field)}
                           className={styles.btnSecondary}
                           style={{ padding: '6px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
                         >
                           {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />} Evidence
-                        </button>
-                        <button 
-                          onClick={() => openOverrideModal(field, fv?.value)} 
+                        </button>}
+                        {!isExternalViewer && <button
+                          onClick={() => openOverrideModal(field, fv?.value)}
                           className={`${styles.btn} ${styles.btnSecondary}`}
                           style={{ padding: '6px 12px', fontSize: 11, borderColor: '#4f46e555' }}
                         >
                           Override
-                        </button>
+                        </button>}
                       </div>
                     </div>
 
@@ -1424,7 +1428,7 @@ export default function ProductDetailPage() {
                             <span>Run: {new Date(fv.enrichment_run.created_at).toLocaleString()}</span>
                           </div>
                         )}
-                        
+
                         {fv?.override_reason && (
                           <div style={{ marginTop: 10, padding: 8, backgroundColor: 'rgba(245,158,11,0.05)', border: '1px solid #f59e0b33', borderRadius: 4 }}>
                             <div style={{ fontWeight: 600, color: '#f59e0b', marginBottom: 2 }}>Override Audit Log Reason:</div>
@@ -1444,7 +1448,7 @@ export default function ProductDetailPage() {
                       {prettyStructuredValue(currentValDict.target_audience?.value).slice(0, 3).map((profile, index) => <li key={index}>{profile}</li>)}
                     </ul>
                   </div>
-                  <button onClick={() => openOverrideModal('target_audience', currentValDict.target_audience?.value)} className={`${styles.btn} ${styles.btnSecondary}`} style={{ alignSelf: 'start' }}>Override</button>
+                  {!isExternalViewer && <button onClick={() => openOverrideModal('target_audience', currentValDict.target_audience?.value)} className={`${styles.btn} ${styles.btnSecondary}`} style={{ alignSelf: 'start' }}>Override</button>}
                 </div>
               </div>
             </div>
@@ -1492,7 +1496,7 @@ export default function ProductDetailPage() {
                         <div style={{ fontWeight: 700, color: '#f1f5f9', fontSize: 14 }}>{ing.name}</div>
                         <div style={{ fontSize: 11, color: '#94a3b8' }}>INCI position: {ing.position || 'Not recorded'}</div>
                       </div>
-                      
+
                       {ing.is_key_ingredient && <span className={`${styles.badge} ${styles.badgeSuccess}`}>KEY INGREDIENT</span>}
                     </div>
 
@@ -1551,7 +1555,7 @@ export default function ProductDetailPage() {
 
         <div>
           {/* Validation Issues Panel (Collapsible severity groups) */}
-          <div className={styles.panelCard}>
+          {!isExternalViewer && <div className={styles.panelCard}>
             <div className={styles.panelTitle} style={{ borderBottom: '1px solid #1e293b', paddingBottom: 10 }}>
               <ShieldAlert size={18} color="#ef4444" />
               <span>Validation Warning Alerts ({activeIssues.length})</span>
@@ -1567,7 +1571,7 @@ export default function ProductDetailPage() {
                 <>
                   {/* Blocking Issues */}
                   <div style={{ border: '1px solid #ef444433', borderRadius: 6, overflow: 'hidden' }}>
-                    <button 
+                    <button
                       onClick={() => setCollapseBlocking(!collapseBlocking)}
                       style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: 'rgba(239, 68, 68, 0.05)', color: '#f87171', border: 'none', fontWeight: 600, fontSize: 13, textAlign: 'left', cursor: 'pointer' }}
                     >
@@ -1592,7 +1596,7 @@ export default function ProductDetailPage() {
 
                   {/* Warning Issues */}
                   <div style={{ border: '1px solid #f59e0b33', borderRadius: 6, overflow: 'hidden' }}>
-                    <button 
+                    <button
                       onClick={() => setCollapseWarning(!collapseWarning)}
                       style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: 'rgba(245, 158, 11, 0.05)', color: '#fbbf24', border: 'none', fontWeight: 600, fontSize: 13, textAlign: 'left', cursor: 'pointer' }}
                     >
@@ -1617,7 +1621,7 @@ export default function ProductDetailPage() {
 
                   {/* Info Issues */}
                   <div style={{ border: '1px solid #3b82f633', borderRadius: 6, overflow: 'hidden' }}>
-                    <button 
+                    <button
                       onClick={() => setCollapseInfo(!collapseInfo)}
                       style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: 'rgba(59, 130, 246, 0.05)', color: '#60a5fa', border: 'none', fontWeight: 600, fontSize: 13, textAlign: 'left', cursor: 'pointer' }}
                     >
@@ -1642,7 +1646,7 @@ export default function ProductDetailPage() {
                 </>
               )}
             </div>
-          </div>
+          </div>}
 
           {/* Dynamic Concerns Panel */}
           {product?.dynamic_concerns && product.dynamic_concerns.length > 0 && (
@@ -1676,7 +1680,7 @@ export default function ProductDetailPage() {
           )}
 
           {/* Change History audit log */}
-          <div className={styles.panelCard}>
+          {!isExternalViewer && <div className={styles.panelCard}>
             <div className={styles.panelTitle}>
               <History size={18} color="#6366f1" />
               <span>Provenance Modification Logs</span>
@@ -1698,12 +1702,12 @@ export default function ProductDetailPage() {
                 </div>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
       </div>
 
       {/* Guided product improvement modal */}
-      {showImprove && (
+      {!isExternalViewer && showImprove && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.78)', zIndex: 1100, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
           <div style={{ width: 'min(920px, 96vw)', maxHeight: '92vh', overflowY: 'auto', background: '#0d1325', border: '1px solid #3b82f666', borderRadius: 12, padding: 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'start' }}>
@@ -1906,7 +1910,7 @@ export default function ProductDetailPage() {
       )}
 
       {/* Override Modal */}
-      {showOverride && (
+      {!isExternalViewer && showOverride && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
@@ -1938,7 +1942,7 @@ export default function ProductDetailPage() {
                 </label>
                 {/* Switch inputs dynamically for claims versus text fields */}
                 {overrideField && claimOverrideFields.includes(overrideField) ? (
-                  <select 
+                  <select
                     className={styles.inputField}
                     value={overrideValue}
                     onChange={(e) => setOverrideValue(e.target.value)}
@@ -1968,7 +1972,7 @@ export default function ProductDetailPage() {
                     style={{ backgroundColor: '#0f172a', color: '#f1f5f9', border: '1px solid #334155', fontFamily: 'monospace' }}
                   />
                 ) : (
-                  <input 
+                  <input
                     type="text"
                     className={styles.inputField}
                     value={overrideValue}
@@ -1983,7 +1987,7 @@ export default function ProductDetailPage() {
                 <label style={{ display: 'block', fontSize: 12, color: '#94a3b8', marginBottom: 6, fontWeight: 500 }}>
                   Reason for Override
                 </label>
-                <textarea 
+                <textarea
                   className={styles.inputField}
                   value={overrideReason}
                   onChange={(e) => setOverrideReason(e.target.value)}
@@ -1994,14 +1998,14 @@ export default function ProductDetailPage() {
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 12 }}>
-                <button 
-                  onClick={() => setShowOverride(false)} 
+                <button
+                  onClick={() => setShowOverride(false)}
                   className={styles.btnSecondary}
                 >
                   Cancel
                 </button>
-                <button 
-                  onClick={handleSaveField} 
+                <button
+                  onClick={handleSaveField}
                   className={`${styles.btn} ${styles.btnPrimary}`}
                   disabled={saveLoading || !overrideValue.trim() || !overrideReason.trim()}
                   style={{ opacity: (!overrideValue.trim() || !overrideReason.trim()) ? 0.5 : 1 }}

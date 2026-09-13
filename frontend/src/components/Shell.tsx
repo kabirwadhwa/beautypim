@@ -46,6 +46,9 @@ export default function Shell({ children }: ShellProps) {
       localStorage.setItem("email", user.email);
       setRole(user.role);
       setEmail(user.email);
+      if (user.role === 'external_viewer' && !pathname.startsWith('/products') && !pathname.startsWith('/exports')) {
+        router.replace('/products');
+      }
       setLoading(false);
     }).catch(() => {
       if (!active) return;
@@ -54,7 +57,7 @@ export default function Shell({ children }: ShellProps) {
     });
 
     return () => { active = false; };
-  }, [router]);
+  }, [router, pathname]);
 
   const handleLogout = () => {
     localStorage.clear();
@@ -65,7 +68,10 @@ export default function Shell({ children }: ShellProps) {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#64748b' }}>Authenticating session...</div>;
   }
 
-  const navItems = [
+  const navItems = role === 'external_viewer' ? [
+    { name: 'Product Grid', path: '/products', icon: TableProperties },
+    { name: 'Export Center', path: '/exports', icon: Download },
+  ] : [
     { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Feeds Ingest', path: '/imports', icon: FileInput },
     { name: 'Product Grid', path: '/products', icon: TableProperties },
@@ -105,7 +111,7 @@ export default function Shell({ children }: ShellProps) {
         <div className={styles.sidebarFooter}>
           <div style={{ marginBottom: 12, fontSize: 12 }}>
             <div style={{ fontWeight: 600, color: '#f8fafc' }}>{email || 'User'}</div>
-            <div style={{ color: '#64748b', textTransform: 'capitalize' }}>Role: {role || 'viewer'}</div>
+            <div style={{ color: '#64748b', textTransform: 'capitalize' }}>Role: {role === 'external_viewer' ? 'External viewer' : role || 'viewer'}</div>
           </div>
           <div className={styles.navLink} onClick={handleLogout} style={{ cursor: 'pointer', borderTop: '1px solid #2e3c64', paddingTop: 12 }}>
             <LogOut size={18} />

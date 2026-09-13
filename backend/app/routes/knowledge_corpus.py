@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.auth import require_admin, require_viewer_or_above
+from app.auth import require_admin, require_internal_viewer_or_above
 from app.database import get_db
 from app.knowledge_corpus.import_service import corpus_metrics
 from app.knowledge_corpus.retrieval import retrieve_corpus_evidence
@@ -20,7 +20,7 @@ def _job(item: KnowledgeCorpusImportJob):
 
 
 @router.get("/metrics")
-def metrics(db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above)):
+def metrics(db: Session = Depends(get_db), _: User = Depends(require_internal_viewer_or_above)):
     return corpus_metrics(db)
 
 

@@ -101,11 +101,25 @@ async def lifespan(app: FastAPI):
             for thread in threads:
                 thread.join(timeout=5)
 
+def api_documentation_urls(environment: str) -> dict[str, str | None]:
+    production = environment == "production"
+    return {
+        "docs_url": None if production else "/docs",
+        "redoc_url": None if production else "/redoc",
+        "openapi_url": None if production else "/openapi.json",
+    }
+
+is_production = settings.ENVIRONMENT == "production"
+cors_origins = [
+    value.strip().rstrip("/")
+    for value in (settings.CORS_ALLOWED_ORIGINS or settings.FRONTEND_URL).split(",")
+    if value.strip()
+]
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc"
+    **api_documentation_urls(settings.ENVIRONMENT),
 )
 
 
@@ -113,7 +127,7 @@ app = FastAPI(
 # CORS configurations
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, lock down based on config
+    allow_origins=cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,8 +156,9 @@ def readiness_check(db: Session = Depends(get_db)):
         # Run simple query to check DB availability
         db.execute(text("SELECT 1"))
         return {"status": "ready"}
-    except Exception as e:
+    except Exception:
+        logger.exception("Readiness database check failed.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Database not ready: {str(e)}"
+            detail="Service is not ready."
         )

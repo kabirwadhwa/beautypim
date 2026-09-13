@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     
     # Deployment environment
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    CORS_ALLOWED_ORIGINS: Optional[str] = os.getenv("CORS_ALLOWED_ORIGINS", None)
     
     # Account Bootstrap Options
     ALLOW_INITIAL_ADMIN_BOOTSTRAP: bool = os.getenv("ALLOW_INITIAL_ADMIN_BOOTSTRAP", "false").lower() in ("true", "1")
@@ -42,6 +43,17 @@ class Settings(BaseSettings):
             if not self.SECRET_KEY or self.SECRET_KEY in defaults or len(self.SECRET_KEY) < 32:
                 raise ValueError(
                     "Production SECRET_KEY must be set, not use default keys, and be at least 32 characters."
+                )
+            origins = [
+                value.strip().rstrip("/")
+                for value in (self.CORS_ALLOWED_ORIGINS or self.FRONTEND_URL).split(",")
+                if value.strip()
+            ]
+            if not origins or "*" in origins or any(
+                not value.startswith("https://") for value in origins
+            ):
+                raise ValueError(
+                    "Production CORS requires explicit HTTPS origins via CORS_ALLOWED_ORIGINS or FRONTEND_URL."
                 )
     
     # Gemini AI API

@@ -16,7 +16,6 @@ class BaseEmailService:
         role: str,
         raw_token: str,
         expires_at: datetime,
-        inviter_email: str
     ) -> None:
         raise NotImplementedError()
 
@@ -27,7 +26,6 @@ class SMTPEmailService(BaseEmailService):
         role: str,
         raw_token: str,
         expires_at: datetime,
-        inviter_email: str
     ) -> None:
         # Build the secure accept invitation link
         # The raw token only appears here.
@@ -46,7 +44,7 @@ class SMTPEmailService(BaseEmailService):
         subject = f"You have been invited to join Beauty PIM"
         body = (
             f"Hello,\n\n"
-            f"You have been invited to join Beauty PIM by {inviter_email} with the role of '{role}'.\n\n"
+            f"You have been invited to join Beauty PIM with the role of '{role}'.\n\n"
             f"To accept this invitation and set up your password, please click the link below:\n"
             f"{accept_link}\n\n"
             f"This invitation will expire on {expires_str}.\n\n"
@@ -92,7 +90,6 @@ class ResendEmailService(BaseEmailService):
         role: str,
         raw_token: str,
         expires_at: datetime,
-        inviter_email: str
     ) -> None:
         if not settings.RESEND_API_KEY:
             raise RuntimeError("Resend email delivery is not configured.")
@@ -101,8 +98,7 @@ class ResendEmailService(BaseEmailService):
         expires_str = expires_at.strftime("%Y-%m-%d %H:%M:%S UTC")
         text = (
             "Hello,\n\n"
-            f"You have been invited to join Beauty PIM by {inviter_email} "
-            f"with the role of '{role}'.\n\n"
+            f"You have been invited to join Beauty PIM with the role of '{role}'.\n\n"
             "To accept this invitation and set up your password, open:\n"
             f"{accept_link}\n\n"
             f"This invitation expires on {expires_str}.\n\n"

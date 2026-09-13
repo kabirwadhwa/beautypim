@@ -30,7 +30,6 @@ def test_resend_sends_invitation_over_https(monkeypatch):
             role="editor",
             raw_token="secret-token",
             expires_at=datetime.utcnow() + timedelta(hours=72),
-            inviter_email="admin@example.com",
         )
 
     kwargs = post.call_args.kwargs
@@ -38,6 +37,7 @@ def test_resend_sends_invitation_over_https(monkeypatch):
     assert kwargs["headers"]["Authorization"] == "Bearer re_test"
     assert kwargs["json"]["to"] == ["invitee@example.com"]
     assert "secret-token" in kwargs["json"]["text"]
+    assert "admin@example.com" not in kwargs["json"]["text"]
 
 
 def test_resend_error_does_not_expose_token(monkeypatch):
@@ -52,7 +52,6 @@ def test_resend_error_does_not_expose_token(monkeypatch):
                 role="viewer",
                 raw_token="must-not-leak",
                 expires_at=datetime.utcnow() + timedelta(hours=72),
-                inviter_email="admin@example.com",
             )
 
     assert "must-not-leak" not in str(exc.value)

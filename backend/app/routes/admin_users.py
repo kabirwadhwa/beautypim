@@ -28,7 +28,7 @@ def create_user_directly(
 ):
     """Create an active team member without relying on email delivery."""
     norm_email = normalize_email(data.email)
-    if data.role not in ["admin", "editor", "viewer"]:
+    if data.role not in ["admin", "editor", "viewer", "external_viewer"]:
         raise HTTPException(status_code=400, detail="Invalid role selected.")
     validate_password_strength(data.password)
 
@@ -161,7 +161,7 @@ def create_invitation(
 ):
     norm_email = normalize_email(data.email)
     
-    if data.role not in ["admin", "editor", "viewer"]:
+    if data.role not in ["admin", "editor", "viewer", "external_viewer"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid role selected."
@@ -245,7 +245,6 @@ def create_invitation(
             role=invitation.role,
             raw_token=raw_token,
             expires_at=expires_at,
-            inviter_email=current_admin.email
         )
     except Exception as e:
         delivery_status = "failed"
@@ -383,7 +382,6 @@ def resend_invitation(
             role=invitation.role,
             raw_token=raw_token,
             expires_at=expires_at,
-            inviter_email=current_admin.email
         )
     except Exception as e:
         delivery_status = "failed"
@@ -464,7 +462,7 @@ def change_user_role(
     current_admin: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
-    if data.role not in ["admin", "editor", "viewer"]:
+    if data.role not in ["admin", "editor", "viewer", "external_viewer"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid role specified."

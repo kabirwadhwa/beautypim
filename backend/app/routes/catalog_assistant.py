@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import require_viewer_or_above
+from app.auth import require_internal_viewer_or_above
 from app.config import settings
 from app.database import get_db
 from app.limiter import rate_limit
@@ -871,7 +871,7 @@ def generate_grounded_answer(
 def catalogue_chat(
     request: CatalogueChatRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_internal_viewer_or_above),
 ):
     brands = [row[0] for row in db.query(Brand.name).order_by(Brand.name).all()]
     categories = [row[0] for row in db.query(Category.path).order_by(Category.path).all()]

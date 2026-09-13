@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, log_audit_event, require_editor_or_admin, require_viewer_or_above
+from app.auth import get_current_user, log_audit_event, require_editor_or_admin, require_internal_viewer_or_above
 from app.database import get_db
 from app.limiter import rate_limit
 from app.models import (
@@ -85,14 +85,14 @@ def create_job(
 
 
 @router.get("")
-def list_jobs(db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above)):
+def list_jobs(db: Session = Depends(get_db), _: User = Depends(require_internal_viewer_or_above)):
     return [_serialize(job) for job in db.query(CrawlJob).filter(
         CrawlJob.domain != "product-research.internal",
     ).order_by(CrawlJob.created_at.desc()).limit(100)]
 
 
 @router.get("/{job_id}")
-def job_status(job_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above)):
+def job_status(job_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_internal_viewer_or_above)):
     return _serialize(_job(db, job_id))
 
 
@@ -137,7 +137,7 @@ def cancel(job_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depend
 def urls(
     job_id: uuid.UUID, state: Optional[str] = None, page_type: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db),
-    _: User = Depends(require_viewer_or_above),
+    _: User = Depends(require_internal_viewer_or_above),
 ):
     _job(db, job_id)
     query = db.query(CrawlUrl).filter(CrawlUrl.crawl_job_id == job_id)
@@ -190,7 +190,7 @@ def recrawl(
 
 
 @router.get("/{job_id}/products")
-def products(job_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above)):
+def products(job_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_internal_viewer_or_above)):
     _job(db, job_id)
     rows = db.query(ScrapedProductObservation).filter(
         ScrapedProductObservation.crawl_job_id == job_id,
@@ -253,7 +253,7 @@ def review_possible_match(
 
 
 @router.get("/{job_id}/conflicts")
-def conflicts(job_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_viewer_or_above)):
+def conflicts(job_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_internal_viewer_or_above)):
     _job(db, job_id)
     rows = db.query(CrawlConflict).filter(CrawlConflict.crawl_job_id == job_id).order_by(CrawlConflict.created_at.desc())
     return [{

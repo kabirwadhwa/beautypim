@@ -13,7 +13,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     display_name = Column(String(120), nullable=True, index=True)
     hashed_password = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False) # admin, editor, viewer
+    role = Column(String(50), nullable=False) # admin, editor, viewer, external_viewer
     is_active = Column(Boolean, default=True, nullable=False)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     invited_by_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
@@ -23,14 +23,14 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
-        CheckConstraint(role.in_(['admin', 'editor', 'viewer']), name='check_user_role'),
+        CheckConstraint(role.in_(['admin', 'editor', 'viewer', 'external_viewer']), name='check_user_role'),
     )
 
 class UserInvitation(Base):
     __tablename__ = 'user_invitations'
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     email = Column(String(255), nullable=False, index=True)
-    role = Column(String(50), nullable=False) # admin, editor, viewer
+    role = Column(String(50), nullable=False) # admin, editor, viewer, external_viewer
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     invited_by_id = Column(GUID, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     status = Column(String(50), nullable=False, default='pending') # pending, accepted, revoked, expired
@@ -45,7 +45,7 @@ class UserInvitation(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
-        CheckConstraint(role.in_(['admin', 'editor', 'viewer']), name='check_invitation_role'),
+        CheckConstraint(role.in_(['admin', 'editor', 'viewer', 'external_viewer']), name='check_invitation_role'),
         CheckConstraint(status.in_(['pending', 'accepted', 'revoked', 'expired']), name='check_invitation_status'),
         Index('uq_invitation_pending_email', 'email', unique=True, 
               sqlite_where=text("status = 'pending'"),

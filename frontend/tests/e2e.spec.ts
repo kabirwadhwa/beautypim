@@ -2,6 +2,31 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Beauty PIM End-to-End Workflows', () => {
 
+  test('external viewer receives a clean product-only read experience', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('token', 'external-token'));
+    const internalRequests: string[] = [];
+    await page.route('**/api/auth/me', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ id: '00000000-0000-4000-8000-000000000001', email: 'external@example.com', display_name: 'External', role: 'external_viewer' }),
+    }));
+    await page.route('**/api/feeds/**', route => { internalRequests.push(route.request().url()); return route.fulfill({ status: 403 }); });
+    await page.route('**/api/products/identity-review-queue**', route => { internalRequests.push(route.request().url()); return route.fulfill({ status: 403 }); });
+    await page.route('**/api/products?**', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify([]),
+    }));
+
+    await page.goto('/dashboard');
+    await expect(page).toHaveURL(/\/products$/);
+    await expect(page.getByRole('link', { name: 'Product Grid' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Export Center' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Feeds Ingest' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'AI Catalogue Chat' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Team & Access' })).toHaveCount(0);
+    await expect(page.getByLabel('Import / Enrichment File')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Improve selected/i })).toHaveCount(0);
+    expect(internalRequests).toEqual([]);
+  });
+
   test('Product Grid filters overlapping variants by import provenance and keeps it in the URL', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('token', 'import-filter-token'));
     await page.route('**/api/auth/me', route => route.fulfill({

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.auth import require_editor_or_admin, require_viewer_or_above
+from app.auth import require_editor_or_admin, require_product_reader
 from app.database import get_db
 from app.models import Category, CanonicalProduct, User
 from app.schemas import CategoryCreate, CategoryOut, CategoryUpdate
@@ -37,7 +37,7 @@ def _category_output(db: Session, category: Category) -> CategoryOut:
 @router.get("", response_model=List[CategoryOut])
 def list_categories(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_viewer_or_above),
+    current_user: User = Depends(require_product_reader),
 ):
     categories = db.query(Category).order_by(Category.path.asc()).all()
     return [_category_output(db, category) for category in categories]

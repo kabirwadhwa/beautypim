@@ -107,14 +107,18 @@ class RoleChecker:
         if current_user.role not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{current_user.role}' is not authorized to access this resource. Required: {self.allowed_roles}"
+                detail="You are not authorized to access this resource."
             )
         return current_user
 
 # Common injection dependencies
 require_admin = RoleChecker(["admin"])
 require_editor_or_admin = RoleChecker(["admin", "editor"])
-require_viewer_or_above = RoleChecker(["admin", "editor", "viewer"])
+require_internal_viewer_or_above = RoleChecker(["admin", "editor", "viewer"])
+require_product_reader = RoleChecker(["admin", "editor", "viewer", "external_viewer"])
+# Backwards-compatible name for internal-only routes. New code should use the
+# explicit dependency that documents whether external product readers belong.
+require_viewer_or_above = require_internal_viewer_or_above
 
 def log_audit_event(
     db: Session,
