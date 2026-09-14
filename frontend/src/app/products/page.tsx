@@ -616,7 +616,7 @@ export default function ProductsPage() {
               <option key={job.id} value={job.id}>{importLabel(job)}</option>
             ))}
           </select>}
-          {!isExternalViewer && <select
+          <select
             aria-label="Image Status"
             value={imageFilter}
             onChange={(event) => changeImageFilter(event.target.value)}
@@ -626,7 +626,7 @@ export default function ProductsPage() {
             <option value="">All</option>
             <option value="has_image">Has image</option>
             <option value="missing_image">Missing image</option>
-          </select>}
+          </select>
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
@@ -636,7 +636,7 @@ export default function ProductsPage() {
             <option value="">All categories</option>
             {categoryOptions.map(category => <option key={category} value={category}>{category}</option>)}
           </select>
-          <select
+          {!isExternalViewer && <select
             value={tagFilter}
             onChange={(e) => setTagFilter(e.target.value)}
             className={styles.inputField}
@@ -644,7 +644,7 @@ export default function ProductsPage() {
           >
             <option value="">All tags</option>
             {tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}
-          </select>
+          </select>}
           <select
             value={productTypeFilter}
             onChange={(e) => setProductTypeFilter(e.target.value)}
