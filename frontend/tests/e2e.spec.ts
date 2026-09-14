@@ -23,6 +23,12 @@ test.describe('Beauty PIM End-to-End Workflows', () => {
     await expect(page.getByRole('link', { name: 'AI Catalogue Chat' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Team & Access' })).toHaveCount(0);
     await expect(page.getByLabel('Import / Enrichment File')).toHaveCount(0);
+    await expect(page.getByRole('option', { name: 'Needs identity review' })).toHaveCount(0);
+    await expect(page.getByRole('option', { name: 'All issue states' })).toHaveCount(0);
+    await expect(page.getByRole('option', { name: 'All tags' })).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: 'Identity' })).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: 'Issues' })).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: 'Review State' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Improve selected/i })).toHaveCount(0);
     expect(internalRequests).toEqual([]);
   });

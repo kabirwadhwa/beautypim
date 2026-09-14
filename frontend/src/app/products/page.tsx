@@ -497,7 +497,7 @@ export default function ProductsPage() {
       <div className={styles.pageHeader}>
         <div className={styles.titleGroup}>
           <h1>Canonical Products Catalog</h1>
-          <p>Verify matching records, review AI validations, and publish clean schemas</p>
+          <p>{isExternalViewer ? 'Browse approved product information and downloadable product sheets' : 'Verify matching records, review AI validations, and publish clean schemas'}</p>
         </div>
 
         {!isExternalViewer && identityQueue.length > 0 && <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setIdentityQueueIndex(0); setShowIdentityQueue(true); }}>
@@ -584,7 +584,7 @@ export default function ProductsPage() {
 
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
           <Filter size={18} color="#94a3b8" />
-          <select 
+          {!isExternalViewer && <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className={styles.inputField}
@@ -600,7 +600,7 @@ export default function ProductsPage() {
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
             <option value="published">Published</option>
-          </select>
+          </select>}
           {!isExternalViewer && <select
             aria-label="Import / Enrichment File"
             value={importFilter}
@@ -616,7 +616,7 @@ export default function ProductsPage() {
               <option key={job.id} value={job.id}>{importLabel(job)}</option>
             ))}
           </select>}
-          <select
+          {!isExternalViewer && <select
             aria-label="Image Status"
             value={imageFilter}
             onChange={(event) => changeImageFilter(event.target.value)}
@@ -626,7 +626,7 @@ export default function ProductsPage() {
             <option value="">All</option>
             <option value="has_image">Has image</option>
             <option value="missing_image">Missing image</option>
-          </select>
+          </select>}
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
@@ -655,7 +655,7 @@ export default function ProductsPage() {
             {productTypeOptions.map(type => <option key={type} value={type}>{type}</option>)}
           </select>
 
-          <select 
+          {!isExternalViewer && <select
             value={issueFilter === null ? '' : String(issueFilter)}
             onChange={(e) => {
               const val = e.target.value;
@@ -667,7 +667,7 @@ export default function ProductsPage() {
             <option value="">All issue states</option>
             <option value="true">Has validation issues</option>
             <option value="false">Clear of issues</option>
-          </select>
+          </select>}
           {(search || statusFilter || issueFilter !== null || categoryFilter || productTypeFilter || tagFilter || importFilter || imageFilter) && (
             <button
               type="button"
@@ -793,17 +793,17 @@ export default function ProductsPage() {
                 <th>Category</th>
                 <th>Subcategory</th>
                 <th>Product Type</th>
-                <th>Tags</th>
-                <th>Identity</th>
-                <th>Issues</th>
-                <th>Review State</th>
+                {!isExternalViewer && <th>Tags</th>}
+                {!isExternalViewer && <th>Identity</th>}
+                {!isExternalViewer && <th>Issues</th>}
+                {!isExternalViewer && <th>Review State</th>}
                 <th style={{ width: 80 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {visibleProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={14} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
+                  <td colSpan={isExternalViewer ? 10 : 14} style={{ textAlign: 'center', color: '#64748b', padding: 24 }}>
                     No products found matching active filter parameters.
                   </td>
                 </tr>
@@ -827,15 +827,15 @@ export default function ProductsPage() {
                     <td>{p.product_category || "—"}</td>
                     <td style={{ color: '#c4b5fd' }}>{p.subcategory || "—"}</td>
                     <td style={{ color: '#94a3b8' }}>{p.product_type || "—"}</td>
-                    <td>
+                    {!isExternalViewer && <td>
                       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', minWidth: 110 }}>
                         {(p.tags || []).length ? p.tags.map(tag => (
                           <span key={tag} className={`${styles.badge} ${styles.badgeNeutral}`}>{tag}</span>
                         )) : <span style={{ color: '#64748b' }}>—</span>}
                       </div>
-                    </td>
-                    <td>{p.identity_review_status ? <span className={`${styles.badge} ${styles.badgeWarning}`}>{p.identity_review_status === 'SKIPPED' ? 'Deferred' : p.identity_review_status === 'CONFLICT' ? 'Conflict' : 'Needs review'}</span> : <span style={{ color: '#64748b' }}>—</span>}</td>
-                    <td>
+                    </td>}
+                    {!isExternalViewer && <td>{p.identity_review_status ? <span className={`${styles.badge} ${styles.badgeWarning}`}>{p.identity_review_status === 'SKIPPED' ? 'Deferred' : p.identity_review_status === 'CONFLICT' ? 'Conflict' : 'Needs review'}</span> : <span style={{ color: '#64748b' }}>—</span>}</td>}
+                    {!isExternalViewer && <td>
                       {p.validation_issue_count > 0 ? (
                         <span className={`${styles.badge} ${p.highest_issue_severity === 'blocking' ? styles.badgeDanger : styles.badgeWarning}`}>
                           <AlertTriangle size={11} /> {p.validation_issue_count}
@@ -843,12 +843,12 @@ export default function ProductsPage() {
                       ) : (
                         <span className={`${styles.badge} ${styles.badgeSuccess}`}>Clear</span>
                       )}
-                    </td>
-                    <td>
+                    </td>}
+                    {!isExternalViewer && <td>
                       <span className={`${styles.badge} ${getStatusClass(p.review_status)}`}>
                         {p.review_status}
                       </span>
-                    </td>
+                    </td>}
                     <td onClick={(e) => e.stopPropagation()}>
                       <button 
                         onClick={() => router.push(`/products/${p.product_id}${p.product_variant_id ? `?variant=${p.product_variant_id}` : ''}`)}
