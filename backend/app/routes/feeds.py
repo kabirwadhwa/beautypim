@@ -1,15 +1,19 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Dict, Any, List
 import json
 from app.database import get_db
-from app.auth import require_internal_viewer_or_above, require_editor_or_admin
+from app.auth import require_admin, require_internal_viewer_or_above, require_editor_or_admin
 from app.models import ImportJob, ImportJobItem, MappingTemplate, User
 from app.services.ingestion import compute_file_hash, read_preview, suggest_mapping, ingest_file_to_source_listings
 from app.services.source_data_merge import reprocess_import_job_source_data
 from app.worker import run_job_in_background
-from app.schemas import ImportJobOut, ImportJobItemOut, MappingTemplateOut, MappingTemplateCreate, IngestProcessRequest
+from app.schemas import (
+    ActiveImportJobItemOut, ActiveImportJobOut, ImportJobOut, ImportJobItemOut,
+    MappingTemplateOut, MappingTemplateCreate, IngestProcessRequest,
+)
 
 from app.limiter import rate_limit
 from app.config import settings
@@ -20,6 +24,31 @@ router = APIRouter(prefix="/feeds", tags=["Feeds Ingestion"])
 # In production, files would be written to a temp folder or S3 bucket.
 # For MVP, we cache file bytes indexed by file_hash
 file_cache: Dict[str, bytes] = {}
+
+ACTIVE_JOB_TERMINAL_GRACE = timedelta(minutes=30)
+
+
+def _editor_may_monitor_current_job(job: ImportJob, current_user: User) -> bool:
+    if current_user.role == "admin":
+        return True
+    if current_user.role != "editor" or job.created_by_id != current_user.id:
+        return False
+    if job.status in {"pending", "processing"}:
+        return True
+    last_activity = job.updated_at or job.created_at
+    if last_activity is None:
+        return False
+    if last_activity.tzinfo is None:
+        last_activity = last_activity.replace(tzinfo=timezone.utc)
+    return last_activity >= datetime.now(timezone.utc) - ACTIVE_JOB_TERMINAL_GRACE
+
+
+def _get_monitorable_job(db: Session, job_id: uuid.UUID, current_user: User) -> ImportJob:
+    job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+    if not job or not _editor_may_monitor_current_job(job, current_user):
+        # Hide the existence of another user's or historical job.
+        raise HTTPException(status_code=404, detail="Active import job not found")
+    return job
 
 @router.post("/upload", status_code=status.HTTP_200_OK, dependencies=[Depends(rate_limit("upload", "RATE_LIMIT_UPLOADS"))])
 async def upload_file_preview(
@@ -89,7 +118,7 @@ def create_template(
     db.refresh(template)
     return template
 
-@router.post("/process", response_model=ImportJobOut, dependencies=[Depends(rate_limit("process", "RATE_LIMIT_PROCESS"))])
+@router.post("/process", response_model=ActiveImportJobOut, dependencies=[Depends(rate_limit("process", "RATE_LIMIT_PROCESS"))])
 def process_ingest(
     request: IngestProcessRequest,
     background_tasks: BackgroundTasks,
@@ -115,14 +144,19 @@ def process_ingest(
             )
     elif policy == "resume_previous":
         # Find latest job with this hash
-        existing_job = db.query(ImportJob).filter(
-            ImportJob.file_hash == request.file_hash
-        ).order_by(ImportJob.created_at.desc() if hasattr(ImportJob, 'created_at') else ImportJob.id).first()
+        existing_query = db.query(ImportJob).filter(ImportJob.file_hash == request.file_hash)
+        if current_user.role != "admin":
+            existing_query = existing_query.filter(ImportJob.created_by_id == current_user.id)
+        existing_job = existing_query.order_by(
+            ImportJob.created_at.desc() if hasattr(ImportJob, 'created_at') else ImportJob.id
+        ).first()
         
         if existing_job:
-            if existing_job.status in ["pending", "processing", "completed"]:
+            if existing_job.status in ["pending", "processing"] or (
+                current_user.role == "admin" and existing_job.status == "completed"
+            ):
                 return existing_job
-            else:
+            elif existing_job.status in ["failed", "cancelled"]:
                 # Resume failed/cancelled job
                 from app.models import ImportJobItem
                 existing_job.status = "pending"
@@ -133,6 +167,8 @@ def process_ingest(
                 db.commit()
                 background_tasks.add_task(run_job_in_background, existing_job.id)
                 return existing_job
+            # A completed editor job is historical and is not returned or
+            # reopened. Continue below and create a new ingestion version.
     # if policy == "create_new_version", we ignore and create a new job.
 
     # Create Job record
@@ -195,7 +231,7 @@ def process_ingest(
 
     return job
 
-@router.post("/process-upload", response_model=ImportJobOut, dependencies=[Depends(rate_limit("process", "RATE_LIMIT_PROCESS"))])
+@router.post("/process-upload", response_model=ActiveImportJobOut, dependencies=[Depends(rate_limit("process", "RATE_LIMIT_PROCESS"))])
 async def process_uploaded_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -234,11 +270,11 @@ async def process_uploaded_file(
         file_cache.pop(request.file_hash, None)
 
 @router.get("/jobs", response_model=List[ImportJobOut])
-def list_jobs(db: Session = Depends(get_db), current_user: User = Depends(require_internal_viewer_or_above)):
+def list_jobs(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     return db.query(ImportJob).order_by(ImportJob.created_at.desc()).all()
 
 @router.get("/jobs/{job_id}", response_model=ImportJobOut)
-def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_internal_viewer_or_above)):
+def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -248,16 +284,33 @@ def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User
 def get_job_items(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_internal_viewer_or_above)
+    current_user: User = Depends(require_admin)
 ):
     items = db.query(ImportJobItem).filter(ImportJobItem.import_job_id == job_id).all()
     return items
+
+@router.get("/active-jobs/{job_id}", response_model=ActiveImportJobOut)
+def get_active_owned_job(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    return _get_monitorable_job(db, job_id, current_user)
+
+@router.get("/active-jobs/{job_id}/items", response_model=List[ActiveImportJobItemOut])
+def get_active_owned_job_items(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    _get_monitorable_job(db, job_id, current_user)
+    return db.query(ImportJobItem).filter(ImportJobItem.import_job_id == job_id).all()
 
 @router.post("/jobs/{job_id}/reprocess-source-data")
 def reprocess_stored_source_data(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_editor_or_admin),
+    current_user: User = Depends(require_admin),
 ):
     """Reapply preserved rows without file upload, AI, web research, or crawling."""
     try:
@@ -270,7 +323,7 @@ def reprocess_stored_source_data(
 def cancel_job(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_editor_or_admin)
+    current_user: User = Depends(require_admin)
 ):
     job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
     if not job:
@@ -286,5 +339,22 @@ def cancel_job(
         ImportJobItem.status == "pending"
     ).update({"status": "cancelled", "enrichment_status": "cancelled"})
     
+    db.commit()
+    return job
+
+@router.post("/active-jobs/{job_id}/cancel", response_model=ActiveImportJobOut)
+def cancel_active_owned_job(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor_or_admin),
+):
+    job = _get_monitorable_job(db, job_id, current_user)
+    if job.status not in ["pending", "processing"]:
+        raise HTTPException(status_code=400, detail="Cannot cancel completed/failed job")
+    job.status = "cancelled"
+    db.query(ImportJobItem).filter(
+        ImportJobItem.import_job_id == job_id,
+        ImportJobItem.status == "pending",
+    ).update({"status": "cancelled", "enrichment_status": "cancelled"})
     db.commit()
     return job

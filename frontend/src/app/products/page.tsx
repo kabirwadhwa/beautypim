@@ -76,6 +76,7 @@ interface BulkProgress {
 export default function ProductsPage() {
   const router = useRouter();
   const [isExternalViewer, setIsExternalViewer] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -147,7 +148,7 @@ export default function ProductsPage() {
 
       const pageSize = 100;
       const allProducts: Product[] = [];
-      const selectedImportJobId = !isExternalViewer && (importFilter === 'latest' ? completedImports[0]?.id : importFilter);
+      const selectedImportJobId = isAdmin && (importFilter === 'latest' ? completedImports[0]?.id : importFilter);
       // The backend intentionally caps each response. Fetch every page so the
       // grid, filters, select-all and bulk actions operate on the full customer
       // catalogue rather than silently stopping at the first 100 products.
@@ -185,7 +186,9 @@ export default function ProductsPage() {
   };
 
   useEffect(() => {
-    setIsExternalViewer(localStorage.getItem('role') === 'external_viewer');
+    const role = localStorage.getItem('role');
+    setIsExternalViewer(role === 'external_viewer');
+    setIsAdmin(role === 'admin');
   }, []);
 
   useEffect(() => {
@@ -207,7 +210,7 @@ export default function ProductsPage() {
   useEffect(() => {
     const controller = new AbortController();
     const loadImports = async () => {
-      if (isExternalViewer) return;
+      if (!isAdmin) return;
       try {
         const token = localStorage.getItem('token');
         const response = await fetch(`${API_URL}/feeds/jobs`, {
@@ -224,13 +227,13 @@ export default function ProductsPage() {
     };
     loadImports();
     return () => controller.abort();
-  }, [isExternalViewer]);
+  }, [isAdmin]);
 
   useEffect(() => {
     const controller = new AbortController();
     fetchProducts(controller.signal);
     return () => controller.abort();
-  }, [debouncedSearch, statusFilter, issueFilter, importFilter, imageFilter, completedImports, isExternalViewer]);
+  }, [debouncedSearch, statusFilter, issueFilter, importFilter, imageFilter, completedImports, isExternalViewer, isAdmin]);
 
   const changeImportFilter = (value: string) => {
     setImportFilter(value);
@@ -601,7 +604,7 @@ export default function ProductsPage() {
             <option value="rejected">Rejected</option>
             <option value="published">Published</option>
           </select>}
-          {!isExternalViewer && <select
+          {isAdmin && <select
             aria-label="Import / Enrichment File"
             value={importFilter}
             onChange={(event) => changeImportFilter(event.target.value)}

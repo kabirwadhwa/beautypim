@@ -3,7 +3,7 @@ import { API_URL, BACKEND_URL } from '../../config';
 
 import React, { useEffect, useState } from 'react';
 import Shell from '../../components/Shell';
-import { Play, FileText, CheckCircle2, ShieldAlert, BarChart3, HelpCircle } from 'lucide-react';
+import { FileText, CheckCircle2, ShieldAlert, BarChart3 } from 'lucide-react';
 import styles from '../page.module.css';
 
 interface Job {
@@ -17,6 +17,7 @@ interface Job {
 
 export default function DashboardPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [role, setRole] = useState<string | null>(null);
   const [productsCount, setProductsCount] = useState(0);
   const [issuesCount, setIssuesCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -27,18 +28,25 @@ export default function DashboardPage() {
         const token = localStorage.getItem("token");
         const headers = { "Authorization": `Bearer ${token}` };
 
-        const [jobsResp, metricsResp] = await Promise.all([
-          fetch(`${API_URL}/feeds/jobs`, { headers }),
-          fetch(`${API_URL}/products/metrics`, { headers }),
-        ]);
-        if (!jobsResp.ok || !metricsResp.ok) {
+        const meResp = await fetch(`${API_URL}/auth/me`, { headers });
+        if (!meResp.ok) throw new Error("Unable to verify dashboard access.");
+        const me = await meResp.json();
+        setRole(me.role);
+        if (me.role === 'external_viewer') return;
+
+        const metricsResp = await fetch(`${API_URL}/products/metrics`, { headers });
+        if (!metricsResp.ok) {
           throw new Error("Unable to load dashboard metrics.");
         }
-        const jobsData = await jobsResp.json();
         const metrics = await metricsResp.json();
-        setJobs(Array.isArray(jobsData) ? jobsData : []);
         setProductsCount(Number(metrics.total_products) || 0);
         setIssuesCount(Number(metrics.unresolved_issues) || 0);
+        if (me.role === 'admin') {
+          const jobsResp = await fetch(`${API_URL}/feeds/jobs`, { headers });
+          if (!jobsResp.ok) throw new Error("Unable to load ingestion history.");
+          const jobsData = await jobsResp.json();
+          setJobs(Array.isArray(jobsData) ? jobsData : []);
+        }
       } catch (e) {
         console.error(e);
       } finally {
@@ -63,7 +71,7 @@ export default function DashboardPage() {
       <div className={styles.pageHeader}>
         <div className={styles.titleGroup}>
           <h1>PIM Intelligence Dashboard</h1>
-          <p>Real-time overview of catalog health, import jobs, and AI enrichments</p>
+          <p>{role === 'admin' ? 'Real-time overview of catalog health, import jobs, and AI enrichments' : 'Real-time overview of catalog health and quality'}</p>
         </div>
       </div>
 
@@ -101,17 +109,17 @@ export default function DashboardPage() {
               <div className={styles.metricSub}>Active warnings requiring review</div>
             </div>
 
-            <div className={styles.metricCard}>
+            {role === 'admin' && <div className={styles.metricCard}>
               <div className={styles.metricCardHeader}>
                 <span>Ingestion Jobs Run</span>
                 <BarChart3 size={18} color="#6366f1" />
               </div>
               <div className={styles.metricValue}>{jobs.length}</div>
               <div className={styles.metricSub}>Completed pipeline jobs</div>
-            </div>
+            </div>}
           </div>
 
-          <div className={styles.panelCard}>
+          {role === 'admin' && <div className={styles.panelCard}>
             <div className={styles.panelTitle}>
               <span>Active & Recent Feed Ingestion Jobs</span>
             </div>
@@ -152,7 +160,7 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </div>}
         </>
       )}
     </Shell>

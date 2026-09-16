@@ -14,7 +14,6 @@ interface Job {
   total_rows: number;
   processed_rows: number;
   error_message: string | null;
-  created_at: string;
 }
 
 interface JobItem {
@@ -43,12 +42,12 @@ export default function JobProgressPage() {
       const token = localStorage.getItem("token");
       const headers = { "Authorization": `Bearer ${token}` };
 
-      const jobResp = await fetch(`${API_URL}/feeds/jobs/${jobId}`, { headers });
+      const jobResp = await fetch(`${API_URL}/feeds/active-jobs/${jobId}`, { headers });
       if (!jobResp.ok) throw new Error("Failed to load job status.");
       const jobData = await jobResp.json();
       setJob(jobData);
 
-      const itemsResp = await fetch(`${API_URL}/feeds/jobs/${jobId}/items`, { headers });
+      const itemsResp = await fetch(`${API_URL}/feeds/active-jobs/${jobId}/items`, { headers });
       if (itemsResp.ok) {
         const itemsData = await itemsResp.json();
         setItems(itemsData || []);
@@ -78,7 +77,7 @@ export default function JobProgressPage() {
   const handleCancelJob = async () => {
     try {
       const token = localStorage.getItem("token");
-      await fetch(`${API_URL}/feeds/jobs/${jobId}/cancel`, {
+      await fetch(`${API_URL}/feeds/active-jobs/${jobId}/cancel`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });

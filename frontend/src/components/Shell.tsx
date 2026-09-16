@@ -48,6 +48,8 @@ export default function Shell({ children }: ShellProps) {
       setEmail(user.email);
       if (user.role === 'external_viewer' && !pathname.startsWith('/products') && !pathname.startsWith('/exports')) {
         router.replace('/products');
+      } else if (user.role === 'viewer' && pathname.startsWith('/imports')) {
+        router.replace('/dashboard');
       }
       setLoading(false);
     }).catch(() => {
@@ -73,12 +75,15 @@ export default function Shell({ children }: ShellProps) {
     { name: 'Export Center', path: '/exports', icon: Download },
   ] : [
     { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
-    { name: 'Feeds Ingest', path: '/imports', icon: FileInput },
     { name: 'Product Grid', path: '/products', icon: TableProperties },
     { name: 'AI Catalogue Chat', path: '/assistant', icon: MessageCircle },
     { name: 'Export Center', path: '/exports', icon: Download },
     { name: 'Taxonomy Settings', path: '/settings/taxonomies', icon: Settings },
   ];
+
+  if (role === 'admin' || role === 'editor') {
+    navItems.splice(1, 0, { name: 'Feeds Ingest', path: '/imports', icon: FileInput });
+  }
 
   if (role === 'admin' || role === 'editor') {
     navItems.push({ name: 'Knowledge Crawl', path: '/knowledge-crawl', icon: Globe2 });

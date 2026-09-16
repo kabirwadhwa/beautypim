@@ -126,6 +126,18 @@ class ImportJobOut(BaseModel):
     class Config:
         from_attributes = True
 
+class ActiveImportJobOut(BaseModel):
+    """Minimal owner-scoped status for the ingestion workflow; not job history."""
+    id: uuid.UUID
+    filename: str
+    status: str
+    total_rows: int
+    processed_rows: int
+    error_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 class ImportJobItemOut(BaseModel):
     id: uuid.UUID
     import_job_id: uuid.UUID
@@ -141,6 +153,19 @@ class ImportJobItemOut(BaseModel):
     failure_code: Optional[str] = None
     failure_message: Optional[str] = None
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ActiveImportJobItemOut(BaseModel):
+    id: uuid.UUID
+    source_row_number: int
+    status: str
+    match_status: str
+    duplicate_score: float
+    enrichment_status: str
+    failure_code: Optional[str] = None
+    failure_message: Optional[str] = None
 
     class Config:
         from_attributes = True

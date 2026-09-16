@@ -2,6 +2,58 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Beauty PIM End-to-End Workflows', () => {
 
+  test('admin dashboard retains ingestion history', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('token', 'admin-token'));
+    await page.route('**/api/auth/me', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ id: '00000000-0000-4000-8000-000000000001', email: 'admin@example.com', role: 'admin' }),
+    }));
+    await page.route('**/api/products/metrics', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ total_products: 10, unresolved_issues: 2 }),
+    }));
+    await page.route('**/api/feeds/jobs', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify([{
+        id: '10000000-0000-4000-8000-000000000001', filename: 'admin-history.xlsx', status: 'completed',
+        total_rows: 4, processed_rows: 4, created_at: '2026-09-16T10:00:00Z',
+      }]),
+    }));
+    await page.goto('/dashboard');
+    await expect(page.getByText('Ingestion Jobs Run')).toBeVisible();
+    await expect(page.getByText('Active & Recent Feed Ingestion Jobs')).toBeVisible();
+    await expect(page.getByText('admin-history.xlsx')).toBeVisible();
+  });
+
+  test('editor and viewer dashboards never request or render global feed history', async ({ browser }) => {
+    for (const role of ['editor', 'viewer']) {
+      const page = await browser.newPage();
+      await page.addInitScript(() => localStorage.setItem('token', 'non-admin-token'));
+      let historyRequests = 0;
+      await page.route('**/api/auth/me', route => route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ id: '00000000-0000-4000-8000-000000000002', email: `${role}@example.com`, role }),
+      }));
+      await page.route('**/api/products/metrics', route => route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({ total_products: 10, unresolved_issues: 2 }),
+      }));
+      await page.route('**/api/feeds/jobs', route => {
+        historyRequests += 1;
+        return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Forbidden' }) });
+      });
+      await page.goto('/dashboard');
+      await expect(page.getByText('Total Catalog Products')).toBeVisible();
+      await expect(page.getByText('Ingestion Jobs Run')).toHaveCount(0);
+      await expect(page.getByText('Active & Recent Feed Ingestion Jobs')).toHaveCount(0);
+      await expect(page.getByText('admin-history.xlsx')).toHaveCount(0);
+      await expect(page.getByRole('link', { name: 'Feeds Ingest' })).toHaveCount(role === 'editor' ? 1 : 0);
+      expect(historyRequests).toBe(0);
+      if (role === 'viewer') {
+        await page.goto('/imports');
+        await expect(page).toHaveURL(/\/dashboard$/);
+      }
+      await page.close();
+    }
+  });
+
   test('external viewer receives a clean product-only read experience', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('token', 'external-token'));
     const internalRequests: string[] = [];

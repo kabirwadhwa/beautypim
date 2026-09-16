@@ -90,6 +90,8 @@ def test_external_viewer_direct_internal_and_mutation_requests_are_forbidden(cli
         ("get", "/api/admin/users", None),
         ("get", "/api/admin/invitations", None),
         ("get", "/api/feeds/jobs", None),
+        ("get", f"/api/feeds/jobs/{uuid.uuid4()}", None),
+        ("get", f"/api/feeds/jobs/{uuid.uuid4()}/items", None),
         ("get", "/api/crawl-jobs", None),
         ("get", "/api/knowledge-corpus/metrics", None),
         ("get", "/api/products/metrics", None),
