@@ -25,6 +25,41 @@ RESEARCH_DOMAIN = "product-research.internal"
 ACTIVE_STATUSES = {"queued", "discovering", "crawling", "parsing"}
 
 
+def _record_research_usage(
+    db, *, usage, model, provider, product_id, product_variant_id,
+    research_job_id, requested_by_id, web_search_calls: int = 0,
+) -> None:
+    """Persist what a paid research pass consumed. Never raises.
+
+    The provider reports token counts under the Responses API's
+    ``input_tokens``/``output_tokens`` names, and bills web searches as tool
+    calls on top of tokens, so both are carried through.
+    """
+    try:
+        from app.services.ai_pricing import normalize_openai_usage
+        from app.services.ai_usage import record_ai_usage
+
+        counts = normalize_openai_usage(usage)
+        if not (counts["prompt_tokens"] or counts["completion_tokens"] or web_search_calls):
+            return
+        record_ai_usage(
+            db, operation="web_research",
+            provider="OpenAI" if provider == "openai" else str(provider),
+            model=model,
+            prompt_tokens=counts["prompt_tokens"],
+            completion_tokens=counts["completion_tokens"],
+            cached_prompt_tokens=counts["cached_prompt_tokens"],
+            reasoning_tokens=counts["reasoning_tokens"],
+            web_search_calls=web_search_calls,
+            canonical_product_id=product_id,
+            product_variant_id=product_variant_id,
+            research_job_id=research_job_id,
+            requested_by_id=requested_by_id,
+        )
+    except Exception as exc:  # pragma: no cover - accounting is best-effort
+        logger.warning("Could not record research usage for job %s: %s", research_job_id, exc)
+
+
 def _enforce_discovery_exclusions(discovery: dict, source_memory: dict) -> tuple[dict, list[dict]]:
     from app.services.research_evidence import normalize_research_url
     excluded_urls = set(source_memory.get("attempted_urls") or [])
@@ -775,6 +810,21 @@ def run_product_research_job(job_id: uuid.UUID, stop_event: threading.Event | No
         result["active_allowed_domains"] = discovery.get("domains") or []
         result["queries_attempted"] = len(result.get("identity_queries_tried") or []) + max(0, len(research_objectives) * 2)
         result["provider_usage"] = discovery.get("usage") or {}
+        # Paid web research is the most expensive call in the product, and its
+        # usage previously existed only as a log line. Persist it so it can be
+        # attributed to this job and product like every other spend.
+        _record_research_usage(
+            db,
+            usage=result["provider_usage"],
+            model=discovery.get("model") or settings.OPENAI_WEB_SEARCH_MODEL,
+            provider=discovery.get("provider") or "openai",
+            product_id=product.id,
+            product_variant_id=variant.id if variant else None,
+            research_job_id=job.id,
+            requested_by_id=job.requested_by_id,
+            web_search_calls=int(source_memory.get("provider_searches") or 0)
+            or int(discovery.get("provider_attempts") or 0),
+        )
         result["research_state"] = source_memory
         result["research_fingerprint"] = configuration.get("research_fingerprint")
         result["duplicate_work_avoided"] = int(source_memory.get("duplicate_work_avoided") or 0)

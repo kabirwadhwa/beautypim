@@ -1,4 +1,5 @@
 import json
+import logging
 import requests
 import hashlib
 import uuid
@@ -8,12 +9,20 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.schemas import BeautyProductEnrichmentSchema
 from app.models import EnrichmentRun
+from app.services.ai_pricing import (
+    estimate_cost,
+    normalize_gemini_usage,
+    normalize_openai_usage,
+)
+from app.services.ai_usage import record_ai_usage, response_elapsed_ms
 from app.services.category_completeness import quality_gate
 from app.services.ingredient_knowledge import (
     build_ingredient_grounding_context,
     ground_fallback_ingredients,
     retrieve_ingredient_knowledge,
 )
+
+logger = logging.getLogger(__name__)
 
 BALANCED_INFERENCE_GUIDANCE = (
     "Return useful universal catalogue fields and exactly one applicable category module. For classification fields "
@@ -521,22 +530,31 @@ def run_ai_enrichment(
         response = None
         candidate_text = None
         prompt_t = complete_t = None
+        usage_counts: Dict[str, int] = {}
         cost = None
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             response_json = response.json()
-            
+
             if "error" in response_json:
                 raise Exception(f"OpenAI API Error: {response_json['error'].get('message', 'Unknown error')}")
             if response.status_code != 200:
                 raise Exception(f"OpenAI API returned status code {response.status_code}: {response.text}")
-                
+
             candidate_text = response_json["choices"][0]["message"]["content"]
-            
-            prompt_t = response_json.get("usage", {}).get("prompt_tokens", calculate_token_count_rough(prompt))
-            complete_t = response_json.get("usage", {}).get("completion_tokens", calculate_token_count_rough(candidate_text))
-            cost = (prompt_t * 0.00015 / 1000) + (complete_t * 0.0006 / 1000)
-            
+
+            usage_counts = normalize_openai_usage(response_json.get("usage"))
+            prompt_t = usage_counts["prompt_tokens"] or calculate_token_count_rough(prompt)
+            complete_t = usage_counts["completion_tokens"] or calculate_token_count_rough(candidate_text)
+            usage_counts["prompt_tokens"] = prompt_t
+            usage_counts["completion_tokens"] = complete_t
+            cost, _ = estimate_cost(
+                settings.OPENAI_MODEL, prompt_t, complete_t,
+                cached_prompt_tokens=usage_counts.get("cached_prompt_tokens"),
+                reasoning_tokens=usage_counts.get("reasoning_tokens"),
+                db=db,
+            )
+
             parsed_data = normalize_provider_shapes(
                 normalize_null_confidences(json.loads(candidate_text))
             )
@@ -573,8 +591,20 @@ def run_ai_enrichment(
             )
             db.add(run_record)
             db.commit()
+            record_ai_usage(
+                db, operation="enrichment", provider="OpenAI", model=settings.OPENAI_MODEL,
+                prompt_tokens=prompt_t, completion_tokens=complete_t,
+                cached_prompt_tokens=usage_counts.get("cached_prompt_tokens"),
+                reasoning_tokens=usage_counts.get("reasoning_tokens"),
+                status="success",
+                canonical_product_id=canonical_product_id,
+                product_variant_id=product_variant_id,
+                import_job_id=import_job_id,
+                enrichment_run_id=run_id,
+                processing_time_ms=response_elapsed_ms(response),
+            )
             return parsed_data, run_id
-            
+
         except Exception as e:
             try:
                 db.rollback()
@@ -606,10 +636,25 @@ def run_ai_enrichment(
                 )
                 db.add(run_record)
                 db.commit()
+                # A failed call is still billed for whatever it consumed.
+                if (prompt_t or complete_t):
+                    record_ai_usage(
+                        db, operation="enrichment", provider="OpenAI",
+                        model=settings.OPENAI_MODEL,
+                        prompt_tokens=prompt_t, completion_tokens=complete_t,
+                        cached_prompt_tokens=usage_counts.get("cached_prompt_tokens"),
+                        reasoning_tokens=usage_counts.get("reasoning_tokens"),
+                        status="failed",
+                        canonical_product_id=canonical_product_id,
+                        product_variant_id=product_variant_id,
+                        import_job_id=import_job_id,
+                        enrichment_run_id=run_id,
+                        detail={"error": str(e)[:500]},
+                    )
             except Exception as db_err:
                 db.rollback()
-                print(f"Failed to record OpenAI run: {db_err}")
-                
+                logger.error("Failed to record OpenAI run: %s", db_err)
+
             if attempt < 2:
                 return run_ai_enrichment(
                     db, name, brand, description, raw_ingredients,
@@ -706,6 +751,7 @@ def run_ai_enrichment(
     response = None
     candidate_text = None
     prompt_t = complete_t = None
+    usage_counts: Dict[str, int] = {}
     cost = None
     try:
         response = requests.post(url, json=payload, timeout=60)
@@ -722,10 +768,20 @@ def run_ai_enrichment(
         # Log pricing and metrics
         candidate_text = response_json["candidates"][0]["content"]["parts"][0]["text"]
         
-        # Calculate cost
-        prompt_t = response_json.get("usageMetadata", {}).get("promptTokenCount", calculate_token_count_rough(prompt))
-        complete_t = response_json.get("usageMetadata", {}).get("candidatesTokenCount", calculate_token_count_rough(candidate_text))
-        cost = (prompt_t * 0.000075 / 1000) + (complete_t * 0.0003 / 1000)
+        # Calculate cost. Gemini 2.5 bills thinking tokens and reports them in
+        # thoughtsTokenCount, which candidatesTokenCount excludes, so they are
+        # carried separately and charged at the output rate.
+        usage_counts = normalize_gemini_usage(response_json.get("usageMetadata"))
+        prompt_t = usage_counts["prompt_tokens"] or calculate_token_count_rough(prompt)
+        complete_t = usage_counts["completion_tokens"] or calculate_token_count_rough(candidate_text)
+        usage_counts["prompt_tokens"] = prompt_t
+        usage_counts["completion_tokens"] = complete_t
+        cost, _ = estimate_cost(
+            settings.GEMINI_MODEL, prompt_t, complete_t,
+            cached_prompt_tokens=usage_counts.get("cached_prompt_tokens"),
+            reasoning_tokens=usage_counts.get("reasoning_tokens"),
+            db=db,
+        )
 
         # Validate with Pydantic
         parsed_data = normalize_provider_shapes(
@@ -767,6 +823,18 @@ def run_ai_enrichment(
         )
         db.add(run_record)
         db.commit()
+        record_ai_usage(
+            db, operation="enrichment", provider="Google Gemini", model=settings.GEMINI_MODEL,
+            prompt_tokens=prompt_t, completion_tokens=complete_t,
+            cached_prompt_tokens=usage_counts.get("cached_prompt_tokens"),
+            reasoning_tokens=usage_counts.get("reasoning_tokens"),
+            status="success",
+            canonical_product_id=canonical_product_id,
+            product_variant_id=product_variant_id,
+            import_job_id=import_job_id,
+            enrichment_run_id=run_id,
+            processing_time_ms=response_elapsed_ms(response),
+        )
         return parsed_data, run_id
 
     except Exception as e:
@@ -802,9 +870,23 @@ def run_ai_enrichment(
             )
             db.add(run_record)
             db.commit()
+            if (prompt_t or complete_t):
+                record_ai_usage(
+                    db, operation="enrichment", provider="Google Gemini",
+                    model=settings.GEMINI_MODEL,
+                    prompt_tokens=prompt_t, completion_tokens=complete_t,
+                    cached_prompt_tokens=usage_counts.get("cached_prompt_tokens"),
+                    reasoning_tokens=usage_counts.get("reasoning_tokens"),
+                    status="failed",
+                    canonical_product_id=canonical_product_id,
+                    product_variant_id=product_variant_id,
+                    import_job_id=import_job_id,
+                    enrichment_run_id=run_id,
+                    detail={"error": str(e)[:500]},
+                )
         except Exception as db_err:
             db.rollback()
-            print(f"Failed to record enrichment run to db: {db_err}")
+            logger.error("Failed to record enrichment run to db: %s", db_err)
 
         # If failure is parser error, retry once using attempt count
         if attempt < 2:

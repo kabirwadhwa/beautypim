@@ -50,7 +50,34 @@ def _sample_fallback(samples: list[dict], rating: Any, count: int) -> tuple[str,
     return text, [], [], []
 
 
-def _ai_intelligence(summary: dict, product_name: str, brand: str, category: str) -> tuple[str, list[str], list[str], list[str], str]:
+def _record_review_usage(db, usage, product_id, research_job_id, response) -> None:
+    """Log what this review synthesis consumed. Never raises."""
+    if db is None:
+        return
+    try:
+        from app.services.ai_pricing import normalize_openai_usage
+        from app.services.ai_usage import record_ai_usage, response_elapsed_ms
+
+        counts = normalize_openai_usage(usage)
+        if not (counts["prompt_tokens"] or counts["completion_tokens"]):
+            return
+        record_ai_usage(
+            db, operation="review_summary", provider="OpenAI", model=settings.OPENAI_MODEL,
+            prompt_tokens=counts["prompt_tokens"],
+            completion_tokens=counts["completion_tokens"],
+            cached_prompt_tokens=counts["cached_prompt_tokens"],
+            reasoning_tokens=counts["reasoning_tokens"],
+            canonical_product_id=product_id, research_job_id=research_job_id,
+            processing_time_ms=response_elapsed_ms(response),
+        )
+    except Exception:  # pragma: no cover - accounting must not break synthesis
+        pass
+
+
+def _ai_intelligence(
+    summary: dict, product_name: str, brand: str, category: str,
+    *, db: Any = None, product_id: Any = None, research_job_id: Any = None,
+) -> tuple[str, list[str], list[str], list[str], str]:
     samples = list(summary.get("review_samples") or [])[:100]
     fallback = _sample_fallback(samples, summary.get("average_rating"), int(summary.get("review_count") or 0))
     if not settings.OPENAI_API_KEY:
@@ -82,7 +109,11 @@ def _ai_intelligence(summary: dict, product_name: str, brand: str, category: str
             json=request, timeout=(10, 45),
         )
         response.raise_for_status()
-        payload = json.loads(response.json()["choices"][0]["message"]["content"])
+        response_json = response.json()
+        _record_review_usage(
+            db, response_json.get("usage"), product_id, research_job_id, response,
+        )
+        payload = json.loads(response_json["choices"][0]["message"]["content"])
         paragraph = " ".join(str(payload.get("summary") or "").split())
         if not 100 <= _words(paragraph) <= 240:
             raise ValueError("Review summary length was outside the safe range")
@@ -117,6 +148,7 @@ def summarize_product_reviews(db, product_id, *, force: bool = False) -> dict[st
         category = category_row.path if category_row else ""
         paragraph, positive, negative, mixed, model = _ai_intelligence(
             base, product.product_name if product else "", brand.name if brand else "", category,
+            db=db, product_id=product_id,
         )
         base.update({"ai_summary_text": paragraph, "summary": paragraph,
                      "positive_themes": positive, "negative_themes": negative, "mixed_themes": mixed,
