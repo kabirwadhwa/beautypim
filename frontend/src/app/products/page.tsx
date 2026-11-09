@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import Shell from '../../components/Shell';
 import { Search, Filter, AlertTriangle, ArrowRight, X, Sparkles, Tag, Download } from 'lucide-react';
 import styles from '../page.module.css';
+import UsagePanel from '../../components/UsagePanel';
+import { formatTokens, formatUsd, type UsagePayload } from '../../usage';
 
 interface Product {
   id: string;
@@ -56,9 +58,11 @@ interface BulkProgress {
   skipped: number;
   percent: number;
   running: boolean;
+  usage?: UsagePayload | null;
   outcomes?: Record<string, number>;
   items?: Array<{
     product_id: string | null;
+    usage?: UsagePayload | null;
     product_name?: string | null;
     business_outcome?: string | null;
     business_status?: string | null;
@@ -133,6 +137,7 @@ export default function ProductsPage() {
         successful, failed, skipped: alreadySkipped,
         percent: Math.min(100, Math.round((completed / total) * 100)), running: !data.all_terminal,
         outcomes: data.outcome_counts || {}, items: data.items || [],
+        usage: data.usage || null,
       });
       if (data.all_terminal) return { successful, failed, items: data.items || [] };
       await new Promise(resolve => window.setTimeout(resolve, 2000));
@@ -728,10 +733,15 @@ export default function ProductsPage() {
               ))}
             </div>
           )}
+          {bulkProgress.usage && bulkProgress.usage.totals.call_count > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <UsagePanel usage={bulkProgress.usage} title="Tokens & estimated cost for this run" />
+            </div>
+          )}
           {!!bulkProgress.items?.length && (
             <div style={{ marginTop: 14, overflowX: 'auto', maxHeight: 300, overflowY: 'auto' }}>
               <table className={styles.denseTable} style={{ fontSize: 12 }}>
-                <thead><tr><th>Product</th><th>Outcome</th><th>Before → After</th><th>Sources</th><th>Fields added</th><th>Remaining gaps / reason</th></tr></thead>
+                <thead><tr><th>Product</th><th>Outcome</th><th>Before → After</th><th>Sources</th><th>Fields added</th><th>Tokens / est. cost</th><th>Remaining gaps / reason</th></tr></thead>
                 <tbody>{bulkProgress.items.map((item, index) => (
                   <tr key={`${item.product_id || 'missing'}-${index}`}>
                     <td>{item.product_name || item.product_id || 'Unknown product'}</td>
@@ -739,6 +749,11 @@ export default function ProductsPage() {
                     <td>{item.before_completeness ?? '—'}% → {item.after_completeness ?? '—'}%</td>
                     <td>{item.sources_ingested ?? 0}</td>
                     <td>{item.fields_added?.length ? item.fields_added.join(', ') : '—'}</td>
+                    <td>
+                      {item.usage && item.usage.totals.call_count > 0
+                        ? `${formatTokens(item.usage.totals.total_tokens)} · ${formatUsd(item.usage.totals.estimated_cost_usd)}`
+                        : '—'}
+                    </td>
                     <td>{item.error || item.fields_still_missing?.slice(0, 4).join(', ') || '—'}</td>
                   </tr>
                 ))}</tbody>

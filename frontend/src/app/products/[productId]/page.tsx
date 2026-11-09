@@ -1,5 +1,6 @@
 "use client";
 import { API_URL, BACKEND_URL } from '../../../config';
+import { formatTokens, formatUsd } from '../../../usage';
 
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
@@ -102,6 +103,12 @@ interface ProductDetail {
     tokens: number;
     processing_time_ms: number;
     created_at: string;
+    estimated_cost_usd: number | null;
+    total_tokens_all_runs: number | null;
+    total_estimated_cost_usd: number | null;
+    total_ai_calls: number | null;
+    cost_is_estimate: boolean;
+    pricing_source: string | null;
   } | null;
   key_ingredients?: Array<{
     name: string;
@@ -1223,13 +1230,43 @@ export default function ProductDetailPage() {
               </div>
             </div>
             <div>
-              <div style={{ color: '#64748b', marginBottom: 2 }}>Tokens Consumed</div>
-              <div style={{ fontWeight: 500, color: '#e2e8f0' }}>{product.enrichment_metadata.tokens} tokens</div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>Tokens (latest run)</div>
+              <div style={{ fontWeight: 500, color: '#e2e8f0' }}>{formatTokens(product.enrichment_metadata.tokens)}</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>Cost (latest run)</div>
+              <div style={{ fontWeight: 500, color: '#e2e8f0' }}>{formatUsd(product.enrichment_metadata.estimated_cost_usd)}</div>
             </div>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>Processing Time</div>
               <div style={{ fontWeight: 500, color: '#e2e8f0' }}>{(product.enrichment_metadata.processing_time_ms / 1000).toFixed(2)}s</div>
             </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>Tokens (all AI work)</div>
+              <div style={{ fontWeight: 500, color: '#e2e8f0' }}>{formatTokens(product.enrichment_metadata.total_tokens_all_runs)}</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>
+                Total cost (all AI work)
+              </div>
+              <div style={{ fontWeight: 600, color: '#fbbf24' }}>
+                {formatUsd(product.enrichment_metadata.total_estimated_cost_usd)}
+              </div>
+              {product.enrichment_metadata.total_ai_calls != null && (
+                <div style={{ color: '#64748b', marginTop: 2, fontSize: 11 }}>
+                  across {product.enrichment_metadata.total_ai_calls} AI call
+                  {product.enrichment_metadata.total_ai_calls === 1 ? '' : 's'}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
+            Token counts are reported by the AI provider. Dollar figures are
+            estimates based on the configured rate for each model
+            {product.enrichment_metadata.pricing_source === 'calibrated'
+              ? ', inferred here from this deployment\u2019s historical runs,'
+              : ''}{' '}
+            and will not match a provider invoice exactly.
           </div>
         </details>
       )}

@@ -6,6 +6,8 @@ import { useParams, useRouter } from 'next/navigation';
 import Shell from '../../../components/Shell';
 import { Loader2, CheckCircle2, XCircle, AlertTriangle, ArrowRight } from 'lucide-react';
 import styles from '../../page.module.css';
+import UsagePanel from '../../../components/UsagePanel';
+import type { UsagePayload } from '../../../usage';
 
 interface Job {
   id: string;
@@ -33,6 +35,7 @@ export default function JobProgressPage() {
   
   const [job, setJob] = useState<Job | null>(null);
   const [items, setItems] = useState<JobItem[]>([]);
+  const [usage, setUsage] = useState<UsagePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -51,6 +54,12 @@ export default function JobProgressPage() {
       if (itemsResp.ok) {
         const itemsData = await itemsResp.json();
         setItems(itemsData || []);
+      }
+
+      // Usage is supplementary: a failure here must not blank the page.
+      const usageResp = await fetch(`${API_URL}/ai-usage/import-jobs/${jobId}`, { headers });
+      if (usageResp.ok) {
+        setUsage(await usageResp.json());
       }
 
       // Check if job completed or failed to stop polling
@@ -135,6 +144,10 @@ export default function JobProgressPage() {
             Job Ingest Error: {job.error_message}
           </div>
         )}
+      </div>
+
+      <div className={styles.panelCard}>
+        <UsagePanel usage={usage} title="AI usage & estimated cost for this job" />
       </div>
 
       <div className={styles.panelCard}>

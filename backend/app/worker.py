@@ -1455,6 +1455,12 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
     if not job:
         return
 
+    # A job cancelled before its worker thread got going must not be revived
+    # by being flipped to "processing" here.
+    if job.status in TERMINAL_JOB_SIGNALS:
+        logger.info("Not starting job %s because its status is %s", job_id, job.status)
+        return
+
     job.status = "processing"
     db.commit()
 
