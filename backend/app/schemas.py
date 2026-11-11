@@ -323,6 +323,17 @@ class EnrichmentMetadataSchema(BaseModel):
     tokens: Optional[int] = None
     processing_time_ms: Optional[int] = None
     created_at: Optional[datetime] = None
+    # Cost of the latest run on its own. None when the model has no known
+    # rate, which must read as "not estimated" rather than "free".
+    estimated_cost_usd: Optional[float] = None
+    # Lifetime totals for the product across every kind of paid AI call, so
+    # the detail page can show what this product has cost in total and not
+    # just what its most recent enrichment cost.
+    total_tokens_all_runs: Optional[int] = None
+    total_estimated_cost_usd: Optional[float] = None
+    total_ai_calls: Optional[int] = None
+    cost_is_estimate: bool = True
+    pricing_source: Optional[str] = None
 
     class Config:
         from_attributes = True

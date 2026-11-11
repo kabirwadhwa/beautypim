@@ -288,12 +288,40 @@ def _resolve_history_product_reference(
     return filters
 
 
+def _record_assistant_usage(db, usage, requested_by_id, response, stage: str) -> None:
+    """Persist what one assistant turn consumed. Never raises."""
+    if db is None:
+        return
+    try:
+        from app.services.ai_pricing import normalize_openai_usage
+        from app.services.ai_usage import record_ai_usage, response_elapsed_ms
+
+        counts = normalize_openai_usage(usage)
+        if not (counts["prompt_tokens"] or counts["completion_tokens"]):
+            return
+        record_ai_usage(
+            db, operation="catalog_assistant", provider="OpenAI",
+            model=settings.OPENAI_MODEL,
+            prompt_tokens=counts["prompt_tokens"],
+            completion_tokens=counts["completion_tokens"],
+            cached_prompt_tokens=counts["cached_prompt_tokens"],
+            reasoning_tokens=counts["reasoning_tokens"],
+            requested_by_id=requested_by_id,
+            processing_time_ms=response_elapsed_ms(response),
+            detail={"stage": stage},
+        )
+    except Exception:  # pragma: no cover - accounting must not break chat
+        pass
+
+
 def interpret_question(
     message: str,
     history: List[ChatMessage],
     brands: List[str],
     categories: List[str],
     product_names: Optional[List[str]] = None,
+    db: Optional[Session] = None,
+    requested_by_id: Any = None,
 ) -> tuple[Dict[str, Any], str]:
     if not settings.OPENAI_API_KEY:
         filters = _fallback_filters(message, product_names)
@@ -352,6 +380,9 @@ def interpret_question(
         payload = response.json()
         if response.status_code != 200 or payload.get("error"):
             raise ValueError(payload.get("error", {}).get("message", "OpenAI request failed"))
+        _record_assistant_usage(
+            db, payload.get("usage"), requested_by_id, response, "interpret_question",
+        )
         filters = json.loads(payload["choices"][0]["message"]["content"])
         for key in (
             "product_names", "attribute_names",
@@ -805,6 +836,8 @@ def generate_grounded_answer(
     matches: List[ProductMatch],
     total: int,
     filters: Dict[str, Any],
+    db: Optional[Session] = None,
+    requested_by_id: Any = None,
 ) -> tuple[str, str]:
     fallback = _deterministic_answer(message, intent, matches, total, filters)
     if not settings.OPENAI_API_KEY or not matches or intent == "catalogue_summary":
@@ -857,6 +890,9 @@ def generate_grounded_answer(
         payload = response.json()
         if response.status_code != 200 or payload.get("error"):
             raise ValueError(payload.get("error", {}).get("message", "OpenAI request failed"))
+        _record_assistant_usage(
+            db, payload.get("usage"), requested_by_id, response, "generate_grounded_answer",
+        )
         answer = str(payload["choices"][0]["message"]["content"]).strip()
         return (answer or fallback), f"OpenAI {settings.OPENAI_MODEL} · catalogue grounded"
     except Exception:
@@ -881,7 +917,8 @@ def catalogue_chat(
         ).order_by(CanonicalProduct.product_name).all()
     ]
     filters, interpretation_provider = interpret_question(
-        request.message, request.history, brands, categories, product_names
+        request.message, request.history, brands, categories, product_names,
+        db=db, requested_by_id=current_user.id,
     )
     matches = search_catalogue(db, filters)
     total = len(matches)
@@ -896,6 +933,8 @@ def catalogue_chat(
         answer_matches,
         total,
         filters,
+        db=db,
+        requested_by_id=current_user.id,
     )
     return CatalogueChatResponse(
         answer=answer,

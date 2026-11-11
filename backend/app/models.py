@@ -812,3 +812,69 @@ class KnowledgeConflict(Base):
         CheckConstraint(status.in_(["open", "accepted", "dismissed"]), name="check_knowledge_conflict_status"),
         Index("idx_knowledge_conflict_target", "knowledge_product_id", "knowledge_variant_id", "field_name", "status"),
     )
+
+
+class AiUsageEvent(Base):
+    """One paid AI call: what it was for, what it consumed, what it cost.
+
+    Every provider call in the application writes exactly one row here,
+    including failed calls, which are billed for the tokens they consumed. The
+    scope columns are all nullable so a row can be attributed to whichever
+    combination of product, import job, research job or bulk group applies to
+    the call that produced it.
+
+    ``estimated_cost_usd`` is nullable on purpose: a model with no known rate
+    records its tokens with no cost rather than a misleading zero.
+    ``pricing_source`` records how the figure was derived so the interface can
+    label it honestly.
+    """
+
+    __tablename__ = "ai_usage_events"
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+
+    # What kind of work spent the money.
+    operation = Column(String(50), nullable=False, index=True)
+    provider = Column(String(50), nullable=False)
+    model = Column(String(100), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="success")
+
+    # Scope. Any subset may apply.
+    canonical_product_id = Column(GUID, ForeignKey("canonical_products.id", ondelete="SET NULL"), nullable=True, index=True)
+    product_variant_id = Column(GUID, ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    import_job_id = Column(GUID, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    research_job_id = Column(GUID, ForeignKey("crawl_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    enrichment_run_id = Column(GUID, ForeignKey("enrichment_runs.id", ondelete="SET NULL"), nullable=True)
+    bulk_group_id = Column(GUID, nullable=True, index=True)
+    requested_by_id = Column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    # Consumption.
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    cached_prompt_tokens = Column(Integer, nullable=False, default=0)
+    reasoning_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=False, default=0)
+    web_search_calls = Column(Integer, nullable=False, default=0)
+
+    # Money.
+    estimated_cost_usd = Column(Numeric(12, 6), nullable=True)
+    pricing_source = Column(String(20), nullable=False, default="unknown")
+
+    processing_time_ms = Column(Integer, nullable=True)
+    detail = Column(PortableJSON(), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            operation.in_([
+                "enrichment", "web_research", "review_summary",
+                "catalog_assistant", "other",
+            ]),
+            name="check_ai_usage_operation",
+        ),
+        CheckConstraint(
+            pricing_source.in_(["override", "reference", "calibrated", "unknown"]),
+            name="check_ai_usage_pricing_source",
+        ),
+        Index("idx_ai_usage_product_created", "canonical_product_id", "created_at"),
+        Index("idx_ai_usage_operation_created", "operation", "created_at"),
+    )

@@ -107,7 +107,16 @@ class Settings(BaseSettings):
     WEB_RESEARCH_REVIEW_DOMAIN_LIMIT: int = int(os.getenv("WEB_RESEARCH_REVIEW_DOMAIN_LIMIT", "10"))
     WEB_RESEARCH_REVIEW_PAGES_PER_SOURCE: int = int(os.getenv("WEB_RESEARCH_REVIEW_PAGES_PER_SOURCE", "5"))
     WEB_RESEARCH_REVIEW_SAMPLE_TARGET: int = int(os.getenv("WEB_RESEARCH_REVIEW_SAMPLE_TARGET", "20"))
+    # Maximum estimated USD one job may spend before further paid AI calls are
+    # refused. Set to 0 to disable the cap entirely.
     MAX_JOB_COST_LIMIT: float = float(os.getenv("MAX_JOB_COST_LIMIT", "50.0"))
+    # Operator-supplied model rates, USD per 1,000,000 tokens. Overrides the
+    # reference table in app.services.ai_pricing, so a provider price change
+    # needs a config change rather than a deploy. Example:
+    #   {"gpt-5-mini": {"input": 0.25, "output": 2.00, "cached_input": 0.025}}
+    AI_MODEL_PRICING_JSON: Optional[str] = os.getenv("AI_MODEL_PRICING_JSON", None)
+    # Per-call price of a provider-side web search, charged on top of tokens.
+    AI_WEB_SEARCH_CALL_USD: float = float(os.getenv("AI_WEB_SEARCH_CALL_USD", "0.01"))
     
     # Ingestion Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB

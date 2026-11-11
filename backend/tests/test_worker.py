@@ -381,3 +381,115 @@ def test_recover_unfinished_jobs(db: Session):
     
     db.refresh(job)
     assert job.status == "processing"
+
+
+def _single_row_job(db: Session, status: str = "pending"):
+    """One import job with one pending row, ready for the worker."""
+    from app.models import ImportJob, ImportJobItem, SourceListing
+
+    job_id = uuid.uuid4()
+    job = ImportJob(
+        id=job_id, filename="cancel_test.csv", file_hash=f"h-{job_id}",
+        status=status,
+        column_mapping={"product_name": "name", "brand": "brand", "ean": "ean"},
+    )
+    db.add(job)
+    db.flush()
+    listing_id = uuid.uuid4()
+    db.add(SourceListing(
+        id=listing_id, import_job_id=job_id,
+        raw_data={"name": "Cancel Probe Serum", "brand": "Probe", "ean": "761805099999"},
+        source_hash=f"s-{listing_id}",
+    ))
+    db.flush()
+    item = ImportJobItem(
+        id=uuid.uuid4(), import_job_id=job_id, source_row_number=1,
+        source_listing_id=listing_id, status="pending",
+        match_status="not_evaluated", enrichment_status="not_requested",
+    )
+    db.add(item)
+    db.commit()
+    return job, item
+
+
+def test_cancelled_job_is_not_overwritten_as_completed(db: Session):
+    """A cancelled job must stay cancelled.
+
+    The worker loop previously never re-read job.status and unconditionally
+    stamped "completed" on exit, so a user's cancellation was silently undone.
+    """
+    job, item = _single_row_job(db, status="cancelled")
+
+    run_job_worker(db, job.id)
+
+    db.refresh(job)
+    assert job.status == "cancelled"
+    # The pending row must not have been claimed and processed.
+    db.refresh(item)
+    assert item.status == "pending"
+
+
+def test_job_awaiting_human_match_review_is_not_reported_completed(db: Session):
+    """Rows parked for a human decision mean the job has not finished."""
+    from app.models import ImportJobItem, SourceListing
+
+    job, item = _single_row_job(db)
+    # A second row already waiting on a human match decision.
+    listing_id = uuid.uuid4()
+    db.add(SourceListing(
+        id=listing_id, import_job_id=job.id,
+        raw_data={"name": "Ambiguous Serum", "brand": "Probe", "ean": ""},
+        source_hash=f"s2-{listing_id}",
+    ))
+    db.flush()
+    db.add(ImportJobItem(
+        id=uuid.uuid4(), import_job_id=job.id, source_row_number=2,
+        source_listing_id=listing_id, status="awaiting_match_review",
+        match_status="ambiguous", enrichment_status="not_requested",
+    ))
+    db.commit()
+
+    run_job_worker(db, job.id)
+
+    db.refresh(job)
+    assert job.status != "completed"
+    assert "match decision" in (job.error_message or "")
+
+
+def test_job_halts_when_its_estimated_spend_reaches_the_limit(db: Session, monkeypatch):
+    """MAX_JOB_COST_LIMIT must actually stop a job, not just exist in config."""
+    from app.config import settings as app_settings
+    from app.services.ai_usage import record_ai_usage
+
+    monkeypatch.setattr(app_settings, "MAX_JOB_COST_LIMIT", 0.10)
+    job, item = _single_row_job(db)
+    # Pre-existing spend on this job that already exceeds the cap.
+    record_ai_usage(
+        db, operation="enrichment", provider="OpenAI", model="gpt-4o-mini",
+        prompt_tokens=1_000_000, completion_tokens=0, import_job_id=job.id,
+    )
+
+    run_job_worker(db, job.id)
+
+    db.refresh(job)
+    assert job.status == "failed"
+    assert "spend limit" in (job.error_message or "")
+    db.refresh(item)
+    assert item.status == "cancelled"
+
+
+def test_job_runs_normally_when_the_budget_cap_is_disabled(db: Session, monkeypatch):
+    from app.config import settings as app_settings
+    from app.services.ai_usage import record_ai_usage
+
+    monkeypatch.setattr(app_settings, "MAX_JOB_COST_LIMIT", 0.0)
+    job, item = _single_row_job(db)
+    record_ai_usage(
+        db, operation="enrichment", provider="OpenAI", model="gpt-4o-mini",
+        prompt_tokens=50_000_000, completion_tokens=0, import_job_id=job.id,
+    )
+
+    run_job_worker(db, job.id)
+
+    db.refresh(job)
+    assert job.status == "completed"

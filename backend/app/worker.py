@@ -14,9 +14,14 @@ from app.models import (
 from app.services.deduplication import evaluate_match, normalize_text
 from app.services.enrichment import run_ai_enrichment
 from app.services.catalogue_knowledge import build_catalogue_knowledge_context
+from app.services.ai_usage import job_budget_exceeded
 from app.config import settings
 
 logger = logging.getLogger("worker")
+
+# Statuses that mean a human or a policy has stopped this job. The worker must
+# never overwrite one of these with a status of its own.
+TERMINAL_JOB_SIGNALS = frozenset({"cancelled", "failed"})
 
 CATEGORY_MODULE_FIELDS = {
     "skincare": ("skin_types", "texture", "finish", "key_ingredients"),
@@ -1450,6 +1455,12 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
     if not job:
         return
 
+    # A job cancelled before its worker thread got going must not be revived
+    # by being flipped to "processing" here.
+    if job.status in TERMINAL_JOB_SIGNALS:
+        logger.info("Not starting job %s because its status is %s", job_id, job.status)
+        return
+
     job.status = "processing"
     db.commit()
 
@@ -1459,6 +1470,34 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
     recover_stale_job_items(db)
 
     while True:
+        # Honour a cancellation or pause requested while this loop was running.
+        # Without this the worker kept claiming rows after the user cancelled,
+        # and the terminal status below overwrote "cancelled" with "completed".
+        db.refresh(job)
+        if job.status in TERMINAL_JOB_SIGNALS:
+            logger.info("Stopping job %s because its status became %s", job_id, job.status)
+            db.commit()
+            return
+
+        # Stop spending once this job has used its estimated budget.
+        exceeded, spent, limit = job_budget_exceeded(db, import_job_id=job_id)
+        if exceeded:
+            # "failed" rather than a new status value: the ImportJob CHECK
+            # constraint permits only pending/processing/completed/failed/
+            # cancelled, and the reason is carried in error_message.
+            job.status = "failed"
+            job.error_message = (
+                f"Stopped after reaching the estimated AI spend limit for this job "
+                f"(${spent:.2f} of ${limit:.2f}). Raise MAX_JOB_COST_LIMIT to continue."
+            )
+            db.query(ImportJobItem).filter(
+                ImportJobItem.import_job_id == job_id,
+                ImportJobItem.status == "pending",
+            ).update({"status": "cancelled", "enrichment_status": "cancelled"})
+            db.commit()
+            logger.warning("Job %s halted: estimated spend $%.4f reached limit $%.2f", job_id, spent, limit)
+            return
+
         # Atomic claim of a single item
         if db.bind.dialect.name == "postgresql":
             item = db.query(ImportJobItem).filter(
@@ -1673,7 +1712,25 @@ def run_job_worker(db: Session, job_id: uuid.UUID):
                 logger.error(f"Failed to save failure status for row: {str(inner_e)}")
             logger.error(f"Failed to process row {item.source_row_number if item else 'unknown'}: {str(e)}")
 
-    job.status = "completed"
+    # The loop drains when no pending rows remain, which is not the same as the
+    # job having finished its work. A cancellation must not be overwritten, and
+    # rows parked for human match review mean the job is not complete yet.
+    db.refresh(job)
+    if job.status in TERMINAL_JOB_SIGNALS:
+        db.commit()
+        return
+
+    awaiting_review = db.query(ImportJobItem).filter(
+        ImportJobItem.import_job_id == job_id,
+        ImportJobItem.status == "awaiting_match_review",
+    ).count()
+    if awaiting_review:
+        job.status = "processing"
+        job.error_message = (
+            f"{awaiting_review} row(s) need a human match decision before this job can complete."
+        )
+    else:
+        job.status = "completed"
     db.commit()
 
 def recover_stale_job_items(db: Session, timeout_seconds: int = 600):

@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from app.limiter import rate_limit
 from app.config import settings
 from app.services.deduplication import normalize_text
+from app.services.ai_usage import usage_for_product, usage_for_research_jobs
 
 class BulkActionRequest(BaseModel):
     product_ids: List[uuid.UUID] = Field(default_factory=list)
@@ -1851,6 +1852,9 @@ def get_product_detail(
     
     global_meta = None
     if latest_run:
+        product_usage = usage_for_product(db, product_id, limit=1)
+        usage_totals = product_usage["totals"]
+        usage_models = product_usage["models"]
         global_meta = EnrichmentMetadataSchema(
             provider=latest_run.provider,
             model=latest_run.model,
@@ -1859,7 +1863,17 @@ def get_product_detail(
             status=latest_run.status,
             tokens=(latest_run.prompt_tokens or 0) + (latest_run.completion_tokens or 0),
             processing_time_ms=latest_run.processing_time_ms,
-            created_at=latest_run.created_at
+            created_at=latest_run.created_at,
+            estimated_cost_usd=(
+                float(latest_run.estimated_cost)
+                if latest_run.estimated_cost is not None
+                else None
+            ),
+            total_tokens_all_runs=usage_totals["total_tokens"],
+            total_estimated_cost_usd=usage_totals["estimated_cost_usd"],
+            total_ai_calls=usage_totals["call_count"],
+            cost_is_estimate=True,
+            pricing_source=(usage_models[0]["pricing_source"] if usage_models else None),
         )
 
     # Key Ingredients list construction from persisted FormulationIngredient table
@@ -2671,6 +2685,7 @@ def bulk_improve_status(
             "review_evidence_added": result.get("review_evidence_added", False),
             "review_evidence_found_this_run": result.get("review_evidence_found_this_run", False),
             "failure_reason": result.get("failure_reason"),
+            "usage": usage_for_research_jobs(db, [job.id]),
             "result": result,
         })
 
@@ -2693,6 +2708,9 @@ def bulk_improve_status(
         "progress_percent": round((completed_count / len(job_ids)) * 100),
         "all_terminal": completed_count == len(job_ids),
         "outcome_counts": outcome_counts,
+        # One combined figure for the whole selection, so the user can see what
+        # a bulk run has cost without summing the per-product rows themselves.
+        "usage": usage_for_research_jobs(db, job_ids),
         "items": items,
     }
 
