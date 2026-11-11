@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { 
   LayoutDashboard, FileInput, TableProperties, Download, 
-  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle, Globe2, Database
+  Settings, LogOut, ShieldAlert, Sparkles, Users, MessageCircle, Globe2, Database, Coins
 } from 'lucide-react';
 import styles from '../app/page.module.css';
 import { API_URL } from '../config';
@@ -78,6 +78,7 @@ export default function Shell({ children }: ShellProps) {
     { name: 'Product Grid', path: '/products', icon: TableProperties },
     { name: 'AI Catalogue Chat', path: '/assistant', icon: MessageCircle },
     { name: 'Export Center', path: '/exports', icon: Download },
+    { name: 'AI Usage & Cost', path: '/usage', icon: Coins },
     { name: 'Taxonomy Settings', path: '/settings/taxonomies', icon: Settings },
   ];
 
